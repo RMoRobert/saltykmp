@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository
 interface TagRepository extends JpaRepository<Tag, String> {
     // User-scoped queries
     List<Tag> findByUser(User user)
+    long countByUser(User user)
     Optional<Tag> findByIdAndUser(String id, User user)
     boolean existsByIdAndUser(String id, User user)
     void deleteByIdAndUser(String id, User user)

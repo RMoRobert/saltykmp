@@ -20,6 +20,13 @@ class CategoryService {
         return user ? categoryRepository.findByUser(user) : []
     }
 
+    /// Independent count for the current user, used as X-Total-Count so clients can detect a
+    /// truncated/partial list response before treating missing items as deletions.
+    long count() {
+        def user = currentUserService.getCurrentUser()
+        return user ? categoryRepository.countByUser(user) : 0
+    }
+
     Optional<Category> findById(String id) {
         def user = currentUserService.getCurrentUser()
         return user ? categoryRepository.findByIdAndUser(id, user) : Optional.empty()

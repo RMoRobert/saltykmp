@@ -10,12 +10,27 @@ import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
 
+import java.time.LocalDateTime
+
 interface RecipeRepository extends JpaRepository<Recipe, String> {
     // Spring Data JPA automatically provides CRUD operations
-    
+
     // User-scoped queries
     List<Recipe> findByUser(User user)
-    
+    long countByUser(User user)
+
+    // ---- Incremental sync (delta + manifest) ----
+
+    /** Lightweight sync index: id + lastModifiedDate only (no CLOB bodies loaded). */
+    @Query("SELECT new com.inuvro.saltyserver.recipe.RecipeSyncManifestEntry(r.id, r.lastModifiedDate) FROM Recipe r WHERE r.user = :user")
+    List<RecipeSyncManifestEntry> findManifestByUser(@Param("user") User user)
+
+    /** All of the user's recipes, paged, stable order by id. */
+    Page<Recipe> findByUserOrderById(User user, Pageable pageable)
+
+    /** Recipes modified after the cutoff (the `modifiedSince` delta), paged, stable order by id. */
+    Page<Recipe> findByUserAndLastModifiedDateAfterOrderById(User user, LocalDateTime date, Pageable pageable)
+
     @Query("SELECT r FROM Recipe r WHERE r.user = :user ORDER BY LOWER(r.name)")
     List<Recipe> findByUserOrderByNameIgnoreCase(@Param("user") User user)
 

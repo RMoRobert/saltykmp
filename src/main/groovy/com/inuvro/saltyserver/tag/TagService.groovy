@@ -20,6 +20,13 @@ class TagService {
         return user ? tagRepository.findByUser(user) : []
     }
 
+    /// Independent count for the current user, used as X-Total-Count so clients can detect a
+    /// truncated/partial list response before treating missing items as deletions.
+    long count() {
+        def user = currentUserService.getCurrentUser()
+        return user ? tagRepository.countByUser(user) : 0
+    }
+
     Optional<Tag> findById(String id) {
         def user = currentUserService.getCurrentUser()
         return user ? tagRepository.findByIdAndUser(id, user) : Optional.empty()

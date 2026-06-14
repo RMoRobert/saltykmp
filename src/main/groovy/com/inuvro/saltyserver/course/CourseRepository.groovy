@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository
 interface CourseRepository extends JpaRepository<Course, String> {
     // User-scoped queries
     List<Course> findByUser(User user)
+    long countByUser(User user)
     Optional<Course> findByIdAndUser(String id, User user)
     boolean existsByIdAndUser(String id, User user)
     void deleteByIdAndUser(String id, User user)

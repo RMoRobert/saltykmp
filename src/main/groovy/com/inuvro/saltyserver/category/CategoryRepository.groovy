@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository
 interface CategoryRepository extends JpaRepository<Category, String> {
     // User-scoped queries
     List<Category> findByUser(User user)
+    long countByUser(User user)
     Optional<Category> findByIdAndUser(String id, User user)
     boolean existsByIdAndUser(String id, User user)
     void deleteByIdAndUser(String id, User user)

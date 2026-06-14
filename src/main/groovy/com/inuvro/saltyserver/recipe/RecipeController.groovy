@@ -4,16 +4,22 @@ import com.inuvro.saltyserver.image.ImageStorageService
 import com.inuvro.saltyserver.model.Recipe
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import org.springframework.data.domain.PageRequest
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.multipart.MultipartFile
 
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneOffset
+
 @RestController
 @RequestMapping("/api/recipes")
 class RecipeController {
     private static final Logger log = LoggerFactory.getLogger(RecipeController)
-    
+    private static final int DEFAULT_PAGE_SIZE = 100
+
     private final RecipeService recipeService
     private final ImageStorageService imageStorageService
 
@@ -22,14 +28,87 @@ class RecipeController {
         this.imageStorageService = imageStorageService
     }
 
+    /**
+     * List recipes for sync.
+     *
+     * - No params: all of the user's recipes (legacy behavior), with X-Total-Count = total.
+     * - {@code modifiedSince} (ISO-8601, e.g. 2026-06-13T21:43:10.000Z): only recipes modified after
+     *   that instant (the delta). X-Total-Count = number of matching recipes.
+     * - {@code page} (+ optional {@code size}): returns that page of the (optionally filtered) set,
+     *   with X-Total-Count / X-Total-Pages / X-Page-Number headers so the client can page through.
+     *
+     * The delta deliberately omits unchanged recipes, so clients MUST reconcile deletions against the
+     * lightweight full manifest (GET /sync/manifest), never against this list.
+     */
     @GetMapping
-    List<Recipe> getAllRecipes() {
+    ResponseEntity<List<Recipe>> getAllRecipes(
+            @RequestParam(name = "modifiedSince", required = false) String modifiedSince,
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size) {
+
+        LocalDateTime since = null
+        if (modifiedSince != null && !modifiedSince.isEmpty()) {
+            try {
+                since = parseModifiedSince(modifiedSince)
+            } catch (Exception e) {
+                log.warn("Rejecting unparseable modifiedSince '{}': {}", modifiedSince, e.message)
+                return ResponseEntity.badRequest()
+                        .header("X-Error", "Invalid modifiedSince (expected ISO-8601)")
+                        .build()
+            }
+        }
+
+        // Paginated branch: return one page + paging headers.
+        if (page != null) {
+            int pageNum = Math.max(0, page)
+            int pageSize = (size != null && size > 0) ? size : DEFAULT_PAGE_SIZE
+            def result = recipeService.findForSync(since, PageRequest.of(pageNum, pageSize))
+            return ResponseEntity.ok()
+                    .header("X-Total-Count", String.valueOf(result.totalElements))
+                    .header("X-Total-Pages", String.valueOf(result.totalPages))
+                    .header("X-Page-Number", String.valueOf(result.number))
+                    .body(result.content)
+        }
+
+        // Non-paginated delta: all matching recipes in one response.
+        if (since != null) {
+            def matching = recipeService.findForSync(since, org.springframework.data.domain.Pageable.unpaged()).content
+            return ResponseEntity.ok()
+                    .header("X-Total-Count", String.valueOf(matching.size()))
+                    .body(matching)
+        }
+
+        // Legacy: all recipes, with an independent X-Total-Count for truncation detection.
         def recipes = recipeService.findAll()
         recipes.each { recipe ->
-            log.debug("Returning recipe '{}' with categoryIds: {}, tagIds: {}", 
+            log.debug("Returning recipe '{}' with categoryIds: {}, tagIds: {}",
                 recipe.name, recipe.getCategoryIds(), recipe.getTagIds())
         }
-        return recipes
+        return ResponseEntity.ok()
+                .header("X-Total-Count", String.valueOf(recipeService.count()))
+                .body(recipes)
+    }
+
+    /**
+     * Lightweight sync index: id + lastModifiedDate for every recipe of the current user.
+     * Clients diff this against their local DB to decide what to download (via the modifiedSince
+     * delta) and what to delete. X-Total-Count lets clients detect a truncated response.
+     */
+    @GetMapping("/sync/manifest")
+    ResponseEntity<List<RecipeSyncManifestEntry>> getRecipeManifest() {
+        def manifest = recipeService.manifest()
+        return ResponseEntity.ok()
+                .header("X-Total-Count", String.valueOf(manifest.size()))
+                .body(manifest)
+    }
+
+    /** Parse an ISO-8601 instant ("...Z") or local date-time into a UTC LocalDateTime. */
+    private static LocalDateTime parseModifiedSince(String s) {
+        try {
+            return LocalDateTime.ofInstant(Instant.parse(s), ZoneOffset.UTC)
+        } catch (Exception ignored) {
+            return LocalDateTime.parse(s) // ISO_LOCAL_DATE_TIME fallback; throws if also invalid
+        }
     }
 
     @GetMapping("/{id}")

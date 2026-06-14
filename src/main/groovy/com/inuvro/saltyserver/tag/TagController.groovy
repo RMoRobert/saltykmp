@@ -15,8 +15,12 @@ class TagController {
     }
 
     @GetMapping
-    List<Tag> getAllTags() {
-        return tagService.findAll()
+    ResponseEntity<List<Tag>> getAllTags() {
+        // X-Total-Count is an independent count so clients can detect a truncated/partial
+        // response and avoid treating the missing items as deletions.
+        return ResponseEntity.ok()
+                .header("X-Total-Count", String.valueOf(tagService.count()))
+                .body(tagService.findAll())
     }
 
     @GetMapping("/{id}")

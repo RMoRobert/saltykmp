@@ -44,6 +44,13 @@ class RecipeService {
         return user ? recipeRepository.findByUserOrderByNameIgnoreCase(user) : []
     }
 
+    /// Independent count for the current user, used as X-Total-Count so clients can detect a
+    /// truncated/partial list response before treating missing items as deletions.
+    long count() {
+        def user = currentUserService.getCurrentUser()
+        return user ? recipeRepository.countByUser(user) : 0
+    }
+
     /**
      * Find recipes for the current user with pagination.
      * @return Page of recipes, or empty page if no user
@@ -54,6 +61,32 @@ class RecipeService {
             return org.springframework.data.domain.PageImpl.empty(pageable)
         }
         return recipeRepository.findByUserOrderByNameIgnoreCase(user, pageable)
+    }
+
+    // ==================== Incremental Sync (delta + manifest) ====================
+
+    /**
+     * Lightweight sync index for the current user: every recipe's id + lastModifiedDate (no bodies).
+     * The client uses this to reconcile existence/deletions, then fetches only changed bodies via
+     * {@link #findForSync}.
+     */
+    List<RecipeSyncManifestEntry> manifest() {
+        def user = currentUserService.getCurrentUser()
+        return user ? recipeRepository.findManifestByUser(user) : []
+    }
+
+    /**
+     * A page of recipe bodies for sync. When {@code modifiedSince} is null this is all of the user's
+     * recipes (e.g. first sync); otherwise only those modified after the cutoff (the delta).
+     */
+    Page<Recipe> findForSync(LocalDateTime modifiedSince, Pageable pageable) {
+        def user = currentUserService.getCurrentUser()
+        if (!user) {
+            return org.springframework.data.domain.PageImpl.empty(pageable)
+        }
+        return modifiedSince != null
+                ? recipeRepository.findByUserAndLastModifiedDateAfterOrderById(user, modifiedSince, pageable)
+                : recipeRepository.findByUserOrderById(user, pageable)
     }
 
     /**
