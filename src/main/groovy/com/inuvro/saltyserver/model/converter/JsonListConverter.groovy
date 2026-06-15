@@ -1,8 +1,8 @@
 package com.inuvro.saltyserver.model.converter
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.databind.type.CollectionType
-import com.fasterxml.jackson.databind.type.TypeFactory
+import tools.jackson.databind.ObjectMapper
+import tools.jackson.databind.type.CollectionType
+import tools.jackson.databind.type.TypeFactory
 import jakarta.persistence.AttributeConverter
 import jakarta.persistence.Converter
 

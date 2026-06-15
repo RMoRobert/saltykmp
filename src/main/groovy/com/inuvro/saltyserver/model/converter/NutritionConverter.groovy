@@ -1,6 +1,6 @@
 package com.inuvro.saltyserver.model.converter
 
-import com.fasterxml.jackson.databind.ObjectMapper
+import tools.jackson.databind.ObjectMapper
 import com.inuvro.saltyserver.model.NutritionInformation
 import jakarta.persistence.AttributeConverter
 import jakarta.persistence.Converter
