@@ -1,32 +1,68 @@
-# Docker Compose: run Salty Server with env-configured paths and persistent data.
+# Salty KMP server + Postgres for a home-server Docker deploy.
+# All settings/secrets are written DIRECTLY in this file — no .env needed. EDIT every CHANGE_ME_*
+# value before deploying. HTTPS is handled by your own NGINX reverse proxy on the host (the app is
+# bound to 127.0.0.1 only).
 #
-# Usage:
-#   docker compose up --build
-#   App: http://localhost:8080   H2 console: http://localhost:8080/h2console
+# Secrets live here, so this file is gitignored. The committed template is docker-compose.example.yml:
+#   cp docker-compose.example.yml docker-compose.yml   # then edit the CHANGE_ME_* values
 #
-# Override env in .env or docker compose run -e VAR=value
+#   1) ./gradlew :server:buildFatJar     (on a machine with JDK 21 + Android SDK)
+#   2) edit the CHANGE_ME_* values below
+#   3) docker compose up -d --build
+#
+# For an internet-free target machine, see docker-README-deployoffline.md (+ docker-compose.offline.yml).
+
+# Values used by more than one service are defined once here and referenced with *aliases below.
+# (Top-level "x-" keys are ignored by Compose; they only hold the anchors.)
+x-vars:
+  db-name: &db-name "salty"
+  db-user: &db-user "salty"
+  db-password: &db-password "CHANGE_ME_db_password"
 
 services:
-  saltyserver:
-    build: .
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: *db-name
+      POSTGRES_USER: *db-user
+      POSTGRES_PASSWORD: *db-password
+    volumes:
+      - salty-db:/var/lib/postgresql/data
+    healthcheck:
+      # Keep -U / -d in sync with db-user / db-name above.
+      test: ["CMD-SHELL", "pg_isready -U salty -d salty"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ./server
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      # Host is the "db" service name; keep the database name in sync with db-name above.
+      SALTY_DB_URL: "jdbc:postgresql://db:5432/salty"
+      SALTY_DB_DRIVER: "org.postgresql.Driver"
+      SALTY_DB_USER: *db-user
+      SALTY_DB_PASSWORD: *db-password
+      # Generate a long random value, e.g.  openssl rand -hex 32
+      SALTY_JWT_SECRET: "CHANGE_ME_long_random_jwt_secret"
+      # Seeded ONLY on first run, when the users table is empty.
+      SALTY_DEFAULT_USER: "admin"
+      SALTY_DEFAULT_PASSWORD: "CHANGE_ME_admin_password"
+      SALTY_IMAGE_DIR: "/data/images"
+    volumes:
+      - salty-images:/data/images
+    # Published on all interfaces for direct access at http://<host-ip>:8080 (no TLS — LAN/testing).
+    # For an NGINX-fronted TLS setup, use "127.0.0.1:8080:8080" instead (reachable only via the host).
     ports:
       - "8080:8080"
-    environment:
-      # H2 database file path (inside container; volume persists it)
-      SPRING_DATASOURCE_URL: jdbc:h2:file:/app/data/saltydb
-      SPRING_DATASOURCE_USERNAME: sa
-      SPRING_DATASOURCE_PASSWORD: ""
-      # Recipe image uploads directory
-      SALTY_RECIPELIBRARY_IMAGES_STORAGE_PATH: /app/data/images
-      # Default admin user (username: admin), or set in .env for production
-      SALTY_ADMIN_PASSWORD: "password"
-      # Change to unique value, or set in .env for production
-      SALTY_JWT_SECRET: mocgfGBu5XxPU4b3j4qtsE70U1jgcZSOPMSouSwdW1o
-      SALTY_JWT_EXPIRATION: 1814400000
-    volumes:
-      # Persist H2 DB and uploaded images
-      - saltyserver_data:/app/data
     restart: unless-stopped
 
 volumes:
-  saltyserver_data:
+  salty-db:
+  salty-images:

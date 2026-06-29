@@ -3,3 +3,10 @@
 /.idea
 /build
 /data
+TODO.md
+/shared/build
+/composeApp/build
+/salty-images-h2
+/server/build
+salty-db/salty.mv.db
+composeApp/salty.db
