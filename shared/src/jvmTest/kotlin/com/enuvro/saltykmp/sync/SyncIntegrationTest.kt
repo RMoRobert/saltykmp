@@ -210,6 +210,62 @@ class SyncIntegrationTest {
     }
 
     @Test
+    fun oneFailedImageDoesNotAbortTheSync() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.recipes["bad"] = ServerRecipe(
+            id = "bad", name = "Broken Image", lastModifiedDate = "2026-06-01T00:00:00.000Z",
+            imageFilename = "bad.jpg", lastModifiedImageDate = "2026-06-01T00:00:00.000Z",
+        )
+        server.recipes["good"] = ServerRecipe(
+            id = "good", name = "Good Image", lastModifiedDate = "2026-06-01T00:00:00.000Z",
+            imageFilename = "good.jpg", lastModifiedImageDate = "2026-06-01T00:00:00.000Z",
+        )
+        server.images["bad.jpg"] = "img".encodeToByteArray()
+        server.images["good.jpg"] = "img".encodeToByteArray()
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        val saved = mutableListOf<String>()
+        val result = SyncService(
+            api, local, deviceId = "test-device", deviceName = "Test",
+            // Simulate a per-image persistence failure (disk full, bad bytes, …) for one recipe only.
+            imageSink = { _, filename, _, _ ->
+                if (filename == "bad.jpg") error("disk full")
+                saved += filename
+            },
+        ).syncNow()
+
+        // The failed image is skipped; everything else — including the other image — still syncs.
+        assertEquals(listOf("good.jpg"), saved)
+        assertEquals(1, result.imagesDown)
+        assertEquals(setOf("bad", "good"), local.recipeEntries().map { it.id }.toSet())
+        assertTrue(server.completed, "one bad image must not abort the sync")
+    }
+
+    @Test
+    fun allImagesFailingSurfacesAnError() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.recipes["r1"] = ServerRecipe(
+            id = "r1", name = "Only Recipe", lastModifiedDate = "2026-06-01T00:00:00.000Z",
+            imageFilename = "r1.jpg", lastModifiedImageDate = "2026-06-01T00:00:00.000Z",
+        )
+        server.images["r1.jpg"] = "img".encodeToByteArray()
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        val service = SyncService(
+            api, local, deviceId = "test-device", deviceName = "Test",
+            imageSink = { _, _, _, _ -> error("disk full") },
+        )
+
+        // EVERY image operation failing points at something systemic — that must not report success.
+        val message = kotlin.test.assertFailsWith<SyncException> { service.syncNow() }.message ?: ""
+        assertTrue("r1" in message, "failed recipe ids should be listed: $message")
+    }
+
+    @Test
     fun localDeletionTombstonesPropagateAndDoNotResurrect() = runTest {
         val db = freshDb()
         val local = LocalStore(db)

@@ -88,6 +88,38 @@ class SaltyApiClientTest {
     }
 
     @Test
+    fun downloadImageEncodesHostileFilenameAsSinglePathSegment() = runTest {
+        // The filename comes from the server's manifest — a hostile value must not be able to steer the
+        // authenticated GET to another endpoint ("../sync/delete") or truncate the URL ("?", "#").
+        var requested: io.ktor.http.Url? = null
+        val engine = MockEngine { request ->
+            requested = request.url
+            respond(byteArrayOf(1, 2, 3), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "image/jpeg"))
+        }
+        val api = SaltyApiClient("http://test", InMemoryTokenStore("t"), engine)
+        api.downloadImage("../sync/delete?all=true#frag")
+
+        val url = requested ?: error("no request was made")
+        val path = url.encodedPath
+        assertTrue(path.startsWith("/api/recipes/images/"), "request escaped the images endpoint: $path")
+        val segment = path.removePrefix("/api/recipes/images/")
+        assertTrue(!segment.contains("/"), "'/' survived encoding, allowing traversal: $path")
+        assertTrue(url.parameters.isEmpty(), "'?' in the filename injected query parameters")
+    }
+
+    @Test
+    fun downloadImageLeavesLegitimateFilenameUntouched() = runTest {
+        var path: String? = null
+        val engine = MockEngine { request ->
+            path = request.url.encodedPath
+            respond(byteArrayOf(1), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "image/jpeg"))
+        }
+        val api = SaltyApiClient("http://test", InMemoryTokenStore("t"), engine)
+        api.downloadImage("0E8E4E43-B37A-4B47-A2B7-8A11D09A1D57.jpg")
+        assertEquals("/api/recipes/images/0E8E4E43-B37A-4B47-A2B7-8A11D09A1D57.jpg", path)
+    }
+
+    @Test
     fun deltaPagingAccumulatesAllPages() = runTest {
         val engine = MockEngine { request ->
             val page = request.url.parameters["page"]?.toInt() ?: 0

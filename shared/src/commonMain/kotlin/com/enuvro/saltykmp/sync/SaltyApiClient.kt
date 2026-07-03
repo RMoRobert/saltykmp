@@ -27,6 +27,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.http.encodeURLPathPart
 import io.ktor.http.isSuccess
 import io.ktor.serialization.ContentConvertException
 import io.ktor.serialization.kotlinx.json.json
@@ -106,6 +107,16 @@ class SaltyApiClient(
         throw SyncException(friendlyHttpMessage(status.value, snippet))
     }
 
+    /**
+     * Percent-encodes a value as a SINGLE URL path segment: unlike `encodeURLPath`, "/" is also encoded,
+     * so a hostile value like "../sync/delete" can't traverse to another endpoint, and "?"/"#" can't
+     * truncate the path. Ids and image filenames round-trip through the server (manifest, delta), so
+     * every one of them gets this treatment before being interpolated into a URL. Legitimate values
+     * (UUIDs, "<recipeId>.<ext>") pass through unchanged. Mirrors the Swift app's
+     * `encodedImagePathComponent`.
+     */
+    private fun seg(value: String): String = value.encodeURLPathPart()
+
     // ---- Auth ----
 
     suspend fun login(username: String, password: String): AuthResponse {
@@ -159,7 +170,7 @@ class SaltyApiClient(
     }
 
     suspend fun fetchRecipe(id: String): ServerRecipe =
-        client.get("$baseUrl/api/recipes/$id") { auth() }.ensureOk().body()
+        client.get("$baseUrl/api/recipes/${seg(id)}") { auth() }.ensureOk().body()
 
     suspend fun uploadRecipe(recipe: ServerRecipe): ServerRecipe =
         client.post("$baseUrl/api/recipes") {
@@ -175,7 +186,7 @@ class SaltyApiClient(
             "gif" -> ContentType.Image.GIF
             else -> ContentType.Image.JPEG
         }
-        val resp = client.post("$baseUrl/api/recipes/$recipeId/image") {
+        val resp = client.post("$baseUrl/api/recipes/${seg(recipeId)}/image") {
             auth()
             setBody(io.ktor.client.request.forms.MultiPartFormDataContent(
                 io.ktor.client.request.forms.formData {
@@ -193,7 +204,7 @@ class SaltyApiClient(
 
     /** Removes the recipe's image server-side, stamping the (client-authoritative) removal timestamp. */
     suspend fun deleteImage(recipeId: String, imageDate: String? = null) {
-        client.delete("$baseUrl/api/recipes/$recipeId/image") {
+        client.delete("$baseUrl/api/recipes/${seg(recipeId)}/image") {
             auth()
             if (imageDate != null) parameter("lastModifiedImageDate", imageDate)
         }.ensureOk()
@@ -208,7 +219,9 @@ class SaltyApiClient(
     }
 
     suspend fun downloadImage(filename: String): ByteArray? {
-        val resp = client.get("$baseUrl/api/recipes/images/$filename") { auth() }
+        // `filename` comes from the server's manifest/delta — encode it so a hostile name can't steer
+        // this authenticated GET to a different endpoint (same hardening as the Swift app's downloadImage).
+        val resp = client.get("$baseUrl/api/recipes/images/${seg(filename)}") { auth() }
         return if (resp.status.isSuccess()) resp.body() else null
     }
 
@@ -220,7 +233,7 @@ class SaltyApiClient(
         }.ensureOk().body()
 
     suspend fun completeSync(deviceId: String) {
-        client.post("$baseUrl/api/recipes/sync/device/$deviceId/complete") { auth() }.ensureOk()
+        client.post("$baseUrl/api/recipes/sync/device/${seg(deviceId)}/complete") { auth() }.ensureOk()
     }
 
     // ---- Library (small full-list tables) ----
@@ -236,7 +249,7 @@ class SaltyApiClient(
     suspend fun uploadTag(t: ServerTag): ServerTag =
         client.post("$baseUrl/api/tags") { auth(); contentType(ContentType.Application.Json); setBody(t) }.ensureOk().body()
 
-    suspend fun deleteCourse(id: String) { client.delete("$baseUrl/api/courses/$id") { auth() } }
-    suspend fun deleteCategory(id: String) { client.delete("$baseUrl/api/categories/$id") { auth() } }
-    suspend fun deleteTag(id: String) { client.delete("$baseUrl/api/tags/$id") { auth() } }
+    suspend fun deleteCourse(id: String) { client.delete("$baseUrl/api/courses/${seg(id)}") { auth() } }
+    suspend fun deleteCategory(id: String) { client.delete("$baseUrl/api/categories/${seg(id)}") { auth() } }
+    suspend fun deleteTag(id: String) { client.delete("$baseUrl/api/tags/${seg(id)}") { auth() } }
 }

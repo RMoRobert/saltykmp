@@ -4,6 +4,7 @@ import com.enuvro.saltykmp.api.RecipeManifestEntry
 import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerTag
+import kotlinx.coroutines.CancellationException
 import kotlin.time.Instant
 
 /**
@@ -64,7 +65,15 @@ class SyncService(
             local.upsertRecipe(recipe)
             val filename = recipe.imageFilename
             if (filename != null && imageSink != null) {
-                api.downloadImage(filename)?.let { bytes -> imageSink.invoke(recipe.id, filename, bytes, recipe.lastModifiedImageDate); imagesDown++ }
+                // One bad image must not abort the restore — the local library was already wiped above, so
+                // throwing here would strand it half-restored. Skipped images retry on the next sync (the
+                // image dates still differ because imageSink never recorded the server's date).
+                try {
+                    api.downloadImage(filename)?.let { bytes -> imageSink.invoke(recipe.id, filename, bytes, recipe.lastModifiedImageDate); imagesDown++ }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
             }
         }
         api.completeSync(deviceId)
@@ -184,6 +193,7 @@ class SyncService(
         suspend fun pull(id: String, file: String, date: String?) {
             api.downloadImage(file)?.let { bytes -> imageSink?.invoke(id, file, bytes, date); down++ }
         }
+        val failed = mutableListOf<String>()
         for (id in (serverById.keys + localById.keys) - tombstones) {
             val s = serverById[id]
             val l = localById[id]
@@ -191,20 +201,33 @@ class SyncService(
             val localDate = LocalStore.parseOrPast(l?.lastModifiedImageDate)
             val serverFile = s?.imageFilename
             val localFile = l?.imageFilename
-            when {
-                localDate > serverDate -> when {
-                    localFile != null -> push(id, localFile, l.lastModifiedImageDate)
-                    serverFile != null -> { api.deleteImage(id, l?.lastModifiedImageDate); up++ } // local removed it
+            // Per-recipe failure containment (mirrors the Swift app's syncImages): one bad image is skipped
+            // and retried on the next sync — the image dates still differ because nothing was recorded.
+            try {
+                when {
+                    localDate > serverDate -> when {
+                        localFile != null -> push(id, localFile, l.lastModifiedImageDate)
+                        serverFile != null -> { api.deleteImage(id, l?.lastModifiedImageDate); up++ } // local removed it
+                    }
+                    serverDate > localDate -> when {
+                        serverFile != null -> pull(id, serverFile, s.lastModifiedImageDate)
+                        localFile != null -> { local.setRecipeImage(id, null, null, s?.lastModifiedImageDate); down++ } // server removed it
+                    }
+                    // Equal dates → propagate an image the other side never received (no removal involved, since
+                    // a removal stamps a fresh, unequal date).
+                    serverFile != null && localFile == null -> pull(id, serverFile, s.lastModifiedImageDate)
+                    localFile != null && serverFile == null -> push(id, localFile, l.lastModifiedImageDate)
                 }
-                serverDate > localDate -> when {
-                    serverFile != null -> pull(id, serverFile, s.lastModifiedImageDate)
-                    localFile != null -> { local.setRecipeImage(id, null, null, s?.lastModifiedImageDate); down++ } // server removed it
-                }
-                // Equal dates → propagate an image the other side never received (no removal involved, since
-                // a removal stamps a fresh, unequal date).
-                serverFile != null && localFile == null -> pull(id, serverFile, s.lastModifiedImageDate)
-                localFile != null && serverFile == null -> push(id, localFile, l.lastModifiedImageDate)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failed += id
             }
+        }
+        // If EVERY image operation failed, something systemic is wrong (auth, network, server) — surface it
+        // instead of silently reporting a "successful" sync with no images moved.
+        if (failed.isNotEmpty() && up == 0 && down == 0) {
+            throw SyncException("Image sync failed for: ${failed.joinToString(", ")}")
         }
         return up to down
     }
