@@ -1,0 +1,26 @@
+<nav>
+    <ul>
+        {{#showHamburger}}<li><label class="hamburger" for="navtoggle" aria-label="Toggle menu">☰</label></li>{{/showHamburger}}
+        <li><a href="/"><strong>🧂 Salty</strong></a></li>
+    </ul>
+    <ul>
+        {{#isAdmin}}<li><a href="/users">Users</a></li>{{/isAdmin}}
+        <li>
+            <details class="dropdown account-menu">
+                <summary class="account-trigger" aria-label="Account menu">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M12,19.2C9.5,19.2 7.29,17.92 6,15.98C6.03,13.99 10,12.9 12,12.9C13.99,12.9 17.97,13.99 18,15.98C16.71,17.92 14.5,19.2 12,19.2M12,5A3,3 0 0,1 15,8A3,3 0 0,1 12,11A3,3 0 0,1 9,8A3,3 0 0,1 12,5M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/></svg>
+                </summary>
+                <ul dir="ltr" class="account-menu-list">
+                    {{#loggedIn}}
+                    <li><small class="account-user">Signed in as <strong>{{username}}</strong></small></li>
+                    <li><a href="/logout">Log out</a></li>
+                    {{/loggedIn}}
+                    {{^loggedIn}}
+                    <li><a href="/login">Log in</a></li>
+                    {{/loggedIn}}
+                    <li class="menu-sep"><a href="/about" class="about-item">About…</a></li>
+                </ul>
+            </details>
+        </li>
+    </ul>
+</nav>

@@ -50,11 +50,17 @@ services:
       SALTY_DB_USER: *db-user
       SALTY_DB_PASSWORD: *db-password
       # Generate a long random value, e.g.  openssl rand -hex 32
+      # REQUIRED: the server refuses to start if this is unset or left as a CHANGE_ME_/dev placeholder,
+      # so an unedited deploy can't silently sign JWTs with a publicly known key. (Local dev only:
+      # SALTY_ALLOW_DEFAULT_SECRET=true downgrades that to a warning — never in production.)
       SALTY_JWT_SECRET: "CHANGE_ME_long_random_jwt_secret"
-      # Seeded ONLY on first run, when the users table is empty.
+      # Seeded ONLY on first run, when the users table is empty. Also refused if left as a placeholder.
       SALTY_DEFAULT_USER: "admin"
       SALTY_DEFAULT_PASSWORD: "CHANGE_ME_admin_password"
       SALTY_IMAGE_DIR: "/data/images"
+      # Behind a TLS-terminating reverse proxy, set this so the web-UI session cookie is HTTPS-only.
+      # Leave unset for the plain-HTTP LAN/testing mode below.
+      #   SALTY_SECURE_COOKIES: "true"
     volumes:
       - salty-images:/data/images
     # Published on all interfaces for direct access at http://<host-ip>:8080 (no TLS — LAN/testing).

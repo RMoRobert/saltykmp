@@ -1,0 +1,12 @@
+<a href="/recipes/{{id}}" class="recipe-card">
+    {{#hasImage}}<img alt="{{name}}" src="/recipes/{{id}}/thumbnail" class="recipe-thumb">{{/hasImage}}
+    {{^hasImage}}<div class="recipe-thumb placeholder">🍽</div>{{/hasImage}}
+    <div class="recipe-card-body">
+        <h3>{{name}}</h3>
+        {{#summary}}<p class="recipe-summary">{{.}}</p>{{/summary}}
+        <div class="meta-row">
+            {{#metaInline}}<span class="meta-inline"><strong>{{label}}: </strong>{{value}}</span>{{/metaInline}}
+            {{#badges}}<span class="badge {{cssClass}}">{{text}}</span>{{/badges}}
+        </div>
+    </div>
+</a>

@@ -1,0 +1,263 @@
+import com.enuvro.saltykmp.db.model.Difficulty;
+import com.enuvro.saltykmp.db.model.Direction;
+import com.enuvro.saltykmp.db.model.Ingredient;
+import com.enuvro.saltykmp.db.model.Note;
+import com.enuvro.saltykmp.db.model.NutritionInformation;
+import com.enuvro.saltykmp.db.model.PreparationTime;
+import com.enuvro.saltykmp.db.model.Rating;
+import com.enuvro.saltykmp.db.model.ShoppingListListContents;
+import com.enuvro.saltykmp.db.model.Variation;
+import kotlin.Boolean;
+import kotlin.collections.List;
+
+CREATE TABLE "course" (
+    "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
+    "name" TEXT,
+    "lastModifiedDate" TEXT
+);
+
+CREATE TABLE "category" (
+    "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
+    "name" TEXT,
+    "lastModifiedDate" TEXT
+);
+
+-- NOT NULL DEFAULTs mirror the Swift app's non-optional Recipe columns (Salty/Models/Schema.swift): the
+-- Salty app decodes these straight into non-optional Swift properties (Date, String, Bool, and the JSON
+-- List<…>/enum columns), so a NULL here makes the row un-decodable on that side. The KMP write path
+-- (LocalStore.upsertRecipe) already coalesces each of these to a concrete value; these constraints make
+-- the shared DB enforce that invariant for any writer (raw SQL, future code) and for fresh KMP-created
+-- files. Genuinely-optional columns (lastPrepared, image*, servings, courseId, nutrition,
+-- lastModifiedImageDate) stay nullable to match the Swift optionals. CURRENT_TIMESTAMP yields
+-- "YYYY-MM-DD HH:MM:SS", which GRDB decodes as a Date.
+CREATE TABLE "recipe" (
+    "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
+    "name" TEXT NOT NULL DEFAULT '',
+    "createdDate" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "lastModifiedDate" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "lastPrepared" TEXT,
+    "source" TEXT NOT NULL DEFAULT '',
+    "sourceDetails" TEXT NOT NULL DEFAULT '',
+    "introduction" TEXT NOT NULL DEFAULT '',
+    "difficulty" INTEGER AS Difficulty NOT NULL DEFAULT 0,
+    "rating" INTEGER AS Rating NOT NULL DEFAULT 0,
+    "imageFilename" TEXT,
+    "imageThumbnailData" BLOB,
+    "isFavorite" INTEGER AS Boolean NOT NULL DEFAULT 0,
+    "wantToMake" INTEGER AS Boolean NOT NULL DEFAULT 0,
+    "yield" TEXT NOT NULL DEFAULT '',
+    "servings" INTEGER,
+    "courseId" TEXT REFERENCES "course"("id") ON DELETE SET NULL,
+    "directions" TEXT AS List<Direction> NOT NULL DEFAULT '[]',
+    "ingredients" TEXT AS List<Ingredient> NOT NULL DEFAULT '[]',
+    "notes" TEXT AS List<Note> NOT NULL DEFAULT '[]',
+    "variations" TEXT AS List<Variation> NOT NULL DEFAULT '[]',
+    "preparationTimes" TEXT AS List<PreparationTime> NOT NULL DEFAULT '[]',
+    "nutrition" TEXT AS NutritionInformation,
+    -- Bumped only on image change, independent of lastModifiedDate. Appended at the end so the Swift
+    -- app's SELECT * keeps working. Added to existing DBs via the shared migration ledger (Database.kt).
+    "lastModifiedImageDate" TEXT
+ );
+
+CREATE TABLE "recipeCategory" (
+    "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
+    "recipeId" TEXT NOT NULL REFERENCES recipe(id) ON DELETE CASCADE,
+    "categoryId" TEXT NOT NULL REFERENCES category(id) ON DELETE CASCADE
+  );
+
+-- CREATE INDEX "recipeCategory_on_recipeId" ON "recipeCategory"("recipeId")
+
+-- CREATE INDEX "recipeCategory_on_categoryId" ON "recipeCategory"("categoryId")
+
+CREATE TABLE "tag" (
+    "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
+    "name" TEXT,
+    "lastModifiedDate" TEXT
+ );
+
+CREATE TABLE "recipeTag" (
+    "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
+    "recipeId" TEXT NOT NULL REFERENCES recipe(id) ON DELETE CASCADE,
+    "tagId" TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE
+);
+
+-- CREATE INDEX "recipeTag_on_recipeId" ON "recipeTag"("recipeId")
+-- CREATE INDEX "recipeTag_on_tagId" ON "recipeTag"("tagId")
+
+CREATE TABLE "shoppingList" (
+    "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
+    "name" TEXT,
+    "isFreeform" INTEGER AS Boolean,
+    "contentsForList" TEXT AS List<ShoppingListListContents>,
+    "contentsForFreeform" TEXT
+ );
+
+-- Tombstones for recipes deleted locally. Sync sends these to the server's /sync/delete and excludes
+-- them from the manifest so a deleted recipe is never re-downloaded. See migration 1.sqm.
+CREATE TABLE "deletedRecipe" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "deletedDate" TEXT NOT NULL
+);
+
+-- 0.000s INSERT INTO grdb_migrations (identifier) VALUES ('0001: Create initial tables')
+-- 0.000s PRAGMA foreign_key_check
+-- 0.000s COMMIT TRANSACTION
+-- 0.000s PRAGMA foreign_keys = ON
+-- 0.000s PRAGMA foreign_keys
+-- 0.000s PRAGMA foreign_keys = OFF
+-- 0.000s BEGIN IMMEDIATE TRANSACTION
+-- Running 'Populate default categories, courses, and shopping lists' migration
+-- 0.000s INSERT INTO "category" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47BF-7001-98CA-1C0F1F1DB60B', 'Breads', NULL)
+-- 0.000s INSERT INTO "category" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C1-7000-9CD6-07EC6099FC6C', 'Breakfast', NULL)
+-- 0.000s INSERT INTO "category" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C1-7001-8F61-09BAD05FB123', 'Soups', NULL)
+-- 0.000s INSERT INTO "category" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C1-7002-AFC5-6448A400C57A', 'Pasta', NULL)
+-- 0.000s INSERT INTO "category" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C1-7003-A154-126EEC763C20', 'Holiday', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7000-8283-BE2571839484', 'Appetizer', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7001-B222-B116B9C105DA', 'Main', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7002-A5CA-A3E6C6A1C57E', 'Dessert', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7003-A539-0F053E655F61', 'Snack', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7004-80FD-E7DAB57570CB', 'Salad', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7005-ACD5-92FE69515D84', 'Fruit', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7006-A7FB-EE8ED5E57475', 'Cheese', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7007-8C31-ED342C482161', 'Vegetable', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7008-BCBC-BEE3CBF485EB', 'Side Dish', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C2-7009-BA29-FA49C26093B2', 'Bread', NULL)
+-- 0.000s INSERT INTO "course" ("id", "name", "lastModifiedDate") VALUES ('019D31CE-47C3-7000-8717-10A7117A644F', 'Sauce', NULL)
+-- 0.000s INSERT INTO "shoppingList" ("id", "name", "isFreeform", "contentsForFreeform", "contentsForList") VALUES ('019D31CE-47C3-7001-AAA0-8AD133ED05FF', 'Shopping List', 1, '# Shopping List
+--
+-- ##Store Name
+-- * Item Name', '[
+--
+-- ]')
+
+-- 0.000s INSERT INTO grdb_migrations (identifier) VALUES ('0002: Populate default categories, courses, and shopping lists')
+-- 0.000s PRAGMA foreign_key_check
+-- 0.000s COMMIT TRANSACTION
+-- 0.000s PRAGMA foreign_keys = ON
+-- 0.000s PRAGMA foreign_keys
+-- 0.000s PRAGMA foreign_keys = OFF
+-- 0.000s BEGIN IMMEDIATE TRANSACTION
+-- Running '0003: Add variations column...' migration
+-- 0.000s ALTER TABLE "recipe" ADD COLUMN "variations" TEXT
+-- 0.000s INSERT INTO grdb_migrations (identifier) VALUES ('0003: Add ''variations'' column to ''recipe'' table')
+-- 0.000s PRAGMA foreign_key_check
+-- 0.000s COMMIT TRANSACTION
+-- 0.000s PRAGMA foreign_keys = ON
+-- 0.000s PRAGMA foreign_keys
+-- 0.000s PRAGMA foreign_keys = OFF
+-- 0.000s BEGIN IMMEDIATE TRANSACTION
+-- Running '0004: Add lastModifiedDate column to category, course, and tag tables' migration
+-- 0.000s PRAGMA table_info='category'
+-- 0.000s SELECT COUNT(*) FROM pragma_table_info('category') WHERE name = 'lastModifiedDate'
+-- 0.000s PRAGMA table_info='course'
+-- 0.000s SELECT COUNT(*) FROM pragma_table_info('course') WHERE name = 'lastModifiedDate'
+-- 0.000s PRAGMA table_info='tag'
+-- 0.000s SELECT COUNT(*) FROM pragma_table_info('tag') WHERE name = 'lastModifiedDate'
+-- 0.000s INSERT INTO grdb_migrations (identifier) VALUES ('0004: Add ''lastModifiedDate'' column to ''category'', ''course'', and ''tag'' tables')
+-- 0.000s PRAGMA foreign_key_check
+-- 0.000s COMMIT TRANSACTION
+-- 0.000s PRAGMA foreign_keys = ON
+
+-- CREATE INDEX recipe_course_id_idx ON recipe(courseId);
+-- CREATE INDEX recipeCategory_on_recipeId ON recipeCategory(recipeId);
+-- CREATE INDEX recipeCategory_on_categoryId ON recipeCategory(categoryId);
+-- CREATE INDEX recipeTag_on_recipeId ON recipeTag(recipeId);
+-- CREATE INDEX recipeTag_on_tagId ON recipeTag(tagId);
+
+-- selectAllRecipes:
+-- SELECT *
+-- FROM recipe
+-- ORDER BY lastModifiedDate DESC;
+--
+-- selectRecipeById:
+-- SELECT *
+-- FROM recipe
+-- WHERE id = ?;
+--
+-- upsertRecipe:
+-- INSERT OR REPLACE INTO recipe(
+--     id,
+--     name,
+--     createdDate,
+--     lastModifiedDate,
+--     lastPrepared,
+--     source,
+--     sourceDetails,
+--     introduction,
+--     difficulty,
+--     rating,
+--     imageFilename,
+--     imageThumbnailData,
+--     isFavorite,
+--     wantToMake,
+--     yield,
+--     servings,
+--     courseId,
+--     directions,
+--     ingredients,
+--     notes,
+--     variations,
+--     preparationTimes,
+--     nutrition
+-- ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+--
+-- deleteRecipeById:
+-- DELETE FROM recipe
+-- WHERE id = ?;
+--
+-- selectAllCourses:
+-- SELECT *
+-- FROM course
+-- ORDER BY name ASC;
+--
+-- upsertCourse:
+-- INSERT OR REPLACE INTO course(id, name, lastModifiedDate)
+-- VALUES (?, ?, ?);
+--
+-- selectAllCategories:
+-- SELECT *
+-- FROM category
+-- ORDER BY name ASC;
+--
+-- upsertCategory:
+-- INSERT OR REPLACE INTO category(id, name, lastModifiedDate)
+-- VALUES (?, ?, ?);
+--
+-- selectAllTags:
+-- SELECT *
+-- FROM tag
+-- ORDER BY name ASC;
+--
+-- upsertTag:
+-- INSERT OR REPLACE INTO tag(id, name, lastModifiedDate)
+-- VALUES (?, ?, ?);
+--
+-- upsertRecipeCategory:
+-- INSERT OR REPLACE INTO recipeCategory(id, recipeId, categoryId)
+-- VALUES (?, ?, ?);
+--
+-- deleteRecipeCategoriesByRecipeId:
+-- DELETE FROM recipeCategory
+-- WHERE recipeId = ?;
+--
+-- upsertRecipeTag:
+-- INSERT OR REPLACE INTO recipeTag(id, recipeId, tagId)
+-- VALUES (?, ?, ?);
+--
+-- deleteRecipeTagsByRecipeId:
+-- DELETE FROM recipeTag
+-- WHERE recipeId = ?;
+--
+-- selectAllShoppingLists:
+-- SELECT *
+-- FROM shoppingList
+-- ORDER BY name ASC;
+--
+-- upsertShoppingList:
+-- INSERT OR REPLACE INTO shoppingList(
+--     id,
+--     name,
+--     isFreeform,
+--     contentsForList,
+--     contentsForFreeform
+-- ) VALUES (?, ?, ?, ?, ?);

@@ -23,7 +23,7 @@ Salty Server is *not* a standalone app; it must be used with the desktop or mobi
 **Salty Server is currently beta quality. Do not use in a production environment without adequate testing.** Salty Server is provided as-is under the terms of the LICENSE. As an open-source project created largely for my own personal use, no support is guaranteed, but feel free to use GitHub features to discuss, etc.
 
 
-## Original Notes from KMP Project:
+## Original Notes from KMP Project:
 
 
 * [/composeApp](./composeApp/src) is for code that will be shared across your Compose Multiplatform applications.

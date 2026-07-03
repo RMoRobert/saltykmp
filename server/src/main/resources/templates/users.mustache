@@ -1,0 +1,52 @@
+{{<layout.mustache}}
+{{$content}}
+<div class="users-head">
+    <h1>Users</h1>
+    <a href="/users/new" class="add-user-btn">+ Add user</a>
+</div>
+<p class="muted">Each user has their own private set of recipes and library. Admins can manage users.</p>
+{{#notice}}<p class="notice">{{.}}</p>{{/notice}}
+{{#error}}<p class="error-text">{{.}}</p>{{/error}}
+<table class="users-table">
+    <thead>
+        <tr>
+            <th>Username</th>
+            <th>Role</th>
+            <th>Reset password</th>
+            <th>Admin</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {{#users}}
+        <tr>
+            <td><strong>{{username}}</strong>{{#isSelf}}<small class="you-tag"> (you)</small>{{/isSelf}}</td>
+            <td>{{#isAdmin}}<span class="badge category">Admin</span>{{/isAdmin}}{{^isAdmin}}User{{/isAdmin}}</td>
+            <td>
+                <form action="/users/{{id}}/password" method="post" class="inline-form">
+                    <input type="hidden" name="csrf" value="{{csrfToken}}">
+                    <input type="password" name="password" required placeholder="New password" autocomplete="new-password">
+                    <button type="submit" class="secondary outline">Set</button>
+                </form>
+            </td>
+            <td>
+                <form action="/users/{{id}}/admin" method="post" class="inline-form">
+                    <input type="hidden" name="csrf" value="{{csrfToken}}">
+                    {{^isAdmin}}<input type="hidden" name="isAdmin" value="on">{{/isAdmin}}
+                    <button type="submit" class="secondary outline">{{#isAdmin}}Revoke admin{{/isAdmin}}{{^isAdmin}}Make admin{{/isAdmin}}</button>
+                </form>
+            </td>
+            <td>
+                {{^isSelf}}
+                <form action="/users/{{id}}/delete" method="post" class="inline-form" onsubmit="return confirm('Delete {{username}} and ALL their recipes? This cannot be undone.')">
+                    <input type="hidden" name="csrf" value="{{csrfToken}}">
+                    <button type="submit" class="contrast outline danger-btn">Delete</button>
+                </form>
+                {{/isSelf}}
+            </td>
+        </tr>
+        {{/users}}
+    </tbody>
+</table>
+{{/content}}
+{{/layout.mustache}}

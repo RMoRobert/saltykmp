@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html data-theme="light">
+{{>head.mustache}}
+<body>
+<main class="container">
+{{>nav.mustache}}
+<input type="checkbox" id="navtoggle" class="nav-toggle">
+<div class="layout">
+    <aside class="sidebar">{{>sidebar.mustache}}</aside>
+    <div class="content">{{$content}}{{/content}}</div>
+</div>
+</main>
+</body>
+</html>

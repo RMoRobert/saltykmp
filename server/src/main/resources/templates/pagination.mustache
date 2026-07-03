@@ -1,0 +1,7 @@
+<nav class="pagination">
+    {{#hasPrev}}<a href="{{prevUrl}}" class="page-link">← Prev</a>{{/hasPrev}}
+    {{^hasPrev}}<span class="page-link disabled">← Prev</span>{{/hasPrev}}
+    <span class="page-status">Page {{page}} of {{totalPages}}</span>
+    {{#hasNext}}<a href="{{nextUrl}}" class="page-link">Next →</a>{{/hasNext}}
+    {{^hasNext}}<span class="page-link disabled">Next →</span>{{/hasNext}}
+</nav>

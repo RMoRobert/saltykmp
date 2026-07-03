@@ -1,0 +1,15 @@
+{{<layout.mustache}}
+{{$content}}
+<h1>Sign in</h1>
+{{#error}}<p class="error-text">Invalid username or password.</p>{{/error}}
+<form action="/login" method="post">
+    <label>Username
+        <input type="text" name="username" required>
+    </label>
+    <label>Password
+        <input type="password" name="password" required>
+    </label>
+    <button type="submit">Sign in</button>
+</form>
+{{/content}}
+{{/layout.mustache}}

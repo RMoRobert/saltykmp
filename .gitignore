@@ -10,3 +10,11 @@ TODO.md
 /server/build
 salty-db/salty.mv.db
 composeApp/salty.db
+
+# Machine-specific + build/deploy artifacts (should not be committed)
+local.properties
+/.kotlin
+/composeApp/release
+/server/saltyserver-image.tar
+/salty-db
+/salty-images

@@ -1,0 +1,13 @@
+{{<layoutSidebar.mustache}}
+{{$content}}
+<h1>{{heading}}</h1>
+{{#isEmpty}}<p class="empty">{{emptyMessage}}</p>{{/isEmpty}}
+{{^isEmpty}}
+<ul class="browse-list">
+    {{#items}}
+    <li><a href="{{href}}" class="browse-item"><span class="browse-name">{{name}}</span><span class="browse-count">{{count}}</span></a></li>
+    {{/items}}
+</ul>
+{{/isEmpty}}
+{{/content}}
+{{/layoutSidebar.mustache}}

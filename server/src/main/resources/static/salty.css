@@ -1,0 +1,178 @@
+/* --- Pico sizing tuned down (Pico's defaults scale type quite large on desktop) --- */
+:root {
+    --pico-font-family-sans-serif: Roboto, system-ui, "Segoe UI", Oxygen, Ubuntu, Cantarell, Helvetica, Arial, "Helvetica Neue", sans-serif, var(--pico-font-family-emoji);
+    --pico-font-family-headings: Mulish, var(--pico-font-family-sans-serif);
+    --pico-font-size_NEVERMIND: 100%;
+    --pico-line-height: 1.4;
+    --pico-form-element-spacing-vertical: 0.5rem;
+    --pico-form-element-spacing-horizontal: 1rem;
+    --pico-border-radius: 0.375rem;
+}
+
+:root { --salty-accent:#3b82f6; --salty-accent-2:#2563eb; }
+/* Match Pico's links / buttons / focus rings to the (slightly lighter) accent. Uses Pico's own selector
+   specificity so the override wins regardless of stylesheet order. */
+:root:not([data-theme=dark]) {
+    --pico-primary:#3b82f6;
+    --pico-primary-hover:#2563eb;
+    --pico-primary-focus:rgba(59,130,246,.3);
+    --pico-primary-underline:rgba(59,130,246,.5);
+}
+body { background:#f5f5f7; }
+.error-text { color:#c0392b; }
+.empty { color:#777; }
+.muted { color:#777; }
+
+.search-row { display:flex; gap:.5rem; align-items:center; margin:1rem 0 1.5rem; }
+.search-row input { flex:1; margin:0; }
+.search-row button { margin:0; width:auto; }
+.clear-link { white-space:nowrap; }
+
+/* Recipe list — no bullets (defensive against Pico marker styles). */
+.recipe-list, .browse-list, .sidebar-nav { list-style:none; padding:0; margin:0; }
+.recipe-list li, .browse-list li, .sidebar-nav li { list-style:none; margin:0; }
+.recipe-list li::marker, .browse-list li::marker, .sidebar-nav li::marker { content:""; }
+.recipe-list { display:flex; flex-direction:column; gap:.75rem; }
+/* No colored/curved left border by default; a slightly-rounded border appears only on hover/selection. */
+.recipe-card { display:flex; gap:1rem; padding:.85rem 1rem; align-items:flex-start;
+  background:#fff; border:1px solid transparent; border-radius:8px; text-decoration:none; color:#1a1a1a;
+  box-shadow:0 1px 2px rgba(0,0,0,.05); transition:border-color .15s, box-shadow .15s; }
+.recipe-card:hover, .recipe-card:focus-visible { border-color:var(--salty-accent);
+  box-shadow:0 3px 10px rgba(0,0,0,.10); outline:none; }
+.recipe-thumb { width:104px; height:78px; object-fit:cover; border-radius:8px; flex-shrink:0; }
+.recipe-thumb.placeholder { display:flex; align-items:center; justify-content:center; background:#ececf0; font-size:1.8rem; }
+.recipe-card-body { flex:1; min-width:0; }
+.recipe-card-body h3 { margin:0 0 .25rem; font-size:1.1rem; color:var(--salty-accent); }
+.recipe-summary { margin:0 0 .5rem; color:#666; font-size:.9rem; }
+
+.meta-row { display:flex; flex-wrap:wrap; gap:.5rem .9rem; align-items:center; font-size:.82rem; color:#555; }
+.meta-inline strong { color:#444; font-weight:600; }
+
+.badge { display:inline-block; padding:.18rem .55rem; border-radius:1rem; font-size:.72rem; font-weight:600; line-height:1.3; }
+.badge.favorite { background:#ffd700; color:#5a4b00; }
+.badge.want { background:#e74c3c; color:#fff; }
+.badge.category { background:var(--salty-accent); color:#fff; }
+.badge.tag { background:#6c757d; color:#fff; }
+
+/* Detail */
+.back-link { text-decoration:none; }
+.recipe-title { margin:.25rem 0 1.25rem; padding-bottom:.4rem; border-bottom:3px solid var(--salty-accent); }
+.detail-head { display:flex; gap:1.25rem; flex-wrap:wrap; align-items:flex-start; margin-bottom:1rem; }
+.detail-image { max-height:300px; max-width:100%; object-fit:cover; border-radius:10px; box-shadow:0 3px 12px rgba(0,0,0,.15); }
+@media (min-width:720px) { .detail-image { width:320px; } }
+.meta-box { flex:1; min-width:220px; display:flex; flex-wrap:wrap; gap:1rem 1.25rem;
+  background:#fff; border:1px solid #e3e3e8; border-radius:10px; padding:1rem; align-items:flex-start; }
+.meta-item small { display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:.68rem; }
+.meta-item strong { font-size:.95rem; }
+
+.section { margin-top:1.75rem; }
+.section h2 { font-size:1.25rem; margin:0 0 .75rem; padding-bottom:.35rem; border-bottom:1px solid #ddd; }
+.intro { background:#fff; border:1px solid #e3e3e8; border-radius:6px; padding:.85rem 1rem; margin:0; }
+
+.ingredients { list-style:none; padding:0; margin:0; }
+.ingredients li { padding:.6rem .8rem; margin-bottom:.45rem; background:#f3f6fb; border-radius:5px; }
+.ingredients li.heading { font-weight:700; background:#e3f2fd; }
+
+.directions { list-style:none; padding:0; margin:0; counter-reset:step; }
+.directions li { counter-increment:step; position:relative; padding:.65rem .8rem .65rem 3rem;
+  margin-bottom:.45rem; background:#f8f9fa; border-radius:5px; }
+.directions li::before { content:counter(step); position:absolute; left:.65rem; top:.6rem;
+  width:1.7rem; height:1.7rem; background:var(--salty-accent); color:#fff; border-radius:50%;
+  display:flex; align-items:center; justify-content:center; font-size:.82rem; font-weight:700; }
+.directions li.heading { font-weight:700; background:#e3f2fd; padding-left:.8rem; counter-increment:none; }
+.directions li.heading::before { display:none; }
+
+.callout { padding:.75rem 1rem; border-radius:6px; margin-bottom:.6rem; }
+.callout strong { display:block; margin-bottom:.25rem; }
+.callout p { margin:0; }
+.callout.note { background:#e7f3fe; }
+.callout.variation { background:#fff8e1; }
+
+.nutrition-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:.6rem; }
+.nutrition-cell { background:#eef6f8; border-radius:8px; padding:.7rem; text-align:center; }
+.nutrition-cell small { display:block; color:#888; font-size:.7rem; margin-bottom:.2rem; }
+.nutrition-cell strong { font-size:1.05rem; color:#0c7c8c; }
+
+/* Users admin */
+.users-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.add-user-btn { white-space:nowrap; }
+.notice { background:#e6f6ea; color:#1b5e20; padding:.6rem .85rem; border-radius:6px; }
+.users-table { background:#fff; border:1px solid #e3e3e8; border-radius:10px; overflow:hidden; }
+.users-table th, .users-table td { vertical-align:middle; }
+.users-table td { font-size:.92rem; }
+.you-tag { color:#888; }
+.inline-form { display:flex; gap:.4rem; align-items:center; margin:0; }
+.inline-form input { margin:0; max-width:11rem; }
+.inline-form button { margin:0; width:auto; white-space:nowrap; padding:.3rem .7rem; font-size:.82rem; }
+.danger-btn { --pico-color:#c0392b; --pico-border-color:#c0392b; }
+.checkbox-label { display:flex; align-items:center; gap:.5rem; }
+.checkbox-label input { width:auto; margin:0; }
+
+/* Sidebar + responsive hamburger (CSS checkbox hack, no JS) */
+.layout { display:flex; gap:1.5rem; align-items:flex-start; }
+.content { flex:1; min-width:0; }
+.sidebar { flex:0 0 190px; position:sticky; top:1rem; }
+.sidebar-nav { display:flex; flex-direction:column; gap:.2rem; }
+.sidebar-nav a { display:block; padding:.5rem .75rem; border-radius:6px; text-decoration:none; color:#333; font-weight:500; }
+.sidebar-nav a:hover { background:#e9eef5; }
+.sidebar-nav a.active { background:var(--salty-accent); color:#fff; }
+.nav-toggle { display:none; }
+.hamburger { display:none; cursor:pointer; font-size:1.25rem; line-height:1; padding:.1rem .4rem; user-select:none; }
+
+@media (max-width:768px) {
+    .hamburger { display:inline-block; }
+    .layout { flex-direction:column; gap:1rem; }
+    .sidebar { position:static; flex-basis:auto; width:100%; display:none;
+      background:#fff; border:1px solid #e3e3e8; border-radius:8px; padding:.5rem; }
+    .nav-toggle:checked ~ .layout .sidebar { display:block; }
+}
+
+/* Browse index (courses / categories / tags) */
+.browse-list { display:flex; flex-direction:column; gap:.5rem; }
+.browse-item { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.7rem 1rem;
+  background:#fff; border:1px solid transparent; border-radius:8px; text-decoration:none; color:#1a1a1a;
+  box-shadow:0 1px 2px rgba(0,0,0,.05); transition:border-color .15s, box-shadow .15s; }
+.browse-item:hover, .browse-item:focus-visible { border-color:var(--salty-accent); box-shadow:0 3px 10px rgba(0,0,0,.10); outline:none; }
+.browse-name { font-weight:600; }
+.browse-count { background:#eef2f7; color:#555; border-radius:1rem; padding:.1rem .6rem; font-size:.8rem; }
+
+/* Account dropdown in the top nav (Pico <details class="dropdown">, no JS).
+   Selectors carry extra class specificity to override Pico's filled-button summary + dropdown defaults. */
+.account-menu { margin:0; }
+/* Plain icon button: white fill, thin outline, no Pico primary background or caret. */
+.account-menu summary.account-trigger {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:2.3rem; height:2.3rem; padding:0;
+    background:#fff; border:1px solid #d7d7de; border-radius:50%;
+    color:#555; cursor:pointer; box-shadow:none;
+    list-style:none;
+}
+.account-menu summary.account-trigger::after,
+.account-menu summary.account-trigger::-webkit-details-marker { display:none; }
+.account-menu summary.account-trigger:hover { border-color:var(--salty-accent); color:var(--salty-accent); background:#fff; }
+.account-menu summary.account-trigger svg { display:block; }
+
+/* Menu: only as wide as its content, right edge aligned with the button. */
+.account-menu .account-menu-list {
+    right:0; left:auto;
+    width:max-content; min-width:8rem; max-width:16rem;
+}
+.account-user { display:block; padding:.4rem .75rem; color:#777; }
+.account-user strong { color:#444; }
+/* Separator above About (not above Log out); About sits a touch smaller. */
+.account-menu .menu-sep { border-top:1px solid #eee; margin-top:.3rem; padding-top:.3rem; }
+
+/* About page */
+.about-card { background:#fff; border:1px solid #e3e3e8; border-radius:10px; padding:1.25rem 1.5rem; max-width:30rem; }
+.about-name { margin:0 0 1rem; }
+.about-list { display:grid; grid-template-columns:auto 1fr; gap:.35rem 1.25rem; margin:0; }
+.about-list dt { color:#999; text-transform:uppercase; letter-spacing:.03em; font-size:.72rem; align-self:center; }
+.about-list dd { margin:0; font-weight:600; }
+
+/* Pagination */
+.result-count { color:#777; font-size:.85rem; margin:0 0 .75rem; }
+.pagination { display:flex; align-items:center; justify-content:center; gap:1rem; margin:1.5rem 0 .5rem; }
+.page-link { text-decoration:none; padding:.4rem .8rem; border:1px solid #d7d7de; border-radius:6px; color:var(--salty-accent); background:#fff; }
+.page-link:hover { border-color:var(--salty-accent); }
+.page-link.disabled { color:#bbb; border-color:#eee; pointer-events:none; }
+.page-status { color:#555; font-size:.9rem; }

@@ -1,0 +1,78 @@
+{{<layout.mustache}}
+{{$content}}
+<p><a href="/" class="back-link">← Back to recipes</a></p>
+<h1 class="recipe-title">{{name}}</h1>
+
+<div class="detail-head">
+    {{#hasImage}}<img alt="{{name}}" src="/recipes/{{id}}/image" class="detail-image">{{/hasImage}}
+    <div class="meta-box">
+        {{#metaBox}}<div class="meta-item"><small>{{label}}</small><strong>{{value}}</strong></div>{{/metaBox}}
+        {{#badges}}<div class="meta-item"><span class="badge {{cssClass}}">{{text}}</span></div>{{/badges}}
+    </div>
+</div>
+
+{{#introduction}}
+<div class="section"><h2>Introduction</h2><p class="intro">{{.}}</p></div>
+{{/introduction}}
+
+{{#hasPrepTimes}}
+<div class="section">
+    <h2>Preparation Times</h2>
+    <div class="meta-box">{{#prepTimes}}<div class="meta-item"><small>{{label}}</small><strong>{{value}}</strong></div>{{/prepTimes}}</div>
+</div>
+{{/hasPrepTimes}}
+
+{{#hasIngredients}}
+<div class="section">
+    <h2>Ingredients</h2>
+    <ul class="ingredients">{{#ingredients}}<li class="{{#heading}}heading{{/heading}}">{{text}}</li>{{/ingredients}}</ul>
+</div>
+{{/hasIngredients}}
+
+{{#hasDirections}}
+<div class="section">
+    <h2>Directions</h2>
+    <ol class="directions">{{#directions}}<li class="{{#heading}}heading{{/heading}}">{{text}}</li>{{/directions}}</ol>
+</div>
+{{/hasDirections}}
+
+{{#hasNotes}}
+<div class="section">
+    <h2>Notes</h2>
+    {{#notes}}<div class="callout note">{{#title}}<strong>{{.}}</strong>{{/title}}<p>{{content}}</p></div>{{/notes}}
+</div>
+{{/hasNotes}}
+
+{{#hasVariations}}
+<div class="section">
+    <h2>Variations</h2>
+    {{#variations}}<div class="callout variation">{{#title}}<strong>{{.}}</strong>{{/title}}<p>{{text}}</p></div>{{/variations}}
+</div>
+{{/hasVariations}}
+
+{{#hasNutrition}}
+<div class="section">
+    <h2>Nutrition</h2>
+    <div class="nutrition-grid">{{#nutrition}}<div class="nutrition-cell"><small>{{label}}</small><strong>{{value}}</strong></div>{{/nutrition}}</div>
+</div>
+{{/hasNutrition}}
+
+{{#hasCategoriesOrTags}}
+<div class="section">
+    <h2>Categories &amp; Tags</h2>
+    <div class="meta-row">
+        {{#categories}}<span class="badge category">{{.}}</span>{{/categories}}
+        {{#tags}}<span class="badge tag">{{.}}</span>{{/tags}}
+    </div>
+</div>
+{{/hasCategoriesOrTags}}
+
+{{#hasSource}}
+<div class="section">
+    <h2>Source</h2>
+    {{#source}}<p>{{.}}</p>{{/source}}
+    {{#sourceDetails}}<p class="muted">{{.}}</p>{{/sourceDetails}}
+</div>
+{{/hasSource}}
+{{/content}}
+{{/layout.mustache}}

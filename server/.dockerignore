@@ -1,0 +1,11 @@
+# Keep the build context small — the image only needs the prebuilt fat jar.
+src/
+.gradle/
+build/classes/
+build/kotlin/
+build/tmp/
+build/reports/
+build/test-results/
+build/resources/
+build/libs/server-all.jar
+build/libs/server-*.jar

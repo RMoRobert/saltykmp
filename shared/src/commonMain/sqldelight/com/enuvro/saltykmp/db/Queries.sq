@@ -1,0 +1,171 @@
+-- Labeled queries for AppDatabase. Tables (and their column type adapters) are declared in Schema.sq;
+-- defining queries here makes SQLDelight generate the typed *Queries classes and wire the adapters
+-- into the AppDatabase constructor.
+
+-- Recipes
+selectAllRecipes:
+SELECT *
+FROM recipe
+ORDER BY lastModifiedDate DESC;
+
+-- Default list ordering for the UI: by name (case-insensitive). A future sort option can add
+-- alternative ordered queries (by date, rating, etc.) without disturbing the sync path above.
+selectAllRecipesByName:
+SELECT *
+FROM recipe
+ORDER BY name COLLATE NOCASE ASC;
+
+selectRecipeById:
+SELECT *
+FROM recipe
+WHERE id = ?;
+
+upsertRecipe:
+INSERT OR REPLACE INTO recipe(
+    id, name, createdDate, lastModifiedDate, lastPrepared, source, sourceDetails, introduction,
+    difficulty, rating, imageFilename, imageThumbnailData, isFavorite, wantToMake, yield, servings,
+    courseId, directions, ingredients, notes, variations, preparationTimes, nutrition, lastModifiedImageDate
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- Targeted image-state update (filename + thumbnail blob + image timestamp), independent of the body.
+updateRecipeImage:
+UPDATE recipe SET imageFilename = ?, imageThumbnailData = ?, lastModifiedImageDate = ? WHERE id = ?;
+
+deleteRecipeById:
+DELETE FROM recipe
+WHERE id = ?;
+
+-- Courses
+selectAllCourses:
+SELECT *
+FROM course
+ORDER BY name ASC;
+
+upsertCourse:
+INSERT OR REPLACE INTO course(id, name, lastModifiedDate)
+VALUES (?, ?, ?);
+
+deleteCourseById:
+DELETE FROM course
+WHERE id = ?;
+
+-- Categories
+selectAllCategories:
+SELECT *
+FROM category
+ORDER BY name ASC;
+
+upsertCategory:
+INSERT OR REPLACE INTO category(id, name, lastModifiedDate)
+VALUES (?, ?, ?);
+
+deleteCategoryById:
+DELETE FROM category
+WHERE id = ?;
+
+-- Tags
+selectAllTags:
+SELECT *
+FROM tag
+ORDER BY name ASC;
+
+upsertTag:
+INSERT OR REPLACE INTO tag(id, name, lastModifiedDate)
+VALUES (?, ?, ?);
+
+deleteTagById:
+DELETE FROM tag
+WHERE id = ?;
+
+-- Recipe <-> Category / Tag junctions
+upsertRecipeCategory:
+INSERT OR REPLACE INTO recipeCategory(id, recipeId, categoryId)
+VALUES (?, ?, ?);
+
+deleteRecipeCategoriesByRecipeId:
+DELETE FROM recipeCategory
+WHERE recipeId = ?;
+
+selectCategoryIdsForRecipe:
+SELECT categoryId
+FROM recipeCategory
+WHERE recipeId = ?;
+
+upsertRecipeTag:
+INSERT OR REPLACE INTO recipeTag(id, recipeId, tagId)
+VALUES (?, ?, ?);
+
+deleteRecipeTagsByRecipeId:
+DELETE FROM recipeTag
+WHERE recipeId = ?;
+
+selectTagIdsForRecipe:
+SELECT tagId
+FROM recipeTag
+WHERE recipeId = ?;
+
+-- Shopping lists
+selectAllShoppingLists:
+SELECT *
+FROM shoppingList
+ORDER BY name ASC;
+
+upsertShoppingList:
+INSERT OR REPLACE INTO shoppingList(id, name, isFreeform, contentsForList, contentsForFreeform)
+VALUES (?, ?, ?, ?, ?);
+
+-- Bulk clears (for Force Full Re-Sync: wipe local library, then pull from server)
+deleteAllRecipes:
+DELETE FROM recipe;
+
+deleteAllRecipeCategories:
+DELETE FROM recipeCategory;
+
+deleteAllRecipeTags:
+DELETE FROM recipeTag;
+
+deleteAllCourses:
+DELETE FROM course;
+
+deleteAllCategories:
+DELETE FROM category;
+
+deleteAllTags:
+DELETE FROM tag;
+
+-- Recipe deletion tombstones
+insertDeletedRecipe:
+INSERT OR REPLACE INTO deletedRecipe(id, deletedDate)
+VALUES (?, ?);
+
+selectDeletedRecipeIds:
+SELECT id
+FROM deletedRecipe;
+
+deleteTombstone:
+DELETE FROM deletedRecipe
+WHERE id = ?;
+
+deleteAllTombstones:
+DELETE FROM deletedRecipe;
+
+-- Filtered recipe lists (for the navigation drawer: by course / category / tag)
+selectRecipesByCourse:
+SELECT *
+FROM recipe
+WHERE courseId = ?
+ORDER BY name COLLATE NOCASE ASC;
+
+selectRecipesByCategory:
+SELECT recipe.*
+FROM recipe
+JOIN recipeCategory ON recipe.id = recipeCategory.recipeId
+WHERE recipeCategory.categoryId = ?
+ORDER BY recipe.name COLLATE NOCASE ASC;
+
+selectRecipesByTag:
+SELECT recipe.*
+FROM recipe
+JOIN recipeTag ON recipe.id = recipeTag.recipeId
+WHERE recipeTag.tagId = ?
+ORDER BY recipe.name COLLATE NOCASE ASC;

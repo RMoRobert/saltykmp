@@ -1,0 +1,24 @@
+{{<layoutSidebar.mustache}}
+{{$content}}
+{{#backLink}}<p><a href="{{href}}" class="back-link">{{text}}</a></p>{{/backLink}}
+<h1>{{heading}}</h1>
+<form action="{{basePath}}" method="get" class="search-row">
+    <input type="search" name="q" value="{{query}}" placeholder="Search recipes" aria-label="Search recipes">
+    <button type="submit">Search</button>
+    {{#hasQuery}}<a href="{{basePath}}" class="clear-link">Clear</a>{{/hasQuery}}
+    {{#nonDefaultPageSize}}<input type="hidden" name="pageSize" value="{{pageSize}}">{{/nonDefaultPageSize}}
+</form>
+{{#isEmpty}}
+<p class="empty">{{emptyMessage}}</p>
+{{/isEmpty}}
+{{^isEmpty}}
+<p class="result-count">{{resultCount}}</p>
+<ul class="recipe-list">
+    {{#recipes}}
+    <li>{{>recipeCard.mustache}}</li>
+    {{/recipes}}
+</ul>
+{{#pagination}}{{>pagination.mustache}}{{/pagination}}
+{{/isEmpty}}
+{{/content}}
+{{/layoutSidebar.mustache}}
