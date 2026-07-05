@@ -60,6 +60,7 @@ ktor-serverCallLogging = { module = "io.ktor:ktor-server-call-logging-jvm", vers
 ktor-serverCors = { module = "io.ktor:ktor-server-cors-jvm", version.ref = "ktor" }
 ktor-serverMustache = { module = "io.ktor:ktor-server-mustache-jvm", version.ref = "ktor" }
 ktor-serverSessions = { module = "io.ktor:ktor-server-sessions-jvm", version.ref = "ktor" }
+ktor-serverForwardedHeader = { module = "io.ktor:ktor-server-forwarded-header-jvm", version.ref = "ktor" }
 ktor-serverContentNegotiationTest = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
 exposed-core = { module = "org.jetbrains.exposed:exposed-core", version.ref = "exposed" }
 exposed-jdbc = { module = "org.jetbrains.exposed:exposed-jdbc", version.ref = "exposed" }

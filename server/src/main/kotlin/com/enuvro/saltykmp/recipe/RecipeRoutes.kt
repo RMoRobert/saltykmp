@@ -10,6 +10,7 @@ import com.enuvro.saltykmp.auth.userId
 import com.enuvro.saltykmp.db.DeviceRepository
 import com.enuvro.saltykmp.db.RecipeRepository
 import com.enuvro.saltykmp.image.ImageStore
+import com.enuvro.saltykmp.image.ImageTooLargeException
 import com.enuvro.saltykmp.util.WireDate
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -199,6 +200,7 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                 }
                 var stored: String? = null
                 var oversized = false
+                var dimTooLarge = false
                 // Client-authoritative image timestamp (optional form field). Stored verbatim so the
                 // uploading device doesn't see the server as "newer" and re-download its own image.
                 var imageDateStr: String? = null
@@ -215,8 +217,19 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                                     ContentType.Image.GIF -> "gif"
                                     else -> "jpg"
                                 }
-                                RecipeRepository.imageFilename(userId, id)?.let { imageStore.delete(it) }
-                                stored = imageStore.store(id, bytes, ext)
+                                try {
+                                    // Store first, then remove any previous image — but only when it had a
+                                    // different name (a same-name store already overwrote it). This way a
+                                    // rejected upload (e.g. an over-resolution bomb) can't destroy the
+                                    // existing good image.
+                                    val newName = imageStore.store(id, bytes, ext)
+                                    RecipeRepository.imageFilename(userId, id)
+                                        ?.takeIf { it != newName }
+                                        ?.let { imageStore.delete(it) }
+                                    stored = newName
+                                } catch (e: ImageTooLargeException) {
+                                    dimTooLarge = true
+                                }
                             }
                         }
                         is PartData.FormItem -> if (part.name == "lastModifiedImageDate") imageDateStr = part.value
@@ -226,6 +239,10 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                 }
                 if (oversized) {
                     call.respond(HttpStatusCode.PayloadTooLarge, mapOf("error" to "Image exceeds ${MAX_IMAGE_UPLOAD_BYTES / (1024 * 1024)} MB limit"))
+                    return@post
+                }
+                if (dimTooLarge) {
+                    call.respond(HttpStatusCode.PayloadTooLarge, mapOf("error" to "Image resolution exceeds the allowed maximum"))
                     return@post
                 }
                 val filename = stored

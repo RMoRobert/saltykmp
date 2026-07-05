@@ -1,5 +1,6 @@
 package com.enuvro.saltykmp
 
+import com.enuvro.saltykmp.auth.AccountLockout
 import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.auth.LoginThrottle
 import com.enuvro.saltykmp.auth.authRoutes
@@ -14,9 +15,13 @@ import com.enuvro.saltykmp.web.UserSession
 import com.enuvro.saltykmp.web.WEB_AUTH
 import com.enuvro.saltykmp.web.webRoutes
 import com.github.mustachejava.DefaultMustacheFactory
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.application.log
 import io.ktor.server.auth.session
@@ -26,7 +31,9 @@ import io.ktor.server.mustache.Mustache
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.forwardedheaders.XForwardedHeaders
 import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.request.contentType
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondRedirect
 import io.ktor.server.response.respondText
@@ -37,6 +44,13 @@ import io.ktor.server.sessions.Sessions
 import io.ktor.server.sessions.cookie
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Paths
+
+/**
+ * Max size of a non-multipart request body. Recipe/library payloads are plain JSON text and stay well under
+ * this; the recipe-image upload is multipart and exempt (it enforces its own larger, streamed cap). Keeps an
+ * unbounded body — including on the unauthenticated login endpoints — from exhausting memory.
+ */
+private const val MAX_REQUEST_BODY_BYTES = 2L * 1024 * 1024
 
 fun main() {
     val port = (System.getenv("PORT") ?: "8080").toInt()
@@ -94,6 +108,11 @@ private fun Application.enforceSecrets() {
         if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true — do NOT expose this server)")
         else error("SECURITY: $msg Refusing to start. For local/dev use only, set SALTY_ALLOW_DEFAULT_SECRET=true.")
     }
+    if (isDefaultSecret(System.getenv("SALTY_SESSION_SECRET"), "dev-secret-change-me")) {
+        val msg = "SALTY_SESSION_SECRET is unset or a default/placeholder — the web session cookie would be MAC'd with a publicly known secret, so anyone could forge a logged-in session. Set a long, random SALTY_SESSION_SECRET (e.g. `openssl rand -hex 32`), distinct from SALTY_JWT_SECRET."
+        if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true — do NOT expose this server)")
+        else error("SECURITY: $msg Refusing to start. For local/dev use only, set SALTY_ALLOW_DEFAULT_SECRET=true.")
+    }
     if (isDefaultSecret(System.getenv("SALTY_DEFAULT_PASSWORD"), "changeit")) {
         val msg = "SALTY_DEFAULT_PASSWORD is unset or a default — the seeded admin account would use a well-known password. Set a strong SALTY_DEFAULT_PASSWORD before first run."
         if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true)")
@@ -118,30 +137,40 @@ fun Application.module() {
             username = defaultUser,
             password = System.getenv("SALTY_DEFAULT_PASSWORD") ?: "changeit",
         )
-        // Make sure user management isn't locked out (e.g. after upgrading a pre-is_admin database).
-        UserRepository.ensureAdminExists(defaultUser)
     }
 
     val jwtService = JwtService(
         secret = System.getenv("SALTY_JWT_SECRET") ?: "dev-secret-change-me",
         issuer = "salty",
         audience = "salty-app",
-        validityMs = (System.getenv("SALTY_JWT_DAYS") ?: "30").toLong() * 24 * 60 * 60 * 1000,
+        validityMs = (System.getenv("SALTY_JWT_DAYS") ?: "8").toLong() * 24 * 60 * 60 * 1000,
     )
     // Pair the image store with the DB profile: the throwaway H2 sandbox gets its own folder so it
     // doesn't inherit the Postgres deployment's leftover image files. Those would make the client's
     // disk-only HEAD existence check report images as already-present and skip uploading them into the
     // (empty) H2 database, so recipe text would sync but images wouldn't. SALTY_IMAGE_DIR overrides.
     val defaultImageDir = if (profile == "h2") "salty-images-h2" else "salty-images"
-    val imageStore = ImageStore(Paths.get(System.getenv("SALTY_IMAGE_DIR") ?: defaultImageDir))
+    val maxImagePixels = System.getenv("SALTY_MAX_IMAGE_PIXELS")?.toLongOrNull()?.takeIf { it > 0 }
+        ?: ImageStore.DEFAULT_MAX_PIXELS
+    val imageStore = ImageStore(Paths.get(System.getenv("SALTY_IMAGE_DIR") ?: defaultImageDir), maxImagePixels)
+
+    // Set SALTY_TRUST_PROXY=true ONLY when the server sits behind a trusted reverse proxy (and is not
+    // directly reachable). It makes the app honour X-Forwarded-* so the real client IP — not the proxy's —
+    // drives the login throttle. Enabling it while the app is directly reachable would let a client spoof
+    // its IP and evade throttling, so it defaults off.
+    val trustProxy = System.getenv("SALTY_TRUST_PROXY").toBoolean()
 
     installSalty(
         jwtService,
         imageStore,
-        sessionSecret = System.getenv("SALTY_JWT_SECRET") ?: "dev-secret-change-me",
-        // Behind a TLS-terminating reverse proxy set SALTY_SECURE_COOKIES=true so the session cookie is only
-        // ever sent over HTTPS. Left off by default because the documented LAN/testing mode serves plain HTTP.
-        secureCookies = System.getenv("SALTY_SECURE_COOKIES").toBoolean(),
+        // Key separation: the web session cookie's MAC uses its own secret, distinct from the JWT signer.
+        // Required (enforced in enforceSecrets); its own long random value, e.g. `openssl rand -hex 32`.
+        sessionSecret = System.getenv("SALTY_SESSION_SECRET") ?: "dev-secret-change-me",
+        // Behind a TLS-terminating reverse proxy the session cookie must be HTTPS-only. Default to the
+        // trust-proxy setting (a proxy deployment is normally TLS-terminated) unless explicitly overridden;
+        // the plain-HTTP LAN/testing mode leaves both off.
+        secureCookies = System.getenv("SALTY_SECURE_COOKIES")?.toBoolean() ?: trustProxy,
+        trustProxy = trustProxy,
     )
 }
 
@@ -151,8 +180,14 @@ fun Application.installSalty(
     imageStore: ImageStore,
     sessionSecret: String = "dev-session-secret-change-me",
     secureCookies: Boolean = false,
+    trustProxy: Boolean = false,
+    maxRequestBodyBytes: Long = MAX_REQUEST_BODY_BYTES,
+    accountLockout: AccountLockout = AccountLockout(),
 ) {
     val loginThrottle = LoginThrottle()
+    // Only trust X-Forwarded-* when explicitly told we're behind a trusted proxy; otherwise a direct
+    // client could spoof its source IP to defeat the login throttle. See [module].
+    if (trustProxy) install(XForwardedHeaders)
     install(ContentNegotiation) { json(appJson) }
     install(CallLogging)
     // Server-rendered web UI: Mustache templates from resources/templates/ (logic-less; handlers in
@@ -187,13 +222,27 @@ fun Application.installSalty(
         }
     }
 
+    // Reject oversized request bodies before any handler (including the unauthenticated login endpoints)
+    // reads them into memory — an unbounded body is otherwise a trivial memory-exhaustion DoS. Multipart
+    // requests are exempt here: the only one is the recipe-image upload, which streams with its own,
+    // larger cap (see MAX_IMAGE_UPLOAD_BYTES in RecipeRoutes). Guards the declared Content-Length, matching
+    // how the image endpoint pre-checks length.
+    intercept(ApplicationCallPipeline.Plugins) {
+        val isMultipart = call.request.contentType().match(ContentType.MultiPart.FormData)
+        val declaredLength = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+        if (!isMultipart && declaredLength != null && declaredLength > maxRequestBodyBytes) {
+            call.respond(HttpStatusCode.PayloadTooLarge, mapOf("error" to "Request body too large"))
+            return@intercept finish()
+        }
+    }
+
     routing {
         get("/health") { call.respondText("OK") }
         // Static assets for the web UI (e.g. /static/salty.css) from resources/static/.
         staticResources("/static", "static")
-        authRoutes(jwtService, loginThrottle)
+        authRoutes(jwtService, loginThrottle, accountLockout)
         recipeRoutes(imageStore)
         libraryRoutes()
-        webRoutes(imageStore, loginThrottle)
+        webRoutes(imageStore, loginThrottle, accountLockout)
     }
 }

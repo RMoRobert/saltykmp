@@ -11,8 +11,14 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 
-/** Filesystem-backed recipe image storage; files are named by recipe id + extension. */
-class ImageStore(private val baseDir: Path) {
+/** Thrown by [ImageStore.store] when an image's pixel dimensions exceed [ImageStore.maxPixels]. */
+class ImageTooLargeException(message: String) : RuntimeException(message)
+
+/**
+ * Filesystem-backed recipe image storage; files are named by recipe id + extension. [maxPixels] caps the
+ * decoded resolution (width×height) accepted by [store], rejecting decompression bombs before any full decode.
+ */
+class ImageStore(private val baseDir: Path, private val maxPixels: Long = DEFAULT_MAX_PIXELS) {
 
     private val thumbDir: Path = baseDir.resolve(".thumbs")
 
@@ -21,6 +27,14 @@ class ImageStore(private val baseDir: Path) {
     }
 
     fun store(recipeId: String, bytes: ByteArray, extension: String): String {
+        // Reject decompression bombs up front: a small compressed file can declare enormous dimensions that
+        // balloon to gigabytes once decoded/resized. Read the dimensions from the header (no pixel decode)
+        // and refuse anything over the pixel budget. Unknown/unreadable formats return null and are stored
+        // as-is — they're never decoded server-side except by ImageIO, which is itself bounded here.
+        val pixels = imagePixelCount(bytes)
+        if (pixels != null && pixels > maxPixels) {
+            throw ImageTooLargeException("Image resolution ${pixels / 1_000_000}MP exceeds the ${maxPixels / 1_000_000}MP limit")
+        }
         val filename = "$recipeId.${extension.trimStart('.')}"
         val processedBytes = if (extension.lowercase().let { it == "jpg" || it == "jpeg" || it == "png" }) {
             resizeImage(bytes, extension, 1200)
@@ -117,6 +131,24 @@ class ImageStore(private val baseDir: Path) {
 
     fun exists(filename: String): Boolean = safePath(filename)?.let { Files.exists(it) } ?: false
 
+    /**
+     * Pixel count (width×height) read from the image header without decoding the pixels, or null when the
+     * format is unknown/unreadable. Cheap and bomb-safe: `getWidth`/`getHeight` parse only the header.
+     */
+    private fun imagePixelCount(bytes: ByteArray): Long? = runCatching {
+        ImageIO.createImageInputStream(ByteArrayInputStream(bytes))?.use { iis ->
+            val readers = ImageIO.getImageReaders(iis)
+            if (!readers.hasNext()) return@use null
+            val reader = readers.next()
+            try {
+                reader.setInput(iis)
+                reader.getWidth(reader.minIndex).toLong() * reader.getHeight(reader.minIndex).toLong()
+            } finally {
+                reader.dispose()
+            }
+        }
+    }.getOrNull()
+
     /** Resolve a filename to a path inside baseDir, rejecting path traversal. */
     private fun safePath(filename: String): Path? {
         val name = Paths.get(filename).fileName?.toString() ?: return null
@@ -127,5 +159,13 @@ class ImageStore(private val baseDir: Path) {
     companion object {
         /** Longest-side pixel size for generated list thumbnails (matches the clients' 300px caches). */
         const val THUMB_SIZE = 300
+
+        /**
+         * Default cap on accepted image resolution (width×height). 100 MP comfortably covers real camera/phone
+         * photos while blocking decompression bombs (which declare far larger dimensions). Override with the
+         * `SALTY_MAX_IMAGE_PIXELS` env var. Note the 25 MB upload cap bounds *compressed* size; this bounds the
+         * *decoded* size, which is what actually drives memory use during resize/thumbnailing.
+         */
+        const val DEFAULT_MAX_PIXELS = 100_000_000L
     }
 }

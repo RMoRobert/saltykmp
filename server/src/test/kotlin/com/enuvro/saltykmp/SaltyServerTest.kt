@@ -9,6 +9,7 @@ import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerRecipe
 import com.enuvro.saltykmp.db.LibraryRepository
+import com.enuvro.saltykmp.auth.AccountLockout
 import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.db.Categories
 import com.enuvro.saltykmp.db.Courses
@@ -27,9 +28,12 @@ import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.forms.formData
 import io.ktor.client.request.forms.submitForm
+import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.client.request.get
 import io.ktor.client.request.head
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.delete
@@ -37,6 +41,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -533,6 +538,82 @@ class SaltyServerTest {
             formParameters = parameters { append("username", "shorty"); append("password", "abc"); append("csrf", csrf) },
         )
         assertEquals(null, runBlocking { UserRepository.findByUsername("shorty") })
+    }
+
+    @Test
+    fun distributedFailuresLockTheAccountAcrossIps() = testApplication {
+        // Low account threshold; trustProxy so each request's X-Forwarded-For becomes the client IP the
+        // per-IP throttle sees.
+        val lockout = AccountLockout(maxFailures = 3, lockMs = 60_000L)
+        application { installSalty(jwt, imageStore, trustProxy = true, accountLockout = lockout) }
+        val client = jsonClient()
+        runBlocking {
+            // 3 failures, each from a DIFFERENT IP — the per-IP throttle (threshold 10) never trips, but the
+            // per-username lockout counts them all.
+            repeat(3) { i ->
+                val r = client.post("/api/auth/login") {
+                    header(HttpHeaders.XForwardedFor, "203.0.113.$i")
+                    contentType(ContentType.Application.Json); setBody(AuthRequest("tester", "wrong"))
+                }
+                assertEquals(HttpStatusCode.Unauthorized, r.status)
+            }
+            // Now globally locked: a further attempt is refused even from a fresh IP with the CORRECT password,
+            // proving the lock is checked before credentials.
+            val locked = client.post("/api/auth/login") {
+                header(HttpHeaders.XForwardedFor, "203.0.113.99")
+                contentType(ContentType.Application.Json); setBody(AuthRequest("tester", "pw"))
+            }
+            assertEquals(HttpStatusCode.TooManyRequests, locked.status)
+        }
+    }
+
+    @Test
+    fun loginWithUnknownUsernameReturns401() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        val resp = runBlocking {
+            client.post("/api/auth/login") {
+                contentType(ContentType.Application.Json); setBody(AuthRequest("ghost", "whatever"))
+            }
+        }
+        assertEquals(HttpStatusCode.Unauthorized, resp.status)
+    }
+
+    @Test
+    fun oversizedRequestBodyRejectedPreAuth() = testApplication {
+        // Tiny cap so a normal login body passes but an inflated one is rejected before any handler runs.
+        application { installSalty(jwt, imageStore, maxRequestBodyBytes = 64) }
+        val client = jsonClient()
+        val resp = runBlocking {
+            client.post("/api/auth/login") {
+                contentType(ContentType.Application.Json)
+                setBody(AuthRequest("a".repeat(500), "pw"))
+            }
+        }
+        assertEquals(HttpStatusCode.PayloadTooLarge, resp.status)
+    }
+
+    @Test
+    fun multipartImageUploadIsExemptFromBodyLimit() = testApplication {
+        // Body cap far below the image bytes: multipart uploads must be exempt (they self-limit by size
+        // and resolution), so a normal image still stores.
+        application { installSalty(jwt, imageStore, maxRequestBodyBytes = 64) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            val uid = UserRepository.findByUsername("tester")!!.id
+            RecipeRepository.upsert(uid, recipe("img1", "Img", "2026-06-01T00:00:00.000Z"))
+            val resp = client.submitFormWithBinaryData(
+                url = "/api/recipes/img1/image",
+                formData = formData {
+                    append("file", renderPng(50, 50), Headers.build {
+                        append(HttpHeaders.ContentType, "image/png")
+                        append(HttpHeaders.ContentDisposition, "filename=\"img1.png\"")
+                    })
+                },
+            ) { bearerAuth(token) }
+            assertEquals(HttpStatusCode.OK, resp.status)
+        }
     }
 
     /** Pulls the hidden CSRF token out of a rendered admin page. */

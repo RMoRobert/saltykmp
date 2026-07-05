@@ -14,9 +14,18 @@ x-vars:
   db-user: &db-user "salty"
   db-password: &db-password "CHANGE_ME_db_password"
 
+# Cap container log files so a request flood (e.g. a login brute-force attempt) can't fill the host disk —
+# Docker's default json-file driver is otherwise unbounded. 3 rotated files x 10 MB per service.
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:17
+    logging: *default-logging
     environment:
       POSTGRES_DB: *db-name
       POSTGRES_USER: *db-user
@@ -33,6 +42,7 @@ services:
 
   server:
     image: saltyserver:latest
+    logging: *default-logging
     depends_on:
       db:
         condition: service_healthy
@@ -47,16 +57,26 @@ services:
       # so an unedited deploy can't silently sign JWTs with a publicly known key. (Local dev only:
       # SALTY_ALLOW_DEFAULT_SECRET=true downgrades that to a warning.)
       SALTY_JWT_SECRET: "CHANGE_ME_long_random_jwt_secret"
+      # Separate secret for the web-UI session cookie's MAC (key separation from the JWT signer). REQUIRED
+      # and distinct: generate its own value, e.g.  openssl rand -hex 32
+      SALTY_SESSION_SECRET: "CHANGE_ME_long_random_session_secret"
       # Seeded ONLY on first run, when the users table is empty. Also refused if left as a placeholder.
       SALTY_DEFAULT_USER: "admin"
       SALTY_DEFAULT_PASSWORD: "CHANGE_ME_admin_password"
       SALTY_IMAGE_DIR: "/data/images"
-      # Behind a TLS-terminating reverse proxy, set this so the web-UI session cookie is HTTPS-only.
-      #   SALTY_SECURE_COOKIES: "true"
+      # Default below is plain-HTTP direct LAN access. If you instead front this with a TLS reverse proxy
+      # (recommended for anything reachable from the internet), uncomment SALTY_TRUST_PROXY and switch the
+      # ports binding to loopback (see below):
+      #  - SALTY_TRUST_PROXY makes the app read the real client IP from X-Forwarded-For so the login
+      #    brute-force throttle keys on the actual client, not the proxy's single IP. Only enable it when the
+      #    app is bound to loopback (not directly reachable), or a client could spoof its IP.
+      #  - SALTY_SECURE_COOKIES (session cookie sent over HTTPS only) defaults to SALTY_TRUST_PROXY.
+      #   SALTY_TRUST_PROXY: "true"
     volumes:
       - salty-images:/data/images
     # Published on all interfaces for direct access at http://<host-ip>:8080 (no TLS — LAN/testing).
-    # For an NGINX-fronted TLS setup, use "127.0.0.1:8080:8080" instead (reachable only via the host).
+    # For an NGINX-fronted TLS setup, use "127.0.0.1:8080:8080" instead (reachable only via the host)
+    # and set SALTY_TRUST_PROXY: "true" above. Do NOT expose plain "8080:8080" to the internet.
     ports:
       - "8080:8080"
     restart: unless-stopped

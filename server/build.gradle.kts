@@ -67,6 +67,7 @@ dependencies {
     implementation(libs.ktor.serverCors)
     implementation(libs.ktor.serverMustache)
     implementation(libs.ktor.serverSessions)
+    implementation(libs.ktor.serverForwardedHeader)
 
     // Persistence
     implementation(libs.exposed.core)

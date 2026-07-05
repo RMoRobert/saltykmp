@@ -18,8 +18,8 @@ data class UserRow(
     val username: String,
     val passwordHash: String,
     val isAdmin: Boolean,
-    /** When the password was last set (UTC). A token issued before this is stale. Null on legacy rows. */
-    val passwordChangedAt: LocalDateTime? = null,
+    /** When the password was last set (UTC). A token issued before this is treated as stale. */
+    val passwordChangedAt: LocalDateTime,
 )
 
 object UserRepository {
@@ -80,6 +80,24 @@ object UserRepository {
         BCrypt.verifyer().verify(plain.toCharArray(), hash).verified
 
     /**
+     * A throwaway bcrypt hash (same cost as real ones) used only to spend equivalent CPU when the account
+     * doesn't exist — so login timing doesn't reveal whether a username is valid (user enumeration). It can
+     * never match a real password: it's the hash of a random, unguessable string.
+     */
+    private val dummyHash: String =
+        BCrypt.withDefaults().hashToString(12, ("no-such-account-" + UUID.randomUUID()).toCharArray())
+
+    /**
+     * Verifies [plain] against [user]'s stored hash, or — when [user] is null — against [dummyHash] so the
+     * call takes the same time whether or not the account exists. Returns true only for a real user whose
+     * password matches. Callers should still re-check `user != null` for a non-null smart-cast.
+     */
+    fun verifyCredential(user: UserRow?, plain: String): Boolean {
+        val matches = verifyPassword(plain, user?.passwordHash ?: dummyHash)
+        return matches && user != null
+    }
+
+    /**
      * Deletes a user and ALL of their data (recipes, library, junctions, device-sync rows). Returns the
      * recipe image filenames that were attached so the caller can remove them from disk. There is no FK
      * cascade in the schema, so each user-scoped table is cleared explicitly.
@@ -105,16 +123,5 @@ object UserRepository {
     suspend fun seedIfEmpty(username: String, password: String) {
         val exists = dbQuery { Users.selectAll().limit(1).any() }
         if (!exists) create(username, password, isAdmin = true)
-    }
-
-    /**
-     * Guarantees at least one admin exists. On upgrade from a release without the is_admin column, every
-     * user defaults to non-admin; promote [preferredUsername] (the configured default account) if present,
-     * otherwise the alphabetically-first user, so the deployment is never locked out of user management.
-     */
-    suspend fun ensureAdminExists(preferredUsername: String) {
-        if (adminCount() > 0) return
-        val target = findByUsername(preferredUsername) ?: listAll().firstOrNull() ?: return
-        setAdmin(target.id, true)
     }
 }

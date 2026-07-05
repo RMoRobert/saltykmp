@@ -11,14 +11,11 @@ object Users : Table("users") {
     val username = varchar("username", 255).uniqueIndex()
     val passwordHash = varchar("password_hash", 255)
     // Admins can manage other users (create/delete/reset passwords) via the web UI. The first/seeded
-    // account is promoted to admin (see UserRepository.ensureAdminExists). Added after initial release,
-    // so DatabaseFactory.init runs an idempotent ALTER for pre-existing DBs.
+    // account is created as an admin (see UserRepository.seedIfEmpty).
     val isAdmin = bool("is_admin").default(false)
     // Bumped whenever the password changes (and set on creation). A JWT issued before this instant is
     // treated as stale and rejected (see Auth.configureAuth), so a password reset invalidates old tokens.
-    // Added after initial release → idempotent ALTER in DatabaseFactory.init; null on legacy rows (no epoch
-    // check, so pre-existing tokens keep working until they expire).
-    val passwordChangedAt = datetime("password_changed_at").nullable()
+    val passwordChangedAt = datetime("password_changed_at")
     override val primaryKey = PrimaryKey(id)
 }
 
@@ -96,5 +93,8 @@ object DeviceSyncs : Table("device_sync") {
     val deviceName = varchar("device_name", 255).nullable()
     val firstSyncDate = datetime("first_sync_date").nullable()
     val lastSyncDate = datetime("last_sync_date").nullable()
-    override val primaryKey = PrimaryKey(deviceId)
+    // Composite (user_id, device_id): device ids are client-supplied, so scoping the key by user lets two
+    // users present the same device id without a primary-key collision (which used to 500 the second user's
+    // sync registration). user_id leads so it also covers user-scoped lookups (e.g. delete-all-for-user).
+    override val primaryKey = PrimaryKey(userId, deviceId)
 }

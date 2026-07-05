@@ -68,13 +68,12 @@ fun Application.configureAuth(
                 // a user or resetting a password takes effect immediately instead of lingering for the
                 // token's (up to 30-day) lifetime.
                 val user = UserRepository.findById(uid) ?: return@validate null
-                val changedAt = user.passwordChangedAt
                 val issuedAt = credential.payload.issuedAt
-                if (changedAt != null && issuedAt != null) {
+                if (issuedAt != null) {
                     // Compare at whole-second granularity (JWT iat is seconds) so a token minted in the same
                     // second as the change isn't falsely rejected.
                     val issuedSec = issuedAt.toInstant().epochSecond
-                    val changedSec = changedAt.toEpochSecond(ZoneOffset.UTC)
+                    val changedSec = user.passwordChangedAt.toEpochSecond(ZoneOffset.UTC)
                     if (issuedSec < changedSec) return@validate null
                 }
                 JWTPrincipal(credential.payload)
@@ -88,22 +87,30 @@ fun Application.configureAuth(
 fun ApplicationCall.userId(): String =
     principal<JWTPrincipal>()!!.payload.getClaim("uid").asString()
 
-fun Route.authRoutes(jwtService: JwtService, throttle: LoginThrottle) {
+fun Route.authRoutes(jwtService: JwtService, throttle: LoginThrottle, accountLockout: AccountLockout) {
     post("/api/auth/login") {
         val req = call.receive<AuthRequest>()
         val ip = call.request.origin.remoteHost
-        throttle.retryAfterSeconds(ip, req.username)?.let { retryAfter ->
+        // Both throttles are checked before the bcrypt verify, so a locked-out flood is cheap to reject:
+        // the per-IP throttle stops a single hammering source; the per-username lockout stops a slow
+        // distributed attack spread across many IPs.
+        val retryAfter = throttle.retryAfterSeconds(ip, req.username) ?: accountLockout.retryAfterSeconds(req.username)
+        if (retryAfter != null) {
             call.response.headers.append(io.ktor.http.HttpHeaders.RetryAfter, retryAfter.toString())
             call.respond(HttpStatusCode.TooManyRequests, mapOf("error" to "Too many login attempts. Try again later."))
             return@post
         }
         val user = UserRepository.findByUsername(req.username)
-        if (user == null || !UserRepository.verifyPassword(req.password, user.passwordHash)) {
+        // Always runs a bcrypt verify (against a dummy hash when the user is absent) so response timing
+        // doesn't reveal whether the username exists. `user == null` in the guard keeps the smart-cast below.
+        if (!UserRepository.verifyCredential(user, req.password) || user == null) {
             throttle.recordFailure(ip, req.username)
+            accountLockout.recordFailure(req.username)
             call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "Invalid username or password"))
             return@post
         }
         throttle.recordSuccess(ip, req.username)
+        accountLockout.recordSuccess(req.username)
         val token = jwtService.generate(user.id, user.username)
         call.respond(AuthResponse(token = token, username = user.username, expiresIn = jwtService.validityMs))
     }

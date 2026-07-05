@@ -2,6 +2,7 @@ package com.enuvro.saltykmp.web
 
 import com.enuvro.saltykmp.BuildInfo
 import com.enuvro.saltykmp.api.ServerRecipe
+import com.enuvro.saltykmp.auth.AccountLockout
 import com.enuvro.saltykmp.auth.LoginThrottle
 import com.enuvro.saltykmp.auth.MIN_PASSWORD_LENGTH
 import com.enuvro.saltykmp.db.LibraryRepository
@@ -58,7 +59,7 @@ private fun newCsrfToken(): String {
  * view-model maps (all formatting/conditionals resolved here, since Mustache is logic-less). Shared
  * styles live in `resources/static/salty.css`, served at `/static/salty.css`.
  */
-fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle) {
+fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLockout: AccountLockout) {
     get("/login") {
         val error = call.request.queryParameters["error"] != null
         call.respond(MustacheContent("login.mustache", loginModel(error)))
@@ -67,18 +68,24 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle) {
         val params = call.receiveParameters()
         val username = params["username"].orEmpty()
         val ip = call.request.origin.remoteHost
-        if (throttle.retryAfterSeconds(ip, username) != null) {
+        // Per-IP throttle (single hammering source) + per-username lockout (slow distributed attack), both
+        // checked before the bcrypt verify.
+        if (throttle.retryAfterSeconds(ip, username) != null || accountLockout.retryAfterSeconds(username) != null) {
             call.respondRedirect("/login?error=1")
             return@post
         }
         val user = UserRepository.findByUsername(username)
-        if (user != null && UserRepository.verifyPassword(params["password"].orEmpty(), user.passwordHash)) {
+        // Constant-time credential check (dummy bcrypt when the user is absent) to avoid username enumeration
+        // via timing; the `&& user != null` gives a non-null smart-cast in the success branch.
+        if (UserRepository.verifyCredential(user, params["password"].orEmpty()) && user != null) {
             throttle.recordSuccess(ip, username)
+            accountLockout.recordSuccess(username)
             // Mint a fresh CSRF token per session and store it in the (signed) session cookie.
             call.sessions.set(UserSession(user.id, user.username, user.isAdmin, newCsrfToken()))
             call.respondRedirect("/")
         } else {
             throttle.recordFailure(ip, username)
+            accountLockout.recordFailure(username)
             call.respondRedirect("/login?error=1")
         }
     }
