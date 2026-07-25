@@ -122,6 +122,19 @@ class SaltyServerTest {
     }
 
     @Test
+    fun aboutPageIsBehindAuth() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        // Anonymous → redirected to login (version/build info not disclosed).
+        val anon = createClient { followRedirects = false }.get("/about")
+        assertEquals(HttpStatusCode.Found, anon.status)
+        assertEquals("/login", anon.headers[HttpHeaders.Location])
+        // Logged in → renders.
+        val web = createClient { install(HttpCookies) }
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+        assertEquals(HttpStatusCode.OK, web.get("/about").status)
+    }
+
+    @Test
     fun webRootRedirectsWhenNotLoggedIn() = testApplication {
         application { installSalty(jwt, imageStore) }
         val resp = createClient { followRedirects = false }.get("/")

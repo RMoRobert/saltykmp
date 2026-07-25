@@ -26,7 +26,6 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.sessions.clear
-import io.ktor.server.sessions.get
 import io.ktor.server.sessions.sessions
 import io.ktor.server.sessions.set
 import kotlinx.serialization.Serializable
@@ -93,13 +92,13 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
         call.sessions.clear<UserSession>()
         call.respondRedirect("/login")
     }
-    // Public: app name + build info. Reads the session cookie directly (route isn't behind
-    // authenticate) so the account menu still reflects a logged-in visitor.
-    get("/about") {
-        call.respond(MustacheContent("about.mustache", aboutModel(call.sessions.get<UserSession>())))
-    }
-
     authenticate(WEB_AUTH) {
+        // App name + build info. Behind auth so the exact version isn't disclosed to anonymous visitors
+        // (minor fingerprinting hardening); it's only linked from the logged-in nav anyway.
+        get("/about") {
+            call.respond(MustacheContent("about.mustache", aboutModel(call.principal<UserSession>())))
+        }
+
         // Recipe Library — all recipes, searchable + paginated.
         get("/") {
             val session = call.principal<UserSession>()!!
