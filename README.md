@@ -102,7 +102,7 @@ A quick local Postgres:
 
 ```shell
 docker run --name salty-pg -e POSTGRES_DB=salty -e POSTGRES_USER=salty \
-  -e POSTGRES_PASSWORD=salty -p 5432:5432 -d postgres:17
+  -e POSTGRES_PASSWORD=salty -p 5432:5432 -d postgres:18
 ```
 
 For full control, the individual `SALTY_DB_URL` / `SALTY_DB_DRIVER` / `SALTY_DB_USER` /

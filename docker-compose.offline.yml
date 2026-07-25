@@ -24,14 +24,20 @@ x-logging: &default-logging
 
 services:
   db:
-    image: postgres:17
+    # Postgres 18. UPGRADING FROM 17? The data is NOT carried over automatically — 18 changed both the
+    # image layout (volume is now /var/lib/postgresql, PGDATA is /var/lib/postgresql/18/docker) and the
+    # on-disk format, so this uses a NEW volume (salty-db18) and starts EMPTY. The old salty-db volume is
+    # left untouched; dump it from 17 and restore into 18 — see "Upgrading Postgres" in DEPLOY.md.
+    # Offline targets also need the postgres:18 image loaded from a tar (`docker save`/`docker load`).
+    image: postgres:18
     logging: *default-logging
     environment:
       POSTGRES_DB: *db-name
       POSTGRES_USER: *db-user
       POSTGRES_PASSWORD: *db-password
     volumes:
-      - salty-db:/var/lib/postgresql/data
+      # 18+ mounts the parent dir (not .../data) so a future pg_upgrade can use the fast --link path.
+      - salty-db18:/var/lib/postgresql
     healthcheck:
       # Keep -U / -d in sync with db-user / db-name above.
       test: ["CMD-SHELL", "pg_isready -U salty -d salty"]
@@ -82,5 +88,8 @@ services:
     restart: unless-stopped
 
 volumes:
-  salty-db:
+  # The pre-18 volume (salty-db) is deliberately not declared here: it stays on disk as the rollback
+  # copy of the Postgres 17 data and is out of reach of `docker compose down -v`. Remove it by hand
+  # (`docker volume rm <project>_salty-db`) once the 18 database is verified.
+  salty-db18:
   salty-images:
