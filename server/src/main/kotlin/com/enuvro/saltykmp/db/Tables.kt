@@ -1,7 +1,7 @@
 package com.enuvro.saltykmp.db
 
-import org.jetbrains.exposed.sql.Table
-import org.jetbrains.exposed.sql.javatime.datetime
+import org.jetbrains.exposed.v1.core.Table
+import org.jetbrains.exposed.v1.javatime.datetime
 
 // All recipe/library rows are user-scoped (userId FK). Recipe list/object fields are stored as JSON text
 // (serialized with appJson) to mirror the Spring CLOB converters. Timestamps are UTC LocalDateTime.

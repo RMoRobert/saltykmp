@@ -3,10 +3,11 @@ package com.enuvro.saltykmp.db
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.SchemaUtils
-import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
-import org.jetbrains.exposed.sql.transactions.transaction
+import kotlinx.coroutines.withContext
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.SchemaUtils
+import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 
 object DatabaseFactory {
 
@@ -35,6 +36,9 @@ object DatabaseFactory {
         }
     }
 
+    // suspendTransaction (Exposed 1.x) dropped the CoroutineContext parameter its deprecated predecessor
+    // newSuspendedTransaction took, so the dispatcher is chosen here instead. It still has to be IO: the
+    // driver is JDBC, so every statement blocks its thread and must stay off the request dispatcher.
     suspend fun <T> dbQuery(block: suspend () -> T): T =
-        newSuspendedTransaction(Dispatchers.IO) { block() }
+        withContext(Dispatchers.IO) { suspendTransaction { block() } }
 }

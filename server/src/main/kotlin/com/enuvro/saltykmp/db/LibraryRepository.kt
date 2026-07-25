@@ -5,12 +5,12 @@ import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.db.DatabaseFactory.dbQuery
 import com.enuvro.saltykmp.util.WireDate
-import org.jetbrains.exposed.sql.SortOrder
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.and
-import org.jetbrains.exposed.sql.deleteWhere
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.upsert
+import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.upsert
 
 /** Courses / categories / tags — small user-scoped vocabulary tables (same shape). */
 object LibraryRepository {

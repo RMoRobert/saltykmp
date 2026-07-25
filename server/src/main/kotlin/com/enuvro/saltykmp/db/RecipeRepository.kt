@@ -13,17 +13,19 @@ import com.enuvro.saltykmp.util.WireDate
 import com.enuvro.saltykmp.util.appJson
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
-import org.jetbrains.exposed.sql.Op
-import org.jetbrains.exposed.sql.ResultRow
-import org.jetbrains.exposed.sql.SortOrder
-import org.jetbrains.exposed.sql.SqlExpressionBuilder
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.and
-import org.jetbrains.exposed.sql.deleteWhere
-import org.jetbrains.exposed.sql.insert
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.update
-import org.jetbrains.exposed.sql.upsert
+import org.jetbrains.exposed.v1.core.Op
+import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.greater
+import org.jetbrains.exposed.v1.core.inList
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.select
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.update
+import org.jetbrains.exposed.v1.jdbc.upsert
 import java.time.LocalDateTime
 import java.util.UUID
 import kotlin.math.ceil
@@ -37,7 +39,9 @@ data class RecipePage(
 
 object RecipeRepository {
 
-    private fun condition(userId: String, modifiedSince: LocalDateTime?): SqlExpressionBuilder.() -> Op<Boolean> = {
+    // Exposed 1.x dropped the SqlExpressionBuilder receiver from where(): the operators are top-level
+    // functions now, so this is a plain lambda.
+    private fun condition(userId: String, modifiedSince: LocalDateTime?): () -> Op<Boolean> = {
         val base = Recipes.userId eq userId
         if (modifiedSince != null) base and (Recipes.lastModifiedDate greater modifiedSince) else base
     }
