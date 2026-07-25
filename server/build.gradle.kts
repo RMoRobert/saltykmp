@@ -73,7 +73,6 @@ dependencies {
     implementation(libs.exposed.core)
     implementation(libs.exposed.jdbc)
     implementation(libs.exposed.javatime)
-    implementation(libs.exposed.json)
     implementation(libs.hikari)
     runtimeOnly(libs.postgres)
     // H2 on the runtime classpath enables running the server against H2 for local testing
