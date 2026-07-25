@@ -12,6 +12,10 @@ salty-db/salty.mv.db
 composeApp/salty.db
 
 # Machine-specific + build/deploy artifacts (should not be committed)
+# The compose files hold the deploy's real secrets inline; only the CHANGE_ME_* templates
+# (docker-compose*.example.yml) are committed.
+/docker-compose.yml
+/docker-compose.offline.yml
 local.properties
 /.kotlin
 /composeApp/release

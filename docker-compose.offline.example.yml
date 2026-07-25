@@ -1,13 +1,14 @@
 # Offline deploy of Salty KMP server + Postgres.
 # Use on a target with NO internet/source: load the prebuilt image tar, then `docker compose -f this up -d`.
 # All settings/secrets are written DIRECTLY in this file — EDIT every CHANGE_ME_* value before deploying.
-# See docker-README-deployoffline.md for the full build-save-copy-load workflow.
+# See "Offline deploy" in DEPLOY.md for the full build-save-copy-load workflow.
 #
-# Secrets live here, so this file is gitignored. The committed template is docker-compose.offline.example.yml:
+# This is the committed TEMPLATE. Copy it — the copy holds real secrets and is gitignored:
 #   cp docker-compose.offline.example.yml docker-compose.offline.yml   # then edit the CHANGE_ME_* values
 #
-# Unlike docker-compose.yml this uses image: (a prebuilt image loaded from the .tar), not build:,
-# because the target has no source. Load it first:  docker load -i saltyserver-image.tar
+# Unlike docker-compose.yml this uses image: (prebuilt images loaded from .tar files), not build:,
+# because the target has no source and cannot pull. Load both first:
+#   docker load -i saltyserver-image.tar && docker load -i postgres18-image.tar
 
 x-vars:
   db-name: &db-name "salty"

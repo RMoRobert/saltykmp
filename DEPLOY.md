@@ -40,7 +40,7 @@ docker compose up -d --build
 ```
 
 - App listens on **`127.0.0.1:8080`** (localhost only — NGINX proxies to it).
-- Postgres data → `salty-db` volume; recipe images → `salty-images` volume (both persist across redeploys).
+- Postgres data → `salty-db18` volume; recipe images → `salty-images` volume (both persist across redeploys).
 - Health check: `curl http://127.0.0.1:8080/health` → `OK`. (`/` is the web UI — redirects to `/login`.)
 
 ### Managing users
@@ -83,6 +83,36 @@ the seeded account. First sync uploads/downloads everything.
 JAVA_HOME=/path/to/jdk-21 ./gradlew :server:buildFatJar   # rebuild jar
 docker compose up -d --build server                       # rebuild + restart app only
 ```
+
+## Offline deploy
+
+For a target with no internet and no source checkout. Everything is built on a machine that *does*
+have both, shipped as image tarballs, and run from `docker-compose.offline.example.yml` (which uses
+`image:` rather than `build:`).
+
+On the build machine:
+
+```bash
+JAVA_HOME=/path/to/jdk-21 ./gradlew :server:buildFatJar
+docker build -t saltyserver:latest ./server
+docker save saltyserver:latest -o saltyserver-image.tar
+docker pull postgres:18 && docker save postgres:18 -o postgres18-image.tar
+```
+
+Copy `saltyserver-image.tar`, `postgres18-image.tar`, and the compose template to the target, then:
+
+```bash
+cp docker-compose.offline.example.yml docker-compose.offline.yml   # edit the CHANGE_ME_* values
+docker load -i saltyserver-image.tar
+docker load -i postgres18-image.tar
+docker compose -f docker-compose.offline.yml up -d
+```
+
+Both tarballs are needed — the target cannot pull `postgres:18` either. Repeat the `saltyserver`
+half for app updates; the Postgres image only changes on a version bump.
+
+Unlike the NGINX-fronted setup above, this file publishes port 8080 on all interfaces for direct
+plain-HTTP LAN access. Do not expose that to the internet — see the notes in the file itself.
 
 ## Upgrading Postgres (17 → 18)
 

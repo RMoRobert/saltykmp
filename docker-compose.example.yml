@@ -3,14 +3,15 @@
 # value before deploying. HTTPS is handled by your own NGINX reverse proxy on the host (the app is
 # bound to 127.0.0.1 only).
 #
-# Secrets live here, so this file is gitignored. The committed template is docker-compose.example.yml:
+# This is the committed TEMPLATE. Copy it — the copy holds real secrets and is gitignored:
 #   cp docker-compose.example.yml docker-compose.yml   # then edit the CHANGE_ME_* values
 #
 #   1) ./gradlew :server:buildFatJar     (on a machine with JDK 21 + Android SDK)
-#   2) edit the CHANGE_ME_* values below
+#   2) edit the CHANGE_ME_* values in your copy
 #   3) docker compose up -d --build
 #
-# For an internet-free target machine, see docker-README-deployoffline.md (+ docker-compose.offline.yml).
+# For an internet-free target machine, see "Offline deploy" in DEPLOY.md
+# (+ docker-compose.offline.example.yml).
 
 # Values used by more than one service are defined once here and referenced with *aliases below.
 # (Top-level "x-" keys are ignored by Compose; they only hold the anchors.)
