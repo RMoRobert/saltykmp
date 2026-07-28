@@ -8,6 +8,7 @@ import com.enuvro.saltykmp.api.RecipeManifestEntry
 import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerRecipe
+import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.api.SyncDeleteRequest
 import com.enuvro.saltykmp.api.SyncDeleteResponse
@@ -252,4 +253,14 @@ class SaltyApiClient(
     suspend fun deleteCourse(id: String) { client.delete("$baseUrl/api/courses/${seg(id)}") { auth() } }
     suspend fun deleteCategory(id: String) { client.delete("$baseUrl/api/categories/${seg(id)}") { auth() } }
     suspend fun deleteTag(id: String) { client.delete("$baseUrl/api/tags/${seg(id)}") { auth() } }
+
+    // Shopping lists. Same full-list shape as the vocab tables above — the GET must return every list,
+    // since deletions are detected by absence from it.
+    suspend fun fetchShoppingLists(): List<ServerShoppingList> =
+        client.get("$baseUrl/api/shoppingLists") { auth() }.ensureOk().body()
+
+    suspend fun uploadShoppingList(l: ServerShoppingList): ServerShoppingList =
+        client.post("$baseUrl/api/shoppingLists") { auth(); contentType(ContentType.Application.Json); setBody(l) }.ensureOk().body()
+
+    suspend fun deleteShoppingList(id: String) { client.delete("$baseUrl/api/shoppingLists/${seg(id)}") { auth() } }
 }

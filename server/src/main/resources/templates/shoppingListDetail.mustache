@@ -1,0 +1,26 @@
+{{<layoutSidebar.mustache}}
+{{$content}}
+<p><a href="/shoppingLists" class="back-link">← Back to shopping lists</a></p>
+<h1>{{name}}</h1>
+<p class="muted">{{summary}}</p>
+
+{{#isFreeform}}
+<div class="section">
+    <pre class="freeform">{{freeformText}}</pre>
+</div>
+{{/isFreeform}}
+
+{{^isFreeform}}
+{{#hasItems}}
+<div class="section">
+    <ul class="shopping-list">
+        {{#items}}
+        <li class="{{#heading}}heading{{/heading}}{{#completed}} muted{{/completed}}">{{#check}}<span class="check">{{.}}</span>{{/check}}{{text}}</li>
+        {{/items}}
+    </ul>
+</div>
+{{/hasItems}}
+{{^hasItems}}<p class="empty">This list is empty.</p>{{/hasItems}}
+{{/isFreeform}}
+{{/content}}
+{{/layoutSidebar.mustache}}

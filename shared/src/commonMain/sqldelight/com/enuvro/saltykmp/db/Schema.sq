@@ -84,12 +84,15 @@ CREATE TABLE "recipeTag" (
 -- CREATE INDEX "recipeTag_on_recipeId" ON "recipeTag"("recipeId")
 -- CREATE INDEX "recipeTag_on_tagId" ON "recipeTag"("tagId")
 
+-- lastModifiedDate is last so the column order matches what the Swift app's SHARED-V0002 ALTER
+-- produces on a DB that predates it (the other platform's SELECT * reads positionally).
 CREATE TABLE "shoppingList" (
     "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
     "name" TEXT,
     "isFreeform" INTEGER AS Boolean,
     "contentsForList" TEXT AS List<ShoppingListListContents>,
-    "contentsForFreeform" TEXT
+    "contentsForFreeform" TEXT,
+    "lastModifiedDate" TEXT
  );
 
 -- Tombstones for recipes deleted locally. Sync sends these to the server's /sync/delete and excludes

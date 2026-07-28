@@ -142,28 +142,45 @@ class SharedMigration(val id: String, val apply: (SqlDriver) -> Unit)
  * changes here AND to the Swift app's `saltySharedMigrations` (Salty/Models/Schema.swift) using the SAME
  * [SharedMigration.id]. Example:
  *
- *   SharedMigration("2026-07-recipe-add-prepNotes") {
+ *   SharedMigration("SHARED-V0003") {
  *       it.execute(null, "ALTER TABLE recipe ADD COLUMN prepNotes TEXT", 0)
  *   }
  *
  * Use `ADD COLUMN` (idempotency is provided by the ledger, not the SQL) and append columns at the end
  * so the other platform's `SELECT *` keeps working.
+ *
+ * **Identifier convention:** `SHARED-V####`, numbered in the order entries are added.
+ *   - An id is IMMUTABLE once shipped: the ledger is the only record of what already ran, so renaming
+ *     one makes the migration look unapplied and the other app re-runs it.
+ *   - The first entry predates the convention and keeps its date-style id — which is why numbering
+ *     starts at V0002. Don't "fix" it.
+ *   - Execution order is this list's order, NOT the identifier; nothing sorts by the number.
  */
 internal val SHARED_MIGRATIONS: List<SharedMigration> = listOf(
     // Decouples image transfer from recipe-body sync. The column is also in Schema.sq (fresh DBs already
     // have it), so guard the ALTER on column existence to stay safe when this runs on a fresh KMP DB or a
     // DB the Swift app already migrated. Mirror: Salty's `saltySharedMigrations` with the SAME id.
     SharedMigration("2026-06-recipe-add-lastModifiedImageDate") { driver ->
-        if (!recipeColumnExists(driver, "lastModifiedImageDate")) {
+        if (!columnExists(driver, "recipe", "lastModifiedImageDate")) {
             driver.execute(null, """ALTER TABLE "recipe" ADD COLUMN "lastModifiedImageDate" TEXT""", 0)
+        }
+    },
+    // Sync-readiness for shopping lists: every mutable table gets a lastModifiedDate. Same guarded-ALTER
+    // shape as above (the column is also in Schema.sq for fresh KMP DBs). Mirror: Salty's
+    // `saltySharedMigrations` with the SAME id.
+    SharedMigration("SHARED-V0002") { driver ->
+        if (!columnExists(driver, "shoppingList", "lastModifiedDate")) {
+            driver.execute(null, """ALTER TABLE "shoppingList" ADD COLUMN "lastModifiedDate" TEXT""", 0)
         }
     },
 )
 
-private fun recipeColumnExists(driver: SqlDriver, column: String): Boolean =
+/** True if [table] has a column named [column]. [table] is a compile-time constant from the list above,
+ *  never user input — it's interpolated because `pragma_table_info` can't take it as a bound parameter. */
+private fun columnExists(driver: SqlDriver, table: String, column: String): Boolean =
     driver.executeQuery(
         null,
-        "SELECT COUNT(*) FROM pragma_table_info('recipe') WHERE name = ?",
+        "SELECT COUNT(*) FROM pragma_table_info('$table') WHERE name = ?",
         { cursor -> QueryResult.Value(cursor.next().value && (cursor.getLong(0) ?: 0L) > 0L) },
         1,
     ) { bindString(0, column) }.value

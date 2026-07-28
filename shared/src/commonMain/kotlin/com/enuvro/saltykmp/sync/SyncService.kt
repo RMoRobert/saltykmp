@@ -32,7 +32,8 @@ class SyncService(
 
         val library = syncCourses(isFirstSync, lastSync) +
             syncCategories(isFirstSync, lastSync) +
-            syncTags(isFirstSync, lastSync)
+            syncTags(isFirstSync, lastSync) +
+            syncShoppingLists(isFirstSync, lastSync)
         val recipes = syncRecipes(isFirstSync, lastSync, device.lastSyncDate)
 
         api.completeSync(deviceId)
@@ -54,12 +55,14 @@ class SyncService(
         val courses = api.fetchCourses()
         val categories = api.fetchCategories()
         val tags = api.fetchTags()
+        val shoppingLists = api.fetchShoppingLists()
         val recipes = api.fetchRecipeDelta(modifiedSince = null) // all bodies
 
         local.clearAll()
         courses.forEach { local.upsertCourse(it) }
         categories.forEach { local.upsertCategory(it) }
         tags.forEach { local.upsertTag(it) }
+        shoppingLists.forEach { local.upsertShoppingList(it) }
         var imagesDown = 0
         for (recipe in recipes) {
             local.upsertRecipe(recipe)
@@ -79,7 +82,7 @@ class SyncService(
         api.completeSync(deviceId)
         return SyncResult(
             recipesDown = recipes.size,
-            libraryDown = courses.size + categories.size + tags.size,
+            libraryDown = courses.size + categories.size + tags.size + shoppingLists.size,
             imagesDown = imagesDown,
         )
     }
@@ -98,6 +101,7 @@ class SyncService(
         api.fetchCourses().forEach { api.deleteCourse(it.id) }
         api.fetchCategories().forEach { api.deleteCategory(it.id) }
         api.fetchTags().forEach { api.deleteTag(it.id) }
+        api.fetchShoppingLists().forEach { api.deleteShoppingList(it.id) }
 
         // 2. Push the entire local library up. Organizers first so recipes can reference them.
         val courses = local.courses()
@@ -106,6 +110,8 @@ class SyncService(
         courses.forEach { api.uploadCourse(it) }
         categories.forEach { api.uploadCategory(it) }
         tags.forEach { api.uploadTag(it) }
+        val shoppingLists = local.shoppingLists()
+        shoppingLists.forEach { api.uploadShoppingList(it) }
 
         var recipesUp = 0
         var imagesUp = 0
@@ -128,7 +134,7 @@ class SyncService(
         api.completeSync(deviceId)
         return SyncResult(
             recipesUp = recipesUp,
-            libraryUp = courses.size + categories.size + tags.size,
+            libraryUp = courses.size + categories.size + tags.size + shoppingLists.size,
             imagesUp = imagesUp,
         )
     }
@@ -230,6 +236,28 @@ class SyncService(
             throw SyncException("Image sync failed for: ${failed.joinToString(", ")}")
         }
         return up to down
+    }
+
+    /**
+     * Shopping lists reconcile exactly like the vocab tables: a COMPLETE server list, diffed against
+     * local by `lastModifiedDate`, with deletions inferred from absence. Whole-row last-writer-wins —
+     * list items have no independent identity, so a concurrent edit on another device overwrites this
+     * one's items wholesale. That trade is deliberate (see FEATURE_PLANS.md in the Salty repo).
+     */
+    private suspend fun syncShoppingLists(isFirstSync: Boolean, lastSync: Instant?): Counts {
+        val server = api.fetchShoppingLists()
+        val serverById = server.associateBy { it.id }
+        val localById = local.shoppingLists().associateBy { it.id }
+        val plan = SyncReconciler.plan(
+            local = localById.values.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
+            server = server.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
+            isFirstSync = isFirstSync, lastSyncDate = lastSync,
+        )
+        plan.toUpload.forEach { id -> localById[id]?.let { api.uploadShoppingList(it) } }
+        plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertShoppingList(it) } }
+        plan.toDeleteLocally.forEach { local.deleteShoppingList(it) }
+        plan.toDeleteOnServer.forEach { api.deleteShoppingList(it) }
+        return plan.counts()
     }
 
     private suspend fun syncCourses(isFirstSync: Boolean, lastSync: Instant?): Counts {

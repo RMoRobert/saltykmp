@@ -6,6 +6,7 @@ import com.enuvro.saltykmp.api.RecipeManifestEntry
 import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerRecipe
+import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.api.SyncDeleteRequest
 import com.enuvro.saltykmp.api.SyncDeleteResponse
@@ -34,6 +35,7 @@ class SyncIntegrationTest {
     /** Minimal in-memory server keyed on the endpoints syncNow touches. */
     private class FakeServer {
         val recipes = linkedMapOf<String, ServerRecipe>()
+        val shoppingLists = linkedMapOf<String, ServerShoppingList>()
         val images = mutableMapOf<String, ByteArray>()
         var registered = false
         var completed = false
@@ -89,6 +91,16 @@ class SyncIntegrationTest {
                 path == "/api/courses" && get -> jsonOk(apiJson.encodeToString(emptyList<ServerCourse>()), 0)
                 path == "/api/categories" && get -> jsonOk(apiJson.encodeToString(emptyList<ServerCategory>()), 0)
                 path == "/api/tags" && get -> jsonOk(apiJson.encodeToString(emptyList<ServerTag>()), 0)
+                path == "/api/shoppingLists" && get ->
+                    jsonOk(apiJson.encodeToString(shoppingLists.values.toList()), shoppingLists.size)
+                path == "/api/shoppingLists" && post -> {
+                    val l = bodyOf<ServerShoppingList>(request.body); shoppingLists[l.id] = l
+                    jsonOk(apiJson.encodeToString(l), status = HttpStatusCode.Created)
+                }
+                path.startsWith("/api/shoppingLists/") && request.method == HttpMethod.Delete -> {
+                    shoppingLists.remove(path.substringAfterLast("/"))
+                    respond("", HttpStatusCode.NoContent)
+                }
 
                 else -> respond("", HttpStatusCode.NotFound)
             }
@@ -106,6 +118,54 @@ class SyncIntegrationTest {
                 headersOf(HttpHeaders.ContentType, "application/json")
             },
         )
+    }
+
+    /**
+     * Shopping lists converge both directions on a first sync, and the checklist items survive the
+     * round trip through the JSON column — including the heading/completed flags, which are the parts
+     * the Swift and KMP models most recently diverged on.
+     */
+    @Test
+    fun firstSyncConvergesShoppingListsBothDirections() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        local.upsertShoppingList(
+            ServerShoppingList(
+                id = "localList", name = "Local Groceries", isFreeform = false,
+                contentsForList = listOf(
+                    com.enuvro.saltykmp.db.model.ShoppingListListContents(id = "h1", isHeading = true, text = "Produce"),
+                    com.enuvro.saltykmp.db.model.ShoppingListListContents(id = "i1", isCompleted = true, text = "Apples"),
+                ),
+                lastModifiedDate = "2026-07-20T00:00:00.000Z",
+            )
+        )
+
+        val server = FakeServer()
+        server.shoppingLists["serverList"] = ServerShoppingList(
+            id = "serverList", name = "Server List", isFreeform = true,
+            contentsForFreeform = "# From the server",
+            lastModifiedDate = "2026-07-21T00:00:00.000Z",
+        )
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        // Local-only list was pushed up, preserving its items.
+        val uploaded = server.shoppingLists["localList"]
+        assertEquals("Local Groceries", uploaded?.name)
+        assertEquals(2, uploaded?.contentsForList?.size)
+        assertEquals(true, uploaded?.contentsForList?.first()?.isHeading)
+        assertEquals(true, uploaded?.contentsForList?.get(1)?.isCompleted)
+
+        // Server-only list was pulled down, keeping its freeform text.
+        val pulled = local.shoppingLists().associateBy { it.id }["serverList"]
+        assertEquals("Server List", pulled?.name)
+        assertEquals(true, pulled?.isFreeform)
+        assertEquals("# From the server", pulled?.contentsForFreeform)
+
+        // Both sides now agree.
+        assertEquals(setOf("localList", "serverList"), local.shoppingLists().map { it.id }.toSet())
+        assertEquals(setOf("localList", "serverList"), server.shoppingLists.keys.toSet())
     }
 
     @Test

@@ -2,11 +2,13 @@ package com.enuvro.saltykmp.web
 
 import com.enuvro.saltykmp.BuildInfo
 import com.enuvro.saltykmp.api.ServerRecipe
+import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.auth.AccountLockout
 import com.enuvro.saltykmp.auth.LoginThrottle
 import com.enuvro.saltykmp.auth.MIN_PASSWORD_LENGTH
 import com.enuvro.saltykmp.db.LibraryRepository
 import com.enuvro.saltykmp.db.RecipeRepository
+import com.enuvro.saltykmp.db.ShoppingListRepository
 import com.enuvro.saltykmp.db.UserRepository
 import com.enuvro.saltykmp.db.UserRow
 import com.enuvro.saltykmp.db.model.NutritionInformation
@@ -183,6 +185,19 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
                 query = query, courseNames = courseNames, active = "tags", basePath = "/tags/$id",
                 backLink = "← All tags" to "/tags",
             )))
+        }
+        // Shopping lists — read-only, mirroring the browse pages. Primarily a way to eyeball what
+        // sync actually landed on the server; also genuinely useful for viewing a list on the web.
+        get("/shoppingLists") {
+            val session = call.principal<UserSession>()!!
+            val lists = ShoppingListRepository.list(session.userId)
+            call.respond(MustacheContent("browseIndex.mustache", shoppingListsIndexModel(session, lists)))
+        }
+        get("/shoppingLists/{id}") {
+            val session = call.principal<UserSession>()!!
+            val list = ShoppingListRepository.getById(session.userId, call.parameters["id"]!!)
+            if (list == null) { call.respondRedirect("/shoppingLists"); return@get }
+            call.respond(MustacheContent("shoppingListDetail.mustache", shoppingListDetailModel(session, list)))
         }
         get("/recipes/{id}") {
             val session = call.principal<UserSession>()!!
@@ -422,6 +437,7 @@ private fun chrome(pageTitle: String, session: UserSession?, sidebarActive: Stri
             sidebarItem("Courses", "/courses", "courses", sidebarActive),
             sidebarItem("Categories", "/categories", "categories", sidebarActive),
             sidebarItem("Tags", "/tags", "tags", sidebarActive),
+            sidebarItem("Shopping Lists", "/shoppingLists", "shoppingLists", sidebarActive),
         )
     }
     return model
@@ -473,6 +489,68 @@ private fun browseIndexModel(session: UserSession, heading: String, active: Stri
         put("emptyMessage", "No ${heading.lowercase()} yet.")
         put("items", items.map { mapOf("name" to it.name, "href" to it.href, "count" to it.count) })
     }
+
+/** Reuses browseIndex.mustache — `browse-count` is a text pill, so the subtitle can be words. */
+private fun shoppingListsIndexModel(session: UserSession, lists: List<ServerShoppingList>): Map<String, Any?> =
+    chrome("Shopping Lists", session, sidebarActive = "shoppingLists").apply {
+        put("heading", "Shopping Lists")
+        put("isEmpty", lists.isEmpty())
+        put("emptyMessage", "No shopping lists yet.")
+        put("items", lists.map { l ->
+            mapOf(
+                "name" to l.displayName,
+                "href" to "/shoppingLists/${l.id}",
+                "count" to l.summary,
+            )
+        })
+    }
+
+private fun shoppingListDetailModel(session: UserSession, list: ServerShoppingList): Map<String, Any?> =
+    chrome(list.displayName, session, sidebarActive = "shoppingLists").apply {
+        val freeform = list.isFreeform == true
+        put("name", list.displayName)
+        put("summary", list.summary)
+        put("isFreeform", freeform)
+        // Freeform lists are Markdown. Rendered as plain preformatted text rather than converted to
+        // HTML: this view is read-only, and mustache escapes it, so no Markdown dependency (or the
+        // sanitising that would come with it) is needed on the server.
+        put("freeformText", list.contentsForFreeform.orEmpty())
+        val items = list.contentsForList.orEmpty()
+        put("hasItems", items.isNotEmpty())
+        put("items", items.map { i ->
+            val heading = i.isHeading == true
+            mapOf(
+                "text" to i.text,
+                "heading" to heading,
+                "completed" to (i.isCompleted == true && !heading),
+                // ☑/☐ rather than a real checkbox — this page is deliberately not interactive. Kept
+                // separate from the text so the template can park it in a gutter, letting item text
+                // line up with heading text instead of being pushed right by the glyph.
+                "check" to if (heading) null else if (i.isCompleted == true) "☑" else "☐",
+            )
+        })
+    }
+
+/**
+ * How much is *in* the list, rather than how far through it you are. Kept in step with the Swift
+ * app's `ShoppingList.contentsSummary`, so the same list reads the same in both UIs — change them
+ * together.
+ *
+ * Headings are excluded from the item count (they group items, they aren't things to buy), and blank
+ * lines from the line count (paragraph spacing in a Markdown document shouldn't inflate it).
+ */
+private val ServerShoppingList.summary: String
+    get() {
+        if (isFreeform == true) {
+            val lines = contentsForFreeform.orEmpty().lineSequence().count { it.isNotBlank() }
+            return if (lines == 0) "Empty" else "$lines line${if (lines == 1) "" else "s"}"
+        }
+        val items = contentsForList.orEmpty().count { it.isHeading != true }
+        return if (items == 0) "No items" else "$items item${if (items == 1) "" else "s"}"
+    }
+
+private val ServerShoppingList.displayName: String
+    get() = name?.takeIf { it.isNotBlank() } ?: "Untitled list"
 
 private fun recipeListModel(
     session: UserSession,

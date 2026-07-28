@@ -3,6 +3,7 @@ package com.enuvro.saltykmp.sync
 import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerRecipe
+import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.db.AppDatabase
 import com.enuvro.saltykmp.db.model.Difficulty
@@ -158,6 +159,27 @@ class LocalStore(private val db: AppDatabase) {
     fun deleteCategory(id: String) = q.deleteCategoryById(id)
     fun deleteTag(id: String) = q.deleteTagById(id)
 
+    // Shopping lists. Synced as whole rows (most-recently-modified wins), so items carry no identity
+    // of their own — `contentsForList` moves as one blob.
+    fun shoppingLists(): List<ServerShoppingList> =
+        q.selectAllShoppingLists().executeAsList().map {
+            ServerShoppingList(
+                id = it.id,
+                name = it.name,
+                isFreeform = it.isFreeform,
+                contentsForList = it.contentsForList,
+                contentsForFreeform = it.contentsForFreeform,
+                lastModifiedDate = dbToWireDate(it.lastModifiedDate),
+            )
+        }
+
+    fun upsertShoppingList(l: ServerShoppingList) = q.upsertShoppingList(
+        l.id, l.name, l.isFreeform, l.contentsForList ?: emptyList(), l.contentsForFreeform,
+        wireToDbDate(l.lastModifiedDate),
+    )
+
+    fun deleteShoppingList(id: String) = q.deleteShoppingListById(id)
+
     /** Wipe the entire local library (used by Force Full Re-Sync before pulling from the server). */
     fun clearAll() = q.transaction {
         q.deleteAllRecipeCategories()
@@ -166,6 +188,7 @@ class LocalStore(private val db: AppDatabase) {
         q.deleteAllCourses()
         q.deleteAllCategories()
         q.deleteAllTags()
+        q.deleteAllShoppingLists()
         q.deleteAllTombstones() // server-wins reset discards pending local deletions
     }
 

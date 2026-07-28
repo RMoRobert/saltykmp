@@ -111,8 +111,15 @@ FROM shoppingList
 ORDER BY name ASC;
 
 upsertShoppingList:
-INSERT OR REPLACE INTO shoppingList(id, name, isFreeform, contentsForList, contentsForFreeform)
-VALUES (?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO shoppingList(id, name, isFreeform, contentsForList, contentsForFreeform, lastModifiedDate)
+VALUES (?, ?, ?, ?, ?, ?);
+
+deleteShoppingListById:
+DELETE FROM shoppingList
+WHERE id = ?;
+
+deleteAllShoppingLists:
+DELETE FROM shoppingList;
 
 -- Bulk clears (for Force Full Re-Sync: wipe local library, then pull from server)
 deleteAllRecipes:

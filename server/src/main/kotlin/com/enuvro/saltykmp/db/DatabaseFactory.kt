@@ -31,7 +31,7 @@ object DatabaseFactory {
         transaction {
             SchemaUtils.create(
                 Users, Recipes, Courses, Categories, Tags,
-                RecipeCategories, RecipeTags, DeviceSyncs,
+                RecipeCategories, RecipeTags, DeviceSyncs, ShoppingLists,
             )
         }
     }

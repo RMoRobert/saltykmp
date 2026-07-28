@@ -11,6 +11,7 @@ import com.enuvro.saltykmp.image.ImageStore
 import com.enuvro.saltykmp.recipe.recipeRoutes
 import com.enuvro.saltykmp.util.appJson
 import com.enuvro.saltykmp.library.libraryRoutes
+import com.enuvro.saltykmp.shoppinglist.shoppingListRoutes
 import com.enuvro.saltykmp.web.UserSession
 import com.enuvro.saltykmp.web.WEB_AUTH
 import com.enuvro.saltykmp.web.webRoutes
@@ -243,6 +244,7 @@ fun Application.installSalty(
         authRoutes(jwtService, loginThrottle, accountLockout)
         recipeRoutes(imageStore)
         libraryRoutes()
+        shoppingListRoutes()
         webRoutes(imageStore, loginThrottle, accountLockout)
     }
 }

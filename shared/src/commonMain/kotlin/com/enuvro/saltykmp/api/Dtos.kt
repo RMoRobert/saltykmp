@@ -5,8 +5,15 @@ import com.enuvro.saltykmp.db.model.Ingredient
 import com.enuvro.saltykmp.db.model.Note
 import com.enuvro.saltykmp.db.model.NutritionInformation
 import com.enuvro.saltykmp.db.model.PreparationTime
+import com.enuvro.saltykmp.db.model.ShoppingListListContents
 import com.enuvro.saltykmp.db.model.Variation
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonTransformingSerializer
 
 // Wire DTOs shared by the Ktor server and (later) the KMP sync client. The JSON shape MUST match the
 // Swift `Server*` Codable structs so the existing Salty Swift app stays compatible. Timestamps are
@@ -86,6 +93,48 @@ data class DeviceSyncInfo(
     val firstSyncDate: String? = null,
     val isFirstSync: Boolean = false,
 )
+
+/**
+ * A shopping list on the wire. Mirrors the Swift `ShoppingList` and KMP's `shoppingList` table.
+ *
+ * `contentsForList` is carried as a typed list and stored server-side as JSON text, the same way
+ * `ServerRecipe.directions` etc. are. Sync granularity is the whole row (most-recently-modified
+ * wins), so list items intentionally have no independent identity on the server.
+ *
+ * Every field past `id` is optional so an older client that predates a field still round-trips —
+ * the same tolerance the recipe DTO relies on, since there is no protocol version field.
+ */
+@Serializable
+data class ServerShoppingList(
+    val id: String,
+    val name: String? = null,
+    val isFreeform: Boolean? = null,
+    @Serializable(with = LenientShoppingListItems::class)
+    val contentsForList: List<ShoppingListListContents>? = null,
+    val contentsForFreeform: String? = null,
+    val lastModifiedDate: String? = null,
+)
+
+/**
+ * Decodes shopping-list items one at a time, dropping any that can't be read instead of failing the
+ * whole payload. Without it a single malformed item throws out of `fetchShoppingLists()` and aborts
+ * the ENTIRE sync — recipes included — on every attempt. Mirrors the Swift `ServerShoppingList`
+ * decoder.
+ *
+ * Leniency stops here on purpose: the array of *lists* stays strict, because the reconciler infers
+ * deletions from absence, so silently dropping an unreadable list would delete it.
+ */
+internal object LenientShoppingListItems :
+    JsonTransformingSerializer<List<ShoppingListListContents>>(ListSerializer(ShoppingListListContents.serializer())) {
+    override fun transformDeserialize(element: JsonElement): JsonElement {
+        val array = element as? JsonArray ?: return element
+        return JsonArray(array.filter { item ->
+            val obj = item as? JsonObject ?: return@filter false
+            // id and text are the only non-optional fields; everything else already tolerates absence.
+            obj["id"] is JsonPrimitive && obj["text"] is JsonPrimitive
+        })
+    }
+}
 
 @Serializable
 data class SyncDeleteRequest(val deviceId: String? = null, val recipeIds: List<String> = emptyList())

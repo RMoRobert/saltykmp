@@ -87,6 +87,20 @@ object RecipeTags : Table("recipe_tag") {
     override val primaryKey = PrimaryKey(id)
 }
 
+// A shopping list is either a checklist (`contents_for_list`, a JSON array of items) or a freeform
+// Markdown document (`contents_for_freeform`), fixed at creation. Sync granularity is the whole row —
+// most-recently-modified wins — so items deliberately have no server-side identity of their own.
+object ShoppingLists : Table("shopping_list") {
+    val id = varchar("id", 64)
+    val userId = varchar("user_id", 64).index()
+    val name = text("name").nullable()
+    val isFreeform = bool("is_freeform").nullable()
+    val contentsForList = text("contents_for_list").nullable()
+    val contentsForFreeform = text("contents_for_freeform").nullable()
+    val lastModifiedDate = datetime("last_modified_date").nullable().index()
+    override val primaryKey = PrimaryKey(id)
+}
+
 object DeviceSyncs : Table("device_sync") {
     val deviceId = varchar("device_id", 128)
     val userId = varchar("user_id", 64).index()

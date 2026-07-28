@@ -8,7 +8,11 @@ import com.enuvro.saltykmp.api.RecipeManifestEntry
 import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerRecipe
+import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.db.LibraryRepository
+import com.enuvro.saltykmp.db.ShoppingListRepository
+import com.enuvro.saltykmp.db.ShoppingLists
+import com.enuvro.saltykmp.db.model.ShoppingListListContents
 import com.enuvro.saltykmp.auth.AccountLockout
 import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.db.Categories
@@ -88,6 +92,7 @@ class SaltyServerTest {
             DatabaseFactory.dbQuery {
                 RecipeTags.deleteAll(); RecipeCategories.deleteAll()
                 Recipes.deleteAll(); Courses.deleteAll(); Categories.deleteAll(); Tags.deleteAll()
+                ShoppingLists.deleteAll()
                 DeviceSyncs.deleteAll(); Users.deleteAll()
             }
             UserRepository.create("tester", "pw")
@@ -155,6 +160,106 @@ class SaltyServerTest {
             formParameters = parameters { append("username", "tester"); append("password", "pw") },
         )
         assertTrue(web.get("/").bodyAsText().contains("Web Waffles"))
+    }
+
+    @Test
+    fun webShowsShoppingListsAndTheirContents() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        runBlocking {
+            val uid = UserRepository.findByUsername("tester")!!.id
+            ShoppingListRepository.upsert(uid, ServerShoppingList(
+                id = "wl1", name = "Web Groceries", isFreeform = false,
+                contentsForList = listOf(
+                    ShoppingListListContents(id = "h1", isHeading = true, text = "Produce"),
+                    ShoppingListListContents(id = "i1", isCompleted = true, text = "Web Apples"),
+                    ShoppingListListContents(id = "i2", text = "Web Spinach"),
+                ),
+                lastModifiedDate = "2026-07-20T00:00:00.000Z",
+            ))
+            ShoppingListRepository.upsert(uid, ServerShoppingList(
+                id = "wl2", name = "Web Notes", isFreeform = true,
+                contentsForFreeform = "# Corner Store\n* Milk",
+                lastModifiedDate = "2026-07-20T00:00:00.000Z",
+            ))
+        }
+        val web = createClient { install(HttpCookies) }
+        web.submitForm(
+            url = "/login",
+            formParameters = parameters { append("username", "tester"); append("password", "pw") },
+        )
+
+        val index = web.get("/shoppingLists").bodyAsText()
+        assertTrue(index.contains("Web Groceries"))
+        assertTrue(index.contains("Web Notes"))
+        // Size-based, matching the Swift app's row subtitle: headings don't count as items, and blank
+        // lines don't count as lines. wl1 has a heading + 2 items; wl2 has 2 non-blank lines.
+        assertTrue(index.contains("2 items"), "checklist reports its item count")
+        assertTrue(index.contains("2 lines"), "freeform list reports its line count")
+
+        val checklist = web.get("/shoppingLists/wl1").bodyAsText()
+        assertTrue(checklist.contains("Produce"))
+        assertTrue(checklist.contains("Web Apples"))
+        assertTrue(checklist.contains("☑"), "completed items render as checked")
+        assertTrue(checklist.contains("☐"), "open items render as unchecked")
+
+        val freeform = web.get("/shoppingLists/wl2").bodyAsText()
+        assertTrue(freeform.contains("Corner Store"))
+
+        // The sidebar entry must appear on OTHER pages too — that's what makes the section reachable
+        // at all. Asserting it only on its own page would pass even if it were never added to chrome().
+        val recipesPage = web.get("/").bodyAsText()
+        assertTrue(recipesPage.contains("Shopping Lists"), "sidebar entry missing from the recipes page")
+        assertTrue(recipesPage.contains("href=\"/shoppingLists\""), "sidebar link missing from the recipes page")
+    }
+
+    @Test
+    fun webShoppingListSummaryHandlesSingularAndEmpty() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        runBlocking {
+            val uid = UserRepository.findByUsername("tester")!!.id
+            ShoppingListRepository.upsert(uid, ServerShoppingList(
+                id = "one", name = "One Item", isFreeform = false,
+                contentsForList = listOf(ShoppingListListContents(id = "i", text = "Milk")),
+                lastModifiedDate = "2026-07-20T00:00:00.000Z"))
+            ShoppingListRepository.upsert(uid, ServerShoppingList(
+                id = "headings", name = "Headings Only", isFreeform = false,
+                contentsForList = listOf(ShoppingListListContents(id = "h", isHeading = true, text = "Produce")),
+                lastModifiedDate = "2026-07-20T00:00:00.000Z"))
+            ShoppingListRepository.upsert(uid, ServerShoppingList(
+                id = "blank", name = "Blank Freeform", isFreeform = true,
+                contentsForFreeform = "\n\n   \n", lastModifiedDate = "2026-07-20T00:00:00.000Z"))
+        }
+        val web = createClient { install(HttpCookies) }
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+
+        val index = web.get("/shoppingLists").bodyAsText()
+        assertTrue(index.contains("1 item<"), "singular, not \"1 items\"")
+        assertTrue(index.contains("No items"), "a headings-only list has no items to count")
+        assertTrue(index.contains("Empty"), "whitespace-only freeform counts as empty")
+    }
+
+    /** One user must never see another's lists, and an unknown id must not 500. */
+    @Test
+    fun webShoppingListsAreUserScoped() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        runBlocking {
+            UserRepository.create("other", "pw2")
+            val otherId = UserRepository.findByUsername("other")!!.id
+            ShoppingListRepository.upsert(otherId, ServerShoppingList(
+                id = "secret", name = "Other Persons List",
+                lastModifiedDate = "2026-07-20T00:00:00.000Z",
+            ))
+        }
+        val web = createClient { install(HttpCookies) }
+        web.submitForm(
+            url = "/login",
+            formParameters = parameters { append("username", "tester"); append("password", "pw") },
+        )
+
+        assertTrue(!web.get("/shoppingLists").bodyAsText().contains("Other Persons List"))
+        // Unknown / not-yours id redirects back to the index rather than erroring.
+        assertEquals(HttpStatusCode.OK, web.get("/shoppingLists/secret").status)
+        assertTrue(!web.get("/shoppingLists/secret").bodyAsText().contains("Other Persons List"))
     }
 
     @Test
@@ -328,6 +433,84 @@ class SaltyServerTest {
 
             assertEquals(HttpStatusCode.NoContent, client.delete("/api/recipes/r1") { bearerAuth(token) }.status)
             assertEquals(HttpStatusCode.NotFound, client.get("/api/recipes/r1") { bearerAuth(token) }.status)
+        }
+    }
+
+    @Test
+    fun shoppingListCrudRoundTripPreservesItemsAndDate() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            val date = "2026-07-20T09:30:00.000Z"
+            val list = ServerShoppingList(
+                id = "sl1", name = "Groceries", isFreeform = false,
+                contentsForList = listOf(
+                    ShoppingListListContents(id = "h1", isHeading = true, text = "Produce"),
+                    ShoppingListListContents(id = "i1", isCompleted = true, text = "Apples"),
+                ),
+                lastModifiedDate = date,
+            )
+
+            assertEquals(
+                HttpStatusCode.Created,
+                client.post("/api/shoppingLists") {
+                    bearerAuth(token); contentType(ContentType.Application.Json); setBody(list)
+                }.status,
+            )
+
+            val fetched = client.get("/api/shoppingLists/sl1") { bearerAuth(token) }.body<ServerShoppingList>()
+            assertEquals("Groceries", fetched.name)
+            assertEquals(false, fetched.isFreeform)
+            assertEquals(date, fetched.lastModifiedDate)   // exact wire date round-trip
+            // Item shape survives the JSON-text column, including the heading/completed flags.
+            assertEquals(2, fetched.contentsForList?.size)
+            assertEquals(true, fetched.contentsForList?.first()?.isHeading)
+            assertEquals("Apples", fetched.contentsForList?.get(1)?.text)
+            assertEquals(true, fetched.contentsForList?.get(1)?.isCompleted)
+
+            client.put("/api/shoppingLists/sl1") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(list.copy(name = "Groceries v2"))
+            }
+            assertEquals(
+                "Groceries v2",
+                client.get("/api/shoppingLists/sl1") { bearerAuth(token) }.body<ServerShoppingList>().name,
+            )
+
+            assertEquals(HttpStatusCode.NoContent, client.delete("/api/shoppingLists/sl1") { bearerAuth(token) }.status)
+            assertEquals(HttpStatusCode.NotFound, client.get("/api/shoppingLists/sl1") { bearerAuth(token) }.status)
+        }
+    }
+
+    /** Clients detect deletions by absence from this list, so it must be complete and counted. */
+    @Test
+    fun shoppingListsListIsCompleteAndReportsTotalCount() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            for (i in 1..3) {
+                client.post("/api/shoppingLists") {
+                    bearerAuth(token); contentType(ContentType.Application.Json)
+                    setBody(ServerShoppingList(id = "sl$i", name = "List $i", lastModifiedDate = "2026-07-20T09:00:00.000Z"))
+                }
+            }
+            val resp = client.get("/api/shoppingLists") { bearerAuth(token) }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            assertEquals("3", resp.headers["X-Total-Count"])
+            assertEquals(3, resp.body<List<ServerShoppingList>>().size)
+        }
+    }
+
+    @Test
+    fun shoppingListsAreUserScopedAndBehindAuth() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/api/shoppingLists").status)
+            val token = login(client)
+            assertEquals(HttpStatusCode.OK, client.get("/api/shoppingLists") { bearerAuth(token) }.status)
         }
     }
 

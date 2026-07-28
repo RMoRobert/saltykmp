@@ -66,6 +66,9 @@ data class ShoppingListListContents(
     val id: String,
     val isCompleted: Boolean? = false,
     val isImportant: Boolean? = false,
+    // Heading rows group items by store/aisle. Optional so rows written before headings existed still
+    // decode (null == non-heading). Mirrors the Swift `ShoppingListListContents`.
+    val isHeading: Boolean? = false,
     val text: String,
 )
 
