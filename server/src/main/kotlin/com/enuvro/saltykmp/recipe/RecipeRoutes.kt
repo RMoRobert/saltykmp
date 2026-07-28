@@ -235,7 +235,7 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                         is PartData.FormItem -> if (part.name == "lastModifiedImageDate") imageDateStr = part.value
                         else -> {}
                     }
-                    part.dispose()
+                    part.release()
                 }
                 if (oversized) {
                     call.respond(HttpStatusCode.PayloadTooLarge, mapOf("error" to "Image exceeds ${MAX_IMAGE_UPLOAD_BYTES / (1024 * 1024)} MB limit"))
