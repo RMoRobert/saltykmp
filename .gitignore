@@ -19,6 +19,8 @@ composeApp/salty.db
 local.properties
 /.kotlin
 /composeApp/release
-/server/saltyserver-image.tar
+# Saved Docker images for the offline deploy (saltyserver-image.tar, postgres18-image.tar).
+# Unanchored: they get written wherever `docker save` is run, not just under server/.
+*-image.tar
 /salty-db
 /salty-images
