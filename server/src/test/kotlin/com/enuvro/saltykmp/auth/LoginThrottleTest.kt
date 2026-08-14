@@ -52,6 +52,17 @@ class LoginThrottleTest {
     }
 
     @Test
+    fun countsAcrossUsernameWhitespaceAndCase() {
+        val clock = Clock()
+        val throttle = LoginThrottle(maxFailures = 2, lockMs = 1000L, now = clock::now)
+        // The account lookup trims + lowercases, so every padded/cased variant is the same account
+        // and must share one counter per IP.
+        throttle.recordFailure("1.1.1.1", " Alice")
+        throttle.recordFailure("1.1.1.1", "alice ")
+        assertTrue(throttle.retryAfterSeconds("1.1.1.1", "alice") != null)
+    }
+
+    @Test
     fun distinctUsernameFloodStaysBounded() {
         val clock = Clock()
         val throttle = LoginThrottle(

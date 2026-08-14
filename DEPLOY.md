@@ -90,8 +90,9 @@ docker compose up -d --build server     # rebuild + restart app only
 
 ## Offline deploy
 
-For a target with no internet and no source checkout. Everything is built on a machine that *does*
-have both, shipped as image tarballs, and run from `docker-compose.offline.example.yml` (which uses
+For a target with no internet and no source checkout (or if you just prefer to buildin your machine
+instead of the server). Everything is built on a machine that *does* Internet access, Docker, and the source,
+then shipped as image tarballs, and run from `docker-compose.offline.example.yml` (which will need to use
 `image:` rather than `build:`).
 
 On the build machine, assuming `JAVA_HOME=/path/to/jdk-21`:
@@ -100,6 +101,7 @@ On the build machine, assuming `JAVA_HOME=/path/to/jdk-21`:
 ./gradlew :server:buildFatJar
 docker build -t saltyserver:latest ./server
 docker save saltyserver:latest -o saltyserver-image.tar
+# If needed (no Internet access at all on server):
 docker pull postgres:18 && docker save postgres:18 -o postgres18-image.tar
 ```
 

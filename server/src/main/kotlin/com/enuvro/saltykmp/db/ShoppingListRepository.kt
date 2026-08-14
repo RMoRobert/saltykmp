@@ -90,10 +90,16 @@ object ShoppingListRepository {
     }
 
     /**
-     * Atomic read-modify-write for semantic edits (the web UI's toggle/add/remove item, rename):
+     * Atomic read-modify-write for semantic edits (the web UI's toggle/add/remove/move item, rename):
      * [transform] sees the CURRENT row and returns the new one, inside the same FOR UPDATE
      * transaction, so these compose with concurrent syncs without needing a baseRevision. Stamps
      * `lastModifiedDate` with server time and bumps the revision. Null when the list doesn't exist.
+     *
+     * A transform that changes nothing (moving the top item up, toggling a vanished item id) is a
+     * true no-op: no write, no revision bump — so it can't ripple a pointless "server changed"
+     * through every client's next sync. For that to hold, a transform signalling "no change" must
+     * return its input as-is — in particular never materialize a NULL contentsForList as an empty
+     * list, since null vs [] is a meaningful distinction (see [write]).
      */
     suspend fun mutate(
         userId: String,
@@ -103,11 +109,14 @@ object ShoppingListRepository {
         val current = ShoppingLists.selectAll()
             .where { (ShoppingLists.id eq id) and (ShoppingLists.userId eq userId) }
             .forUpdate().limit(1).singleOrNull() ?: return@dbQuery null
-        val updated = transform(current.toDto()).copy(
-            id = id,
-            lastModifiedDate = WireDate.format(WireDate.nowUtc()),
+        val currentDto = current.toDto()
+        val transformed = transform(currentDto).copy(id = id)
+        if (transformed == currentDto) return@dbQuery currentDto
+        write(
+            userId,
+            transformed.copy(lastModifiedDate = WireDate.format(WireDate.nowUtc())),
+            revision = current[ShoppingLists.revision] + 1L,
         )
-        write(userId, updated, revision = current[ShoppingLists.revision] + 1L)
     }
 
     /**

@@ -214,6 +214,12 @@ body { background:#f5f5f7; }
 .create-list-form { margin-top:1.25rem; }
 .create-list-form input[type="text"] { flex:1; max-width:18rem; }
 .create-list-form select { width:auto; margin:0; }
-.freeform-editor { width:100%; font-family:inherit; font-size:.95rem; margin-bottom:.6rem; }
 .save-btn { width:auto; }
 .conflict-notice { background:#fdecea; color:#8a1f11; margin-bottom:1rem; }
+
+/* Markdown editor (plain textarea for now — see the EasyMDE TODO in shoppingListDetail.mustache) */
+.freeform-editor { width:100%; margin-bottom:.6rem;
+    font-family:ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size:.9rem; line-height:1.5; tab-size:4; min-height:22rem; resize:vertical; }
+.editor-footer { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.editor-hint { font-size:.82rem; }

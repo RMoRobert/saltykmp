@@ -31,11 +31,20 @@ Saving again will replace the saved version.</div>
 </div>
 {{/conflict}}
 <div class="section">
+    {{! TODO: upgrade this plain textarea to a real Markdown editor (EasyMDE is the likely pick —
+        https://github.com/Ionaru/easy-markdown-editor). Vendor its JS/CSS under /static rather
+        than a CDN (offline/self-hosted deployments), keep this textarea as the no-JS fallback,
+        and keep submitting through this same baseRevision-guarded form so the 409 conflict
+        banner keeps working. }}
     <form method="post" action="/shoppingLists/{{listId}}/freeform">
         <input type="hidden" name="csrf" value="{{csrfToken}}">
         <input type="hidden" name="baseRevision" value="{{revision}}">
-        <textarea name="text" rows="16" class="freeform-editor" aria-label="List text">{{freeformText}}</textarea>
-        <button type="submit" class="save-btn">Save</button>
+        <textarea name="text" rows="18" class="freeform-editor" aria-label="Markdown text"
+                  spellcheck="false" autocomplete="off">{{freeformText}}</textarea>
+        <div class="editor-footer">
+            <span class="muted editor-hint">Write list in plain-text Markdown for basic formatting (in mobile and desktop apps)</span>
+            <button type="submit" class="save-btn">Save</button>
+        </div>
     </form>
 </div>
 {{/isFreeform}}
@@ -65,6 +74,12 @@ Saving again will replace the saved version.</div>
             {{/check}}
             <span class="item-text">{{text}}</span>
             <span class="item-actions">
+                <form method="post" action="/shoppingLists/{{listId}}/items/move" class="inline-form">
+                    <input type="hidden" name="csrf" value="{{csrfToken}}">
+                    <input type="hidden" name="itemId" value="{{id}}">
+                    <button type="submit" name="dir" value="up" class="item-action" aria-label="Move item up">↑</button>
+                    <button type="submit" name="dir" value="down" class="item-action" aria-label="Move item down">↓</button>
+                </form>
                 <a href="/shoppingLists/{{listId}}?edit={{id}}" class="item-action" aria-label="Edit item">✎</a>
                 <form method="post" action="/shoppingLists/{{listId}}/items/delete" class="inline-form">
                     <input type="hidden" name="csrf" value="{{csrfToken}}">

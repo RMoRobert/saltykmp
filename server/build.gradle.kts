@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "com.enuvro.saltykmp"
-version = "2.9.100"
+version = providers.gradleProperty("appVersion").get()
 application {
     mainClass.set("com.enuvro.saltykmp.ApplicationKt")
 
@@ -38,7 +38,8 @@ ktor {
 }
 
 // Bake the Gradle project version + build time into version.properties so the /about page (and any
-// runtime reporting) reflects the real build. Keeps the version single-sourced from `version` above.
+// runtime reporting) reflects the real build. Keeps the version single-sourced from `appVersion`
+// in the root gradle.properties.
 tasks.named<org.gradle.language.jvm.tasks.ProcessResources>("processResources") {
     val appVersion = project.version.toString()
     val buildTime = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'")

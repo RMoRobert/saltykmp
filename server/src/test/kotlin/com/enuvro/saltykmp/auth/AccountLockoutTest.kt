@@ -48,6 +48,17 @@ class AccountLockoutTest {
     }
 
     @Test
+    fun countsAcrossUsernameWhitespace() {
+        val clock = Clock()
+        val lock = AccountLockout(maxFailures = 2, lockMs = 1000L, now = clock::now)
+        // The account lookup trims, so " alice" attempts the same account as "alice" — padding
+        // must not mint a fresh counter, or an attacker could sidestep the lockout entirely.
+        lock.recordFailure(" alice")
+        lock.recordFailure("alice ")
+        assertTrue(lock.retryAfterSeconds("alice") != null)
+    }
+
+    @Test
     fun distinctUsernameFloodStaysBounded() {
         val clock = Clock()
         val lock = AccountLockout(

@@ -240,7 +240,8 @@ class SaltyServerTest {
 
     /** The CSRF token lives in the session; forms echo it. Fish it out of a rendered page. */
     private fun csrfFrom(html: String): String =
-        Regex("""name="csrf" value="([0-9a-f]+)"""").find(html)!!.groupValues[1]
+        Regex("""name="csrf" value="([0-9a-f]+)"""").find(html)?.groupValues?.get(1)
+            ?: error("no CSRF token found in page")
 
     @Test
     fun webChecklistEditingRoundTrip() = testApplication {
@@ -292,6 +293,77 @@ class SaltyServerTest {
         assertEquals("Renamed", runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId)?.name })
         web.submitForm(url = "$listPath/delete", formParameters = parameters { append("csrf", csrf) })
         assertEquals(null, runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId) })
+    }
+
+    /** ↑/↓ swap with the neighbor; moving past either end is a true no-op (revision untouched). */
+    @Test
+    fun webChecklistItemReordering() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
+        runBlocking {
+            ShoppingListRepository.save(uid, ServerShoppingList(
+                id = "ord", name = "Ordered", isFreeform = false,
+                contentsForList = listOf(
+                    ShoppingListListContents(id = "a", text = "Alpha"),
+                    ShoppingListListContents(id = "b", text = "Beta"),
+                    ShoppingListListContents(id = "c", text = "Gamma"),
+                ),
+                lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+        }
+        val web = createClient { install(HttpCookies) }
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+        val csrf = csrfFrom(web.get("/shoppingLists/ord").bodyAsText())
+        suspend fun texts() = ShoppingListRepository.getById(uid, "ord")!!.contentsForList!!.map { it.text }
+        suspend fun revision() = ShoppingListRepository.getById(uid, "ord")!!.revision
+
+        web.submitForm(url = "/shoppingLists/ord/items/move", formParameters = parameters {
+            append("csrf", csrf); append("itemId", "c"); append("dir", "up")
+        })
+        assertEquals(listOf("Alpha", "Gamma", "Beta"), runBlocking { texts() })
+
+        web.submitForm(url = "/shoppingLists/ord/items/move", formParameters = parameters {
+            append("csrf", csrf); append("itemId", "a"); append("dir", "down")
+        })
+        assertEquals(listOf("Gamma", "Alpha", "Beta"), runBlocking { texts() })
+
+        // Top item up / bottom item down: order AND revision must be untouched — a no-op that still
+        // bumped the revision would make every client re-download the list for nothing.
+        val before = runBlocking { revision() }
+        web.submitForm(url = "/shoppingLists/ord/items/move", formParameters = parameters {
+            append("csrf", csrf); append("itemId", "g"); append("dir", "up")   // unknown id: also a no-op
+        })
+        web.submitForm(url = "/shoppingLists/ord/items/move", formParameters = parameters {
+            append("csrf", csrf); append("itemId", "b"); append("dir", "down")
+        })
+        assertEquals(listOf("Gamma", "Alpha", "Beta"), runBlocking { texts() })
+        assertEquals(before, runBlocking { revision() }, "no-op moves must not bump the revision")
+    }
+
+    /** A move against a row whose contentsForList is NULL (freeform lists by construction) must stay a
+     *  no-op: NULL must never be materialized as [] — that distinction protects older clients (see
+     *  ShoppingListRepository.write) — and the revision must not budge. */
+    @Test
+    fun webItemMoveOnNullContentsListIsANoOp() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
+        runBlocking {
+            ShoppingListRepository.save(uid, ServerShoppingList(
+                id = "ff", name = "Notes", isFreeform = true,
+                contentsForFreeform = "milk\neggs",
+                lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+        }
+        val web = createClient { install(HttpCookies) }
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+        val csrf = csrfFrom(web.get("/shoppingLists/ff").bodyAsText())
+        val before = runBlocking { ShoppingListRepository.getById(uid, "ff")!! }
+
+        web.submitForm(url = "/shoppingLists/ff/items/move", formParameters = parameters {
+            append("csrf", csrf); append("itemId", "x"); append("dir", "up")
+        })
+
+        val after = runBlocking { ShoppingListRepository.getById(uid, "ff")!! }
+        assertEquals(null, after.contentsForList, "NULL contents must never become []")
+        assertEquals(before.revision, after.revision, "no-op move must not bump the revision")
     }
 
     /** A freeform save whose baseRevision went stale must show the conflict banner, not clobber. */
@@ -460,7 +532,7 @@ class SaltyServerTest {
         // Admin sees the management page.
         val usersHtml = web.get("/users").bodyAsText()
         assertTrue(usersHtml.contains("Users"))
-        val csrf = extractCsrf(usersHtml)
+        val csrf = csrfFrom(usersHtml)
 
         // Create a new user via the form (password must clear the 8-char minimum; CSRF token required).
         web.submitForm(
@@ -500,7 +572,7 @@ class SaltyServerTest {
         )
         val bossId = runBlocking { UserRepository.findByUsername("boss")!!.id }
         // Send a valid CSRF token so the self-delete guard (not the CSRF check) is what blocks this.
-        val csrf = extractCsrf(web.get("/users").bodyAsText())
+        val csrf = csrfFrom(web.get("/users").bodyAsText())
         web.submitForm(url = "/users/$bossId/delete", formParameters = parameters { append("csrf", csrf) })
         assertNotNull(runBlocking { UserRepository.findByUsername("boss") })
     }
@@ -524,6 +596,41 @@ class SaltyServerTest {
             assertTrue(token.isNotBlank())
             assertEquals(HttpStatusCode.OK, client.get("/api/recipes") { bearerAuth(token) }.status)
         }
+    }
+
+    @Test
+    fun usernamesAreCaseInsensitive() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            // Mixed-case creation is stored lowercase; lookups match regardless of casing.
+            assertEquals("mixedcase", UserRepository.create("MixedCase", "pw123456").username)
+            assertNotNull(UserRepository.findByUsername("MIXEDCASE"))
+            assertTrue(UserRepository.existsByUsername("mixedCASE"))
+            // API login accepts any casing (and surrounding whitespace) and returns the canonical name.
+            val resp = client.post("/api/auth/login") {
+                contentType(ContentType.Application.Json); setBody(AuthRequest(" TESTER ", "pw"))
+            }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            assertEquals("tester", resp.body<AuthResponse>().username)
+        }
+    }
+
+    @Test
+    fun caseVariantUsernameIsRejectedAsDuplicate() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        runBlocking { UserRepository.create("boss", "pw", isAdmin = true) }
+        val web = createClient { install(HttpCookies) }
+        // Web login is case-insensitive too.
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "BOSS"); append("password", "pw") })
+        val csrf = csrfFrom(web.get("/users").bodyAsText())
+        // "Tester" is a case variant of the existing "tester" — rejected as a duplicate, not created.
+        val resp = web.submitForm(
+            url = "/users",
+            formParameters = parameters { append("username", "Tester"); append("password", "longenough1"); append("csrf", csrf) },
+        )
+        assertTrue(resp.headers[HttpHeaders.Location].orEmpty().contains("error=exists"))
+        assertEquals(2, runBlocking { UserRepository.listAll() }.size)
     }
 
     @Test
@@ -956,7 +1063,7 @@ class SaltyServerTest {
         runBlocking { UserRepository.create("boss", "pw", isAdmin = true) }
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "boss"); append("password", "pw") })
-        val csrf = extractCsrf(web.get("/users").bodyAsText())
+        val csrf = csrfFrom(web.get("/users").bodyAsText())
         web.submitForm(
             url = "/users",
             formParameters = parameters { append("username", "shorty"); append("password", "abc"); append("csrf", csrf) },
@@ -1039,11 +1146,6 @@ class SaltyServerTest {
             assertEquals(HttpStatusCode.OK, resp.status)
         }
     }
-
-    /** Pulls the hidden CSRF token out of a rendered admin page. */
-    private fun extractCsrf(html: String): String =
-        Regex("name=\"csrf\" value=\"([0-9a-f]+)\"").find(html)?.groupValues?.get(1)
-            ?: error("no CSRF token found in page")
 
     private fun renderPng(width: Int, height: Int): ByteArray {
         val img = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)

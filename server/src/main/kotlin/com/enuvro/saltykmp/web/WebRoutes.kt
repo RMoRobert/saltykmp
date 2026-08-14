@@ -34,6 +34,7 @@ import io.ktor.server.sessions.sessions
 import io.ktor.server.sessions.set
 import kotlinx.serialization.Serializable
 import java.security.SecureRandom
+import java.util.Collections
 
 @Serializable
 data class UserSession(
@@ -262,7 +263,9 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
             val id = call.parameters["id"]!!
             val itemId = params["itemId"].orEmpty()
             ShoppingListRepository.mutate(session.userId, id) { cur ->
-                cur.copy(contentsForList = cur.contentsForList.orEmpty().map {
+                // NULL contents (freeform / legacy rows) stay NULL — never materialize them as [].
+                val items = cur.contentsForList ?: return@mutate cur
+                cur.copy(contentsForList = items.map {
                     if (it.id == itemId) it.copy(isCompleted = it.isCompleted != true) else it
                 })
             }
@@ -277,7 +280,8 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
             val text = params["text"].orEmpty().trim()
             if (text.isNotEmpty()) {
                 ShoppingListRepository.mutate(session.userId, id) { cur ->
-                    cur.copy(contentsForList = cur.contentsForList.orEmpty().map {
+                    val items = cur.contentsForList ?: return@mutate cur
+                    cur.copy(contentsForList = items.map {
                         if (it.id == itemId) it.copy(text = text) else it
                     })
                 }
@@ -291,7 +295,31 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
             val id = call.parameters["id"]!!
             val itemId = params["itemId"].orEmpty()
             ShoppingListRepository.mutate(session.userId, id) { cur ->
-                cur.copy(contentsForList = cur.contentsForList.orEmpty().filter { it.id != itemId })
+                val items = cur.contentsForList ?: return@mutate cur
+                cur.copy(contentsForList = items.filter { it.id != itemId })
+            }
+            call.respondRedirect("/shoppingLists/$id")
+        }
+        // Reorder: swap the item with its neighbor. `dir` comes from which of the ↑/↓ submit
+        // buttons was clicked. Moving past either end, an unknown item id, or a row with no
+        // checklist contents all return the row untouched, which mutate() treats as a true
+        // no-op (no write, no revision bump).
+        post("/shoppingLists/{id}/items/move") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            val id = call.parameters["id"]!!
+            val itemId = params["itemId"].orEmpty()
+            val delta = when (params["dir"]) { "up" -> -1; "down" -> 1; else -> 0 }
+            if (delta != 0) {
+                ShoppingListRepository.mutate(session.userId, id) { cur ->
+                    val items = cur.contentsForList?.toMutableList() ?: return@mutate cur
+                    val from = items.indexOfFirst { it.id == itemId }
+                    val to = from + delta
+                    if (from < 0 || to !in items.indices) return@mutate cur
+                    Collections.swap(items, from, to)
+                    cur.copy(contentsForList = items)
+                }
             }
             call.respondRedirect("/shoppingLists/$id")
         }

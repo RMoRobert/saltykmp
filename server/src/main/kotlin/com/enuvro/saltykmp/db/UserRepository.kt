@@ -24,11 +24,19 @@ data class UserRow(
 
 object UserRepository {
 
+    /**
+     * Usernames are case-insensitive: stored lowercase, with every lookup normalizing its input the same
+     * way (plus a trim, so a copy-pasted "john " still matches). API login, web login, admin creation,
+     * and seeding should all pass through here. The login rate limiters key on this too: every variant
+     * that resolves to one account must share one counter, or padded attempts would dodge the lockout.
+     */
+    internal fun normalize(username: String) = username.trim().lowercase()
+
     private fun map(row: ResultRow) =
         UserRow(row[Users.id], row[Users.username], row[Users.passwordHash], row[Users.isAdmin], row[Users.passwordChangedAt])
 
     suspend fun findByUsername(username: String): UserRow? = dbQuery {
-        Users.selectAll().where { Users.username eq username }.limit(1).map(::map).singleOrNull()
+        Users.selectAll().where { Users.username eq normalize(username) }.limit(1).map(::map).singleOrNull()
     }
 
     suspend fun findById(id: String): UserRow? = dbQuery {
@@ -40,7 +48,7 @@ object UserRepository {
     }
 
     suspend fun existsByUsername(username: String): Boolean = dbQuery {
-        Users.selectAll().where { Users.username eq username }.limit(1).any()
+        Users.selectAll().where { Users.username eq normalize(username) }.limit(1).any()
     }
 
     suspend fun adminCount(): Long = dbQuery {
@@ -49,16 +57,17 @@ object UserRepository {
 
     suspend fun create(username: String, password: String, isAdmin: Boolean = false): UserRow = dbQuery {
         val id = UUID.randomUUID().toString()
+        val name = normalize(username)
         val hash = BCrypt.withDefaults().hashToString(12, password.toCharArray())
         val now = LocalDateTime.now(ZoneOffset.UTC)
         Users.insert {
             it[Users.id] = id
-            it[Users.username] = username
+            it[Users.username] = name
             it[Users.passwordHash] = hash
             it[Users.isAdmin] = isAdmin
             it[Users.passwordChangedAt] = now
         }
-        UserRow(id, username, hash, isAdmin, now)
+        UserRow(id, name, hash, isAdmin, now)
     }
 
     suspend fun changePassword(id: String, newPassword: String) = dbQuery {

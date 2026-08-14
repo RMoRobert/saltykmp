@@ -1,5 +1,6 @@
 package com.enuvro.saltykmp.auth
 
+import com.enuvro.saltykmp.db.UserRepository
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -30,7 +31,9 @@ class AccountLockout(
 
     private val entries = ConcurrentHashMap<String, Entry>()
 
-    private fun key(username: String) = username.lowercase().take(MAX_USERNAME_KEY_LEN)
+    // Same canonicalization as the account lookup: every string that authenticates one account must land
+    // in one counter, or padding attempts with whitespace would mint fresh counters and dodge the lock.
+    private fun key(username: String) = UserRepository.normalize(username).take(MAX_USERNAME_KEY_LEN)
 
     /** Seconds until the account may be tried again, or null if it isn't currently locked. */
     fun retryAfterSeconds(username: String): Long? {

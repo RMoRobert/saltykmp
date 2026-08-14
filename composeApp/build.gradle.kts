@@ -79,6 +79,9 @@ kotlin {
     }
 }
 
+// Single-sourced from appVersion in the root gradle.properties (see the comment there).
+val appVersion = providers.gradleProperty("appVersion").get()
+
 android {
     namespace = "com.enuvro.saltykmp"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
@@ -87,8 +90,11 @@ android {
         applicationId = "com.enuvro.saltykmp"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 2
-        versionName = "2.9.100"
+        // Derived from appVersion (M.m.p → M*10_000_000 + m*100_000 + p, so minor < 100 and
+        // patch < 100_000): upgrade ordering tracks the version with no hand-bumped counter.
+        versionCode = appVersion.split(".").map { it.toInt() }
+            .let { (major, minor, patch) -> major * 10_000_000 + minor * 100_000 + patch }
+        versionName = appVersion
     }
     packaging {
         resources {
@@ -123,7 +129,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "com.enuvro.saltykmp"
-            packageVersion = "2.9.100"
+            packageVersion = appVersion
         }
     }
 }
