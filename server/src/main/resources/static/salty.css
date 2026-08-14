@@ -189,3 +189,31 @@ body { background:#f5f5f7; }
    Wrap rather than scroll so long line stays readable on mobile. */
 .freeform { white-space:pre-wrap; word-wrap:break-word; margin:0; font-family:inherit; font-size:.95rem;
     background:#f3f6fb; border-radius:5px; padding:.8rem 1rem; }
+
+/* Shopping-list editing (all plain form posts, no JS beyond the delete confirm) */
+.list-title-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.list-title-row h1 { margin:0; }
+.rename-form { margin:.5rem 0 .25rem; }
+.rename-form input { max-width:16rem; }
+/* The ☑/☐ gutter glyph is now the toggle BUTTON: strip Pico's button chrome so it stays a glyph. */
+.shopping-list .check-form { position:absolute; left:.5rem; top:50%; transform:translateY(-50%); margin:0; }
+.shopping-list button.check { position:static; background:none; border:none; padding:0 .3rem; margin:0;
+    width:auto; font-size:1rem; line-height:1; color:inherit; cursor:pointer; box-shadow:none; }
+.shopping-list button.check:hover { color:var(--salty-accent); }
+.shopping-list .item-text { margin-right:.5rem; }
+.shopping-list .item-actions { float:right; display:inline-flex; gap:.35rem; align-items:center; }
+.shopping-list .item-actions .inline-form { display:inline-flex; }
+.item-action { background:none; border:none; padding:0 .2rem; margin:0; width:auto; font-size:.9rem;
+    line-height:1; color:#999; cursor:pointer; text-decoration:none; box-shadow:none; }
+.item-action:hover { color:var(--salty-accent); }
+.item-remove:hover { color:#c0392b; }
+.item-edit-form input[type="text"] { max-width:100%; flex:1; }
+.cancel-link { font-size:.85rem; white-space:nowrap; }
+.add-item-form { margin-top:.9rem; }
+.add-item-form input[type="text"] { flex:1; max-width:none; }
+.create-list-form { margin-top:1.25rem; }
+.create-list-form input[type="text"] { flex:1; max-width:18rem; }
+.create-list-form select { width:auto; margin:0; }
+.freeform-editor { width:100%; font-family:inherit; font-size:.95rem; margin-bottom:.6rem; }
+.save-btn { width:auto; }
+.conflict-notice { background:#fdecea; color:#8a1f11; margin-bottom:1rem; }

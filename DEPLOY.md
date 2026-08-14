@@ -1,15 +1,15 @@
 # Deploying the Salty KMP server (Docker + NGINX)
 
 The server is a Ktor app backed by Postgres. This setup runs **app + Postgres in Docker** on a home
-server, with **your own NGINX** handling HTTPS in front of it (same shape as the old Salty Server).
+server, with your own reverse proxy (e.g., NGINX) handling HTTPS in front of it.
 
 ## 1. Build the fat jar (on a dev machine)
 
 The Gradle build configures the whole multiplatform project (incl. the Android app), so the jar is
-built **outside** Docker on a machine with **JDK 21 + the Android SDK**:
+built outside Docker on a machine with JDK 21 + the Android SDK. Asssuming JAVA_HOME=/path/to/jdk-21:
 
 ```bash
-JAVA_HOME=/path/to/jdk-21 ./gradlew :server:buildFatJar
+./gradlew :server:buildFatJar
 # -> server/build/libs/salty-server.jar
 ```
 
@@ -45,11 +45,13 @@ docker compose up -d --build
 
 ### Managing users
 
-Each user has a completely separate set of recipes and library (every app/sync logs in as one user).
-The seeded `SALTY_DEFAULT_USER` is an **administrator**. Sign in to the web UI and open **Users** in the
-top nav to add accounts, reset passwords, grant/revoke admin, or delete a user (deleting also removes all
-of that user's recipes and images). Only admins see the Users page. New users start empty; point an app at
-the server and log in as that user to populate their library.
+Each user has a completely separate set of recipes and and related data (suggested setup: one user shares
+same user account across all devices; different users have different accounts).
+The seeded `SALTY_DEFAULT_USER` is an admin. Sign in to the web UI and open **Users** in the
+top nav bar to add accounts, reset passwords, grant/revoke admin (not recommended for regular user
+accounts), or delete a user (including all of their data). Only admins see the Users page.
+New users start empty; point a cleint app at the server, log in as that user on the client, and sync
+to populate data.
 
 ## 4. NGINX reverse proxy (HTTPS)
 
@@ -62,7 +64,7 @@ server {
 
     # ssl_certificate / ssl_certificate_key ...  (your existing Let's Encrypt config)
 
-    client_max_body_size 25m;   # recipe image uploads are multipart — raise above NGINX's 1m default
+    client_max_body_size 25m;   # recipe image uploads are multipart -- raise above NGINX's 1m default
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -74,14 +76,16 @@ server {
 }
 ```
 
-Then point the **Swift app** and **KMP app** Server URL at `https://salty.example.com` and log in with
-the seeded account. First sync uploads/downloads everything.
+Then point the client app at `https://salty.example.com` and log in with
+the configured user account. First sync uploads (and downloads) everything.
 
 ## Updating
 
+Assuming `JAVA_HOME=/path/to/jdk-21`:
+
 ```bash
-JAVA_HOME=/path/to/jdk-21 ./gradlew :server:buildFatJar   # rebuild jar
-docker compose up -d --build server                       # rebuild + restart app only
+./gradlew :server:buildFatJar           # rebuild jar
+docker compose up -d --build server     # rebuild + restart app only
 ```
 
 ## Offline deploy
@@ -90,10 +94,10 @@ For a target with no internet and no source checkout. Everything is built on a m
 have both, shipped as image tarballs, and run from `docker-compose.offline.example.yml` (which uses
 `image:` rather than `build:`).
 
-On the build machine:
+On the build machine, assuming `JAVA_HOME=/path/to/jdk-21`:
 
 ```bash
-JAVA_HOME=/path/to/jdk-21 ./gradlew :server:buildFatJar
+./gradlew :server:buildFatJar
 docker build -t saltyserver:latest ./server
 docker save saltyserver:latest -o saltyserver-image.tar
 docker pull postgres:18 && docker save postgres:18 -o postgres18-image.tar
@@ -102,13 +106,15 @@ docker pull postgres:18 && docker save postgres:18 -o postgres18-image.tar
 ### Building on Apple Silicon for an x86-64 target
 
 The commands above produce an image for the **build machine's** architecture. On an Apple Silicon Mac
-that is `arm64`, which will not run on an x86-64 Linux host (or run slowly if emulated).
-Pass the target platform explicitly instead:
+that is `arm64`, which will not run on an x86-64 Linux host (or run slowly if emulated), you
+should build for the target architecture. Pass the target platform explicitly instead. Again
+assuming `JAVA_HOME=/path/to/jdk-21`:
 
 ```bash
-JAVA_HOME=/path/to/jdk-21 ./gradlew :server:buildFatJar
+./gradlew :server:buildFatJar
 docker buildx build --platform linux/amd64 -t saltyserver:latest --load ./server
 docker save saltyserver:latest -o saltyserver-image.tar
+# If needed (no Internet access at all on server):
 docker pull --platform linux/amd64 postgres:18
 docker save postgres:18 -o postgres18-image.tar
 ```
@@ -121,7 +127,7 @@ Three things worth knowing:
 - **`docker pull` needs the flag too.** It's easy to fix the app image and forget Postgres: on Apple
   Silicon a bare `docker pull postgres:18` fetches the arm64 variant, so you'd ship one image that runs
   and one that doesn't.
-- **The fat jar itself is architecture-independent** — it's JVM bytecode, so `buildFatJar` needs no
+- **The fat jar itself is architecture-independent** -- it's JVM bytecode, so `buildFatJar` needs no
   platform flag. Only the image build does, because it bakes in a platform-specific JRE
   (`eclipse-temurin:21-jre`).
 

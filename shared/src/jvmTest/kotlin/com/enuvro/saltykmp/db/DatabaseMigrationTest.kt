@@ -66,6 +66,8 @@ class DatabaseMigrationTest {
 
         assertEquals(true, columnPresent(driver, "recipe", "lastModifiedImageDate"))
         assertEquals(true, columnPresent(driver, "shoppingList", "lastModifiedDate"))
+        assertEquals(true, columnPresent(driver, "shoppingList", "syncedRevision"))
+        assertEquals(true, columnPresent(driver, "shoppingList", "syncedSnapshot"))
     }
 
     /**
@@ -76,7 +78,7 @@ class DatabaseMigrationTest {
     @Test
     fun sharedMigrationIdsMatchTheSwiftApp() {
         assertEquals(
-            listOf("2026-06-recipe-add-lastModifiedImageDate", "SHARED-V0002"),
+            listOf("2026-06-recipe-add-lastModifiedImageDate", "SHARED-V0002", "SHARED-V0003"),
             SHARED_MIGRATIONS.map { it.id },
         )
     }
@@ -97,6 +99,25 @@ class DatabaseMigrationTest {
         applySharedMigrations(driver, SHARED_MIGRATIONS.filter { it.id == "SHARED-V0002" })
 
         assertEquals(true, columnPresent(driver, "shoppingList", "lastModifiedDate"))
+    }
+
+    /** SHARED-V0003 must add both sync-state columns on a DB that predates it. */
+    @Test
+    fun shoppingListSyncStateColumnsAreAddedToAnOlderDatabase() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        // A pre-SHARED-V0003 shoppingList: SHARED-V0002 shape, no sync-state columns.
+        driver.execute(
+            null,
+            """CREATE TABLE "shoppingList" ("id" TEXT PRIMARY KEY NOT NULL, "name" TEXT, "isFreeform" INTEGER,
+               "contentsForList" TEXT, "contentsForFreeform" TEXT, "lastModifiedDate" TEXT)""",
+            0,
+        )
+        assertEquals(false, columnPresent(driver, "shoppingList", "syncedRevision"))
+
+        applySharedMigrations(driver, SHARED_MIGRATIONS.filter { it.id == "SHARED-V0003" })
+
+        assertEquals(true, columnPresent(driver, "shoppingList", "syncedRevision"))
+        assertEquals(true, columnPresent(driver, "shoppingList", "syncedSnapshot"))
     }
 
     private fun columnPresent(driver: SqlDriver, table: String, column: String): Boolean =

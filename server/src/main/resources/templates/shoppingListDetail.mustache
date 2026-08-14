@@ -1,26 +1,90 @@
 {{<layoutSidebar.mustache}}
 {{$content}}
 <p><a href="/shoppingLists" class="back-link">← Back to shopping lists</a></p>
-<h1>{{name}}</h1>
+
+{{#conflict}}
+<div class="notice conflict-notice">This list changed while you were editing — probably a device
+syncing. The saved version is shown below for comparison; your unsaved text is still in the editor.
+Saving again will replace the saved version.</div>
+{{/conflict}}
+
+<div class="list-title-row">
+    <h1>{{name}}</h1>
+    <form method="post" action="/shoppingLists/{{listId}}/delete" class="inline-form"
+          onsubmit="return confirm('Delete this list?');">
+        <input type="hidden" name="csrf" value="{{csrfToken}}">
+        <button type="submit" class="outline danger-btn">Delete list</button>
+    </form>
+</div>
+<form method="post" action="/shoppingLists/{{listId}}/rename" class="inline-form rename-form">
+    <input type="hidden" name="csrf" value="{{csrfToken}}">
+    <input type="text" name="name" value="{{rawName}}" aria-label="List name" required>
+    <button type="submit" class="outline">Rename</button>
+</form>
 <p class="muted">{{summary}}</p>
 
 {{#isFreeform}}
+{{#conflict}}
 <div class="section">
-    <pre class="freeform">{{freeformText}}</pre>
+    <h2>Currently saved version</h2>
+    <pre class="freeform">{{savedText}}</pre>
+</div>
+{{/conflict}}
+<div class="section">
+    <form method="post" action="/shoppingLists/{{listId}}/freeform">
+        <input type="hidden" name="csrf" value="{{csrfToken}}">
+        <input type="hidden" name="baseRevision" value="{{revision}}">
+        <textarea name="text" rows="16" class="freeform-editor" aria-label="List text">{{freeformText}}</textarea>
+        <button type="submit" class="save-btn">Save</button>
+    </form>
 </div>
 {{/isFreeform}}
 
 {{^isFreeform}}
-{{#hasItems}}
 <div class="section">
+    {{#hasItems}}
     <ul class="shopping-list">
         {{#items}}
-        <li class="{{#heading}}heading{{/heading}}{{#completed}} muted{{/completed}}">{{#check}}<span class="check">{{.}}</span>{{/check}}{{text}}</li>
+        <li class="{{#heading}}heading{{/heading}}{{#completed}} muted{{/completed}}">
+            {{#editing}}
+            <form method="post" action="/shoppingLists/{{listId}}/items/edit" class="inline-form item-edit-form">
+                <input type="hidden" name="csrf" value="{{csrfToken}}">
+                <input type="hidden" name="itemId" value="{{id}}">
+                <input type="text" name="text" value="{{text}}" aria-label="Item text" required autofocus>
+                <button type="submit" class="outline">Save</button>
+                <a href="/shoppingLists/{{listId}}" class="muted cancel-link">Cancel</a>
+            </form>
+            {{/editing}}
+            {{^editing}}
+            {{#check}}
+            <form method="post" action="/shoppingLists/{{listId}}/items/toggle" class="check-form">
+                <input type="hidden" name="csrf" value="{{csrfToken}}">
+                <input type="hidden" name="itemId" value="{{id}}">
+                <button type="submit" class="check" aria-label="Toggle item">{{.}}</button>
+            </form>
+            {{/check}}
+            <span class="item-text">{{text}}</span>
+            <span class="item-actions">
+                <a href="/shoppingLists/{{listId}}?edit={{id}}" class="item-action" aria-label="Edit item">✎</a>
+                <form method="post" action="/shoppingLists/{{listId}}/items/delete" class="inline-form">
+                    <input type="hidden" name="csrf" value="{{csrfToken}}">
+                    <input type="hidden" name="itemId" value="{{id}}">
+                    <button type="submit" class="item-action item-remove" aria-label="Remove item">✕</button>
+                </form>
+            </span>
+            {{/editing}}
+        </li>
         {{/items}}
     </ul>
+    {{/hasItems}}
+    {{^hasItems}}<p class="empty">This list is empty — add something below.</p>{{/hasItems}}
+    <form method="post" action="/shoppingLists/{{listId}}/items/add" class="inline-form add-item-form">
+        <input type="hidden" name="csrf" value="{{csrfToken}}">
+        <input type="text" name="text" placeholder="Add an item…" aria-label="New item" required>
+        <label class="checkbox-label"><input type="checkbox" name="heading"> heading</label>
+        <button type="submit">Add</button>
+    </form>
 </div>
-{{/hasItems}}
-{{^hasItems}}<p class="empty">This list is empty.</p>{{/hasItems}}
 {{/isFreeform}}
 {{/content}}
 {{/layoutSidebar.mustache}}

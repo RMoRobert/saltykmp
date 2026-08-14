@@ -33,6 +33,9 @@ object DatabaseFactory {
                 Users, Recipes, Courses, Categories, Tags,
                 RecipeCategories, RecipeTags, DeviceSyncs, ShoppingLists,
             )
+            // SchemaUtils.create only creates missing TABLES; deployments that predate shopping-list
+            // revisions need the column added. Idempotent on Postgres and H2 alike.
+            exec("ALTER TABLE shopping_list ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1")
         }
     }
 

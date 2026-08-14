@@ -12,7 +12,9 @@ import com.enuvro.saltykmp.db.ShoppingListRepository
 import com.enuvro.saltykmp.db.UserRepository
 import com.enuvro.saltykmp.db.UserRow
 import com.enuvro.saltykmp.db.model.NutritionInformation
+import com.enuvro.saltykmp.db.model.ShoppingListListContents
 import com.enuvro.saltykmp.image.ImageStore
+import com.enuvro.saltykmp.util.WireDate
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
@@ -186,8 +188,11 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
                 backLink = "← All tags" to "/tags",
             )))
         }
-        // Shopping lists — read-only, mirroring the browse pages. Primarily a way to eyeball what
-        // sync actually landed on the server; also genuinely useful for viewing a list on the web.
+        // Shopping lists — viewable and editable. Checklist edits are SEMANTIC per-item POSTs
+        // (toggle/add/remove/edit one item id), each applied atomically to the CURRENT server row via
+        // ShoppingListRepository.mutate, so they compose with concurrent syncs by construction.
+        // Only the freeform editor saves a whole document, and that path carries baseRevision so a
+        // stale browser tab gets a conflict banner instead of clobbering a sync that landed meanwhile.
         get("/shoppingLists") {
             val session = call.principal<UserSession>()!!
             val lists = ShoppingListRepository.list(session.userId)
@@ -197,7 +202,126 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
             val session = call.principal<UserSession>()!!
             val list = ShoppingListRepository.getById(session.userId, call.parameters["id"]!!)
             if (list == null) { call.respondRedirect("/shoppingLists"); return@get }
-            call.respond(MustacheContent("shoppingListDetail.mustache", shoppingListDetailModel(session, list)))
+            call.respond(MustacheContent("shoppingListDetail.mustache",
+                shoppingListDetailModel(session, list, editItemId = call.request.queryParameters["edit"])))
+        }
+        post("/shoppingLists") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            val name = params["name"].orEmpty().trim()
+            if (name.isEmpty()) { call.respondRedirect("/shoppingLists"); return@post }
+            val freeform = params["type"] == "freeform"
+            val id = newWebId()
+            ShoppingListRepository.save(session.userId, ServerShoppingList(
+                id = id, name = name, isFreeform = freeform,
+                contentsForList = if (freeform) null else emptyList(),
+                contentsForFreeform = if (freeform) "" else null,
+                lastModifiedDate = WireDate.format(WireDate.nowUtc()),
+                baseRevision = 0, // create-only: an (impossible) id collision conflicts instead of overwriting
+            ))
+            call.respondRedirect("/shoppingLists/$id")
+        }
+        post("/shoppingLists/{id}/delete") {
+            val session = call.principal<UserSession>()!!
+            if (!call.checkCsrf(call.receiveParameters())) return@post
+            ShoppingListRepository.delete(session.userId, call.parameters["id"]!!)
+            call.respondRedirect("/shoppingLists")
+        }
+        post("/shoppingLists/{id}/rename") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            val id = call.parameters["id"]!!
+            val name = params["name"].orEmpty().trim()
+            if (name.isNotEmpty()) {
+                ShoppingListRepository.mutate(session.userId, id) { it.copy(name = name) }
+            }
+            call.respondRedirect("/shoppingLists/$id")
+        }
+        post("/shoppingLists/{id}/items/add") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            val id = call.parameters["id"]!!
+            val text = params["text"].orEmpty().trim()
+            if (text.isNotEmpty()) {
+                val item = ShoppingListListContents(
+                    id = newWebId(), text = text, isHeading = params["heading"] == "on",
+                )
+                ShoppingListRepository.mutate(session.userId, id) {
+                    it.copy(contentsForList = it.contentsForList.orEmpty() + item)
+                }
+            }
+            call.respondRedirect("/shoppingLists/$id")
+        }
+        post("/shoppingLists/{id}/items/toggle") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            val id = call.parameters["id"]!!
+            val itemId = params["itemId"].orEmpty()
+            ShoppingListRepository.mutate(session.userId, id) { cur ->
+                cur.copy(contentsForList = cur.contentsForList.orEmpty().map {
+                    if (it.id == itemId) it.copy(isCompleted = it.isCompleted != true) else it
+                })
+            }
+            call.respondRedirect("/shoppingLists/$id")
+        }
+        post("/shoppingLists/{id}/items/edit") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            val id = call.parameters["id"]!!
+            val itemId = params["itemId"].orEmpty()
+            val text = params["text"].orEmpty().trim()
+            if (text.isNotEmpty()) {
+                ShoppingListRepository.mutate(session.userId, id) { cur ->
+                    cur.copy(contentsForList = cur.contentsForList.orEmpty().map {
+                        if (it.id == itemId) it.copy(text = text) else it
+                    })
+                }
+            }
+            call.respondRedirect("/shoppingLists/$id")
+        }
+        post("/shoppingLists/{id}/items/delete") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            val id = call.parameters["id"]!!
+            val itemId = params["itemId"].orEmpty()
+            ShoppingListRepository.mutate(session.userId, id) { cur ->
+                cur.copy(contentsForList = cur.contentsForList.orEmpty().filter { it.id != itemId })
+            }
+            call.respondRedirect("/shoppingLists/$id")
+        }
+        // Whole-document save (freeform editor). baseRevision came from the hidden field the form was
+        // RENDERED with — i.e. the version the user actually saw — so a save over a row that moved on
+        // 409s into a conflict banner (draft preserved) rather than silently losing either side.
+        post("/shoppingLists/{id}/freeform") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            val id = call.parameters["id"]!!
+            val text = params["text"].orEmpty()
+            val base = params["baseRevision"]?.toLongOrNull()
+            val current = ShoppingListRepository.getById(session.userId, id)
+            if (current == null || current.isFreeform != true || base == null) {
+                call.respondRedirect("/shoppingLists/$id"); return@post
+            }
+            val result = ShoppingListRepository.save(session.userId, current.copy(
+                contentsForFreeform = text,
+                lastModifiedDate = WireDate.format(WireDate.nowUtc()),
+                revision = null,
+                baseRevision = base,
+            ))
+            when (result) {
+                is ShoppingListRepository.SaveResult.Saved -> call.respondRedirect("/shoppingLists/$id")
+                is ShoppingListRepository.SaveResult.Conflict -> call.respond(MustacheContent(
+                    "shoppingListDetail.mustache",
+                    shoppingListDetailModel(session, result.current, conflictDraft = text),
+                ))
+            }
         }
         get("/recipes/{id}") {
             val session = call.principal<UserSession>()!!
@@ -490,6 +614,9 @@ private fun browseIndexModel(session: UserSession, heading: String, active: Stri
         put("items", items.map { mapOf("name" to it.name, "href" to it.href, "count" to it.count) })
     }
 
+/** Fresh id for a web-created list or item — uppercase to match the ids the apps generate. */
+private fun newWebId(): String = java.util.UUID.randomUUID().toString().uppercase()
+
 /** Reuses browseIndex.mustache — `browse-count` is a text pill, so the subtitle can be words. */
 private fun shoppingListsIndexModel(session: UserSession, lists: List<ServerShoppingList>): Map<String, Any?> =
     chrome("Shopping Lists", session, sidebarActive = "shoppingLists").apply {
@@ -503,29 +630,49 @@ private fun shoppingListsIndexModel(session: UserSession, lists: List<ServerShop
                 "count" to l.summary,
             )
         })
+        // Presence of this key renders the create form (browseIndex is shared with the read-only
+        // courses/categories/tags indexes, which never set it).
+        put("createListForm", mapOf("csrfToken" to session.csrfToken))
     }
 
-private fun shoppingListDetailModel(session: UserSession, list: ServerShoppingList): Map<String, Any?> =
+/**
+ * @param editItemId item rendered as an inline edit form (`?edit=<id>` — the no-JS editing pattern).
+ * @param conflictDraft set when a freeform save hit a revision conflict: [list] is then the CURRENT
+ *   server row, and the draft goes back into the editor so nothing the user typed is lost.
+ */
+private fun shoppingListDetailModel(
+    session: UserSession,
+    list: ServerShoppingList,
+    editItemId: String? = null,
+    conflictDraft: String? = null,
+): Map<String, Any?> =
     chrome(list.displayName, session, sidebarActive = "shoppingLists").apply {
         val freeform = list.isFreeform == true
         put("name", list.displayName)
+        put("rawName", list.name.orEmpty())
+        put("listId", list.id)
+        put("csrfToken", session.csrfToken)
+        put("revision", (list.revision ?: 1L).toString())
         put("summary", list.summary)
         put("isFreeform", freeform)
-        // Freeform lists are Markdown. Rendered as plain preformatted text rather than converted to
-        // HTML: this view is read-only, and mustache escapes it, so no Markdown dependency (or the
-        // sanitising that would come with it) is needed on the server.
-        put("freeformText", list.contentsForFreeform.orEmpty())
+        put("conflict", conflictDraft != null)
+        // The saved (server) text, shown for comparison when a conflict banner is up.
+        put("savedText", list.contentsForFreeform.orEmpty())
+        // Freeform lists are Markdown, edited and displayed as plain text (mustache escapes it), so
+        // no Markdown dependency (or the sanitising that would come with it) is needed on the server.
+        put("freeformText", conflictDraft ?: list.contentsForFreeform.orEmpty())
         val items = list.contentsForList.orEmpty()
         put("hasItems", items.isNotEmpty())
         put("items", items.map { i ->
             val heading = i.isHeading == true
             mapOf(
+                "id" to i.id,
                 "text" to i.text,
                 "heading" to heading,
+                "editing" to (i.id == editItemId),
                 "completed" to (i.isCompleted == true && !heading),
-                // ☑/☐ rather than a real checkbox — this page is deliberately not interactive. Kept
-                // separate from the text so the template can park it in a gutter, letting item text
-                // line up with heading text instead of being pushed right by the glyph.
+                // The ☑/☐ glyph doubles as the toggle button's label. Kept separate from the text so
+                // the template can park it in a gutter, letting item text line up with heading text.
                 "check" to if (heading) null else if (i.isCompleted == true) "☑" else "☐",
             )
         })

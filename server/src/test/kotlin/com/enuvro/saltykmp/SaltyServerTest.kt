@@ -167,7 +167,7 @@ class SaltyServerTest {
         application { installSalty(jwt, imageStore) }
         runBlocking {
             val uid = UserRepository.findByUsername("tester")!!.id
-            ShoppingListRepository.upsert(uid, ServerShoppingList(
+            ShoppingListRepository.save(uid, ServerShoppingList(
                 id = "wl1", name = "Web Groceries", isFreeform = false,
                 contentsForList = listOf(
                     ShoppingListListContents(id = "h1", isHeading = true, text = "Produce"),
@@ -176,7 +176,7 @@ class SaltyServerTest {
                 ),
                 lastModifiedDate = "2026-07-20T00:00:00.000Z",
             ))
-            ShoppingListRepository.upsert(uid, ServerShoppingList(
+            ShoppingListRepository.save(uid, ServerShoppingList(
                 id = "wl2", name = "Web Notes", isFreeform = true,
                 contentsForFreeform = "# Corner Store\n* Milk",
                 lastModifiedDate = "2026-07-20T00:00:00.000Z",
@@ -217,15 +217,15 @@ class SaltyServerTest {
         application { installSalty(jwt, imageStore) }
         runBlocking {
             val uid = UserRepository.findByUsername("tester")!!.id
-            ShoppingListRepository.upsert(uid, ServerShoppingList(
+            ShoppingListRepository.save(uid, ServerShoppingList(
                 id = "one", name = "One Item", isFreeform = false,
                 contentsForList = listOf(ShoppingListListContents(id = "i", text = "Milk")),
                 lastModifiedDate = "2026-07-20T00:00:00.000Z"))
-            ShoppingListRepository.upsert(uid, ServerShoppingList(
+            ShoppingListRepository.save(uid, ServerShoppingList(
                 id = "headings", name = "Headings Only", isFreeform = false,
                 contentsForList = listOf(ShoppingListListContents(id = "h", isHeading = true, text = "Produce")),
                 lastModifiedDate = "2026-07-20T00:00:00.000Z"))
-            ShoppingListRepository.upsert(uid, ServerShoppingList(
+            ShoppingListRepository.save(uid, ServerShoppingList(
                 id = "blank", name = "Blank Freeform", isFreeform = true,
                 contentsForFreeform = "\n\n   \n", lastModifiedDate = "2026-07-20T00:00:00.000Z"))
         }
@@ -238,6 +238,125 @@ class SaltyServerTest {
         assertTrue(index.contains("Empty"), "whitespace-only freeform counts as empty")
     }
 
+    /** The CSRF token lives in the session; forms echo it. Fish it out of a rendered page. */
+    private fun csrfFrom(html: String): String =
+        Regex("""name="csrf" value="([0-9a-f]+)"""").find(html)!!.groupValues[1]
+
+    @Test
+    fun webChecklistEditingRoundTrip() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val web = createClient { install(HttpCookies) }
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+        val csrf = csrfFrom(web.get("/shoppingLists").bodyAsText())
+
+        // Create a checklist from the index form.
+        val created = web.submitForm(
+            url = "/shoppingLists",
+            formParameters = parameters { append("csrf", csrf); append("name", "Web List"); append("type", "checklist") },
+        )
+        assertEquals(HttpStatusCode.Found, created.status)
+        val listPath = created.headers[HttpHeaders.Location]!!
+        val listId = listPath.substringAfterLast("/")
+
+        // Add two items, one of them a heading.
+        web.submitForm(url = "$listPath/items/add", formParameters = parameters {
+            append("csrf", csrf); append("text", "Produce"); append("heading", "on")
+        })
+        web.submitForm(url = "$listPath/items/add", formParameters = parameters {
+            append("csrf", csrf); append("text", "Apples")
+        })
+        var list = runBlocking {
+            ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId)!!
+        }
+        assertEquals(listOf("Produce", "Apples"), list.contentsForList?.map { it.text })
+        assertEquals(true, list.contentsForList?.first()?.isHeading)
+        val revisionAfterAdds = list.revision!!
+        assertTrue(revisionAfterAdds >= 3, "create + two adds must each bump the revision")
+
+        // Toggle, edit, then delete the item — each one a semantic per-item POST.
+        val itemId = list.contentsForList!![1].id
+        web.submitForm(url = "$listPath/items/toggle", formParameters = parameters { append("csrf", csrf); append("itemId", itemId) })
+        web.submitForm(url = "$listPath/items/edit", formParameters = parameters {
+            append("csrf", csrf); append("itemId", itemId); append("text", "Green Apples")
+        })
+        list = runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId)!! }
+        assertEquals(true, list.contentsForList?.get(1)?.isCompleted)
+        assertEquals("Green Apples", list.contentsForList?.get(1)?.text)
+
+        web.submitForm(url = "$listPath/items/delete", formParameters = parameters { append("csrf", csrf); append("itemId", itemId) })
+        list = runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId)!! }
+        assertEquals(listOf("Produce"), list.contentsForList?.map { it.text })
+
+        // Rename, then delete the whole list.
+        web.submitForm(url = "$listPath/rename", formParameters = parameters { append("csrf", csrf); append("name", "Renamed") })
+        assertEquals("Renamed", runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId)?.name })
+        web.submitForm(url = "$listPath/delete", formParameters = parameters { append("csrf", csrf) })
+        assertEquals(null, runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId) })
+    }
+
+    /** A freeform save whose baseRevision went stale must show the conflict banner, not clobber. */
+    @Test
+    fun webFreeformSaveConflictShowsBannerAndPreservesDraft() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
+        runBlocking {
+            ShoppingListRepository.save(uid, ServerShoppingList(
+                id = "ff", name = "Notes", isFreeform = true,
+                contentsForFreeform = "original", lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+        }
+        val web = createClient { install(HttpCookies) }
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+        val page = web.get("/shoppingLists/ff").bodyAsText()
+        val csrf = csrfFrom(page)
+        assertTrue(page.contains("""name="baseRevision" value="1""""), "editor carries the revision it rendered")
+
+        // A sync lands meanwhile (revision 1 → 2).
+        runBlocking {
+            ShoppingListRepository.save(uid, ServerShoppingList(
+                id = "ff", name = "Notes", isFreeform = true,
+                contentsForFreeform = "from a device", lastModifiedDate = "2026-08-02T00:00:00.000Z",
+                baseRevision = 1))
+        }
+
+        // The stale tab saves: banner + both texts, and the row is untouched.
+        val conflicted = web.submitForm(url = "/shoppingLists/ff/freeform", formParameters = parameters {
+            append("csrf", csrf); append("text", "my draft"); append("baseRevision", "1")
+        }).bodyAsText()
+        assertTrue(conflicted.contains("changed while you were editing"), "conflict banner shown")
+        assertTrue(conflicted.contains("from a device"), "current saved version shown")
+        assertTrue(conflicted.contains("my draft"), "draft preserved in the editor")
+        assertTrue(conflicted.contains("""name="baseRevision" value="2""""), "retry targets the new revision")
+        assertEquals("from a device", runBlocking { ShoppingListRepository.getById(uid, "ff")?.contentsForFreeform })
+
+        // Retrying with the fresh baseRevision succeeds.
+        val saved = web.submitForm(url = "/shoppingLists/ff/freeform", formParameters = parameters {
+            append("csrf", csrf); append("text", "my draft"); append("baseRevision", "2")
+        })
+        assertEquals(HttpStatusCode.Found, saved.status)
+        assertEquals("my draft", runBlocking { ShoppingListRepository.getById(uid, "ff")?.contentsForFreeform })
+    }
+
+    /** Web mutations are state-changing form POSTs: no valid CSRF token, no write. */
+    @Test
+    fun webShoppingListEditsRequireCsrf() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
+        runBlocking {
+            ShoppingListRepository.save(uid, ServerShoppingList(
+                id = "sl", name = "Guarded", isFreeform = false,
+                contentsForList = listOf(ShoppingListListContents(id = "i1", text = "Milk")),
+                lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+        }
+        val web = createClient { install(HttpCookies) }
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+
+        val resp = web.submitForm(url = "/shoppingLists/sl/items/delete", formParameters = parameters {
+            append("csrf", "forged"); append("itemId", "i1")
+        })
+        assertEquals(HttpStatusCode.Forbidden, resp.status)
+        assertEquals(1, runBlocking { ShoppingListRepository.getById(uid, "sl")?.contentsForList?.size })
+    }
+
     /** One user must never see another's lists, and an unknown id must not 500. */
     @Test
     fun webShoppingListsAreUserScoped() = testApplication {
@@ -245,7 +364,7 @@ class SaltyServerTest {
         runBlocking {
             UserRepository.create("other", "pw2")
             val otherId = UserRepository.findByUsername("other")!!.id
-            ShoppingListRepository.upsert(otherId, ServerShoppingList(
+            ShoppingListRepository.save(otherId, ServerShoppingList(
                 id = "secret", name = "Other Persons List",
                 lastModifiedDate = "2026-07-20T00:00:00.000Z",
             ))
@@ -511,6 +630,115 @@ class SaltyServerTest {
             assertEquals(HttpStatusCode.Unauthorized, client.get("/api/shoppingLists").status)
             val token = login(client)
             assertEquals(HttpStatusCode.OK, client.get("/api/shoppingLists") { bearerAuth(token) }.status)
+        }
+    }
+
+    @Test
+    fun shoppingListRevisionStartsAtOneAndIncrementsOnMatchedSave() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            val created = client.post("/api/shoppingLists") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(ServerShoppingList(id = "rev1", name = "v1", lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+            }.body<ServerShoppingList>()
+            assertEquals(1L, created.revision)
+
+            val updated = client.put("/api/shoppingLists/rev1") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(ServerShoppingList(id = "rev1", name = "v2",
+                    lastModifiedDate = "2026-08-02T00:00:00.000Z", baseRevision = 1))
+            }.body<ServerShoppingList>()
+            assertEquals(2L, updated.revision)
+            assertEquals(2L, client.get("/api/shoppingLists/rev1") { bearerAuth(token) }.body<ServerShoppingList>().revision)
+        }
+    }
+
+    /** A stale baseRevision means the row changed hands since that client synced: 409 + current row. */
+    @Test
+    fun shoppingListBaseRevisionMismatchIsRejectedWithCurrentRow() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            client.post("/api/shoppingLists") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(ServerShoppingList(id = "c1", name = "server truth", lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+            }
+            val resp = client.put("/api/shoppingLists/c1") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(ServerShoppingList(id = "c1", name = "stale attempt",
+                    lastModifiedDate = "2026-08-05T00:00:00.000Z", baseRevision = 99))
+            }
+            assertEquals(HttpStatusCode.Conflict, resp.status)
+            // The 409 body IS the merge input — it must be the current server row.
+            assertEquals("server truth", resp.body<ServerShoppingList>().name)
+            assertEquals("server truth", client.get("/api/shoppingLists/c1") { bearerAuth(token) }.body<ServerShoppingList>().name)
+        }
+    }
+
+    /**
+     * Legacy clients (no baseRevision) keep last-writer-wins, but guarded: an OLDER write is ignored
+     * — yet still answered 2xx with the winning row, because legacy clients abort their whole sync
+     * on any error status.
+     */
+    @Test
+    fun shoppingListLegacyWritesAreTimestampGuarded() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            client.post("/api/shoppingLists") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(ServerShoppingList(id = "lg1", name = "current", lastModifiedDate = "2026-08-10T00:00:00.000Z"))
+            }
+            // Stale legacy write: 2xx, but ignored — the response carries the winner, not the echo.
+            val stale = client.put("/api/shoppingLists/lg1") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(ServerShoppingList(id = "lg1", name = "stale", lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+            }
+            assertEquals(HttpStatusCode.OK, stale.status)
+            assertEquals("current", stale.body<ServerShoppingList>().name)
+            val afterStale = client.get("/api/shoppingLists/lg1") { bearerAuth(token) }.body<ServerShoppingList>()
+            assertEquals("current", afterStale.name)
+            assertEquals(1L, afterStale.revision, "an ignored write must not bump the revision")
+
+            // Newer legacy write: applied, and it bumps the revision so revision-aware clients see it.
+            client.put("/api/shoppingLists/lg1") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(ServerShoppingList(id = "lg1", name = "newer", lastModifiedDate = "2026-08-11T00:00:00.000Z"))
+            }
+            val afterNewer = client.get("/api/shoppingLists/lg1") { bearerAuth(token) }.body<ServerShoppingList>()
+            assertEquals("newer", afterNewer.name)
+            assertEquals(2L, afterNewer.revision)
+        }
+    }
+
+    /** Delete with If-Match: refused (409 + row) when the row moved on — edit beats delete. */
+    @Test
+    fun shoppingListDeleteHonorsIfMatchRevision() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            client.post("/api/shoppingLists") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(ServerShoppingList(id = "dl1", name = "keep me", lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+            }
+            client.put("/api/shoppingLists/dl1") {
+                bearerAuth(token); contentType(ContentType.Application.Json)
+                setBody(ServerShoppingList(id = "dl1", name = "edited meanwhile",
+                    lastModifiedDate = "2026-08-02T00:00:00.000Z", baseRevision = 1))
+            }
+            val refused = client.delete("/api/shoppingLists/dl1") { bearerAuth(token); header(HttpHeaders.IfMatch, "1") }
+            assertEquals(HttpStatusCode.Conflict, refused.status)
+            assertEquals("edited meanwhile", refused.body<ServerShoppingList>().name)
+
+            assertEquals(
+                HttpStatusCode.NoContent,
+                client.delete("/api/shoppingLists/dl1") { bearerAuth(token); header(HttpHeaders.IfMatch, "2") }.status,
+            )
         }
     }
 

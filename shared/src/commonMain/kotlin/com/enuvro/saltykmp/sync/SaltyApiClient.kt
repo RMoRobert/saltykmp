@@ -21,12 +21,15 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLPathPart
 import io.ktor.http.isSuccess
@@ -255,12 +258,41 @@ class SaltyApiClient(
     suspend fun deleteTag(id: String) { client.delete("$baseUrl/api/tags/${seg(id)}") { auth() } }
 
     // Shopping lists. Same full-list shape as the vocab tables above — the GET must return every list,
-    // since deletions are detected by absence from it.
+    // since deletions are detected by absence from it. Writes are optimistic-concurrency-aware:
+    // a 409 is a first-class outcome carrying the CURRENT server row (the merge input), never an error.
+
+    sealed interface ShoppingListSaveOutcome {
+        data class Saved(val list: ServerShoppingList) : ShoppingListSaveOutcome
+        data class Conflict(val current: ServerShoppingList) : ShoppingListSaveOutcome
+    }
+
+    sealed interface ShoppingListDeleteOutcome {
+        data object Deleted : ShoppingListDeleteOutcome
+        data class Conflict(val current: ServerShoppingList) : ShoppingListDeleteOutcome
+    }
+
     suspend fun fetchShoppingLists(): List<ServerShoppingList> =
         client.get("$baseUrl/api/shoppingLists") { auth() }.ensureOk().body()
 
-    suspend fun uploadShoppingList(l: ServerShoppingList): ServerShoppingList =
-        client.post("$baseUrl/api/shoppingLists") { auth(); contentType(ContentType.Application.Json); setBody(l) }.ensureOk().body()
+    suspend fun uploadShoppingList(l: ServerShoppingList): ShoppingListSaveOutcome {
+        val resp = client.post("$baseUrl/api/shoppingLists") {
+            auth(); contentType(ContentType.Application.Json); setBody(l)
+        }
+        if (resp.status == HttpStatusCode.Conflict) return ShoppingListSaveOutcome.Conflict(resp.body())
+        return ShoppingListSaveOutcome.Saved(resp.ensureOk().body())
+    }
 
-    suspend fun deleteShoppingList(id: String) { client.delete("$baseUrl/api/shoppingLists/${seg(id)}") { auth() } }
+    /**
+     * [expectedRevision] rides the If-Match header: the server refuses (→ [ShoppingListDeleteOutcome.Conflict]
+     * with the current row) when the list changed past that revision — edit beats delete, the caller
+     * should download instead. 404 counts as Deleted: the goal state (gone) is already true.
+     */
+    suspend fun deleteShoppingList(id: String, expectedRevision: Long? = null): ShoppingListDeleteOutcome {
+        val resp = client.delete("$baseUrl/api/shoppingLists/${seg(id)}") {
+            auth()
+            expectedRevision?.let { header(HttpHeaders.IfMatch, it.toString()) }
+        }
+        if (resp.status == HttpStatusCode.Conflict) return ShoppingListDeleteOutcome.Conflict(resp.body())
+        return ShoppingListDeleteOutcome.Deleted
+    }
 }

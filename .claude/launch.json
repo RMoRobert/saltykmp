@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "salty-server-dev",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "SALTY_ALLOW_DEFAULT_SECRET=true",
+        "SALTY_DB_URL=jdbc:h2:file:/private/tmp/claude-501/-Users-rob-Nextcloud-XCode-Projects-salty-kmp/6547a5ce-ed46-47e1-8b36-46a8574dd2c3/scratchpad/salty-dev;MODE=PostgreSQL;TRACE_LEVEL_FILE=0",
+        "./gradlew", ":server:run", "--console=plain"
+      ],
+      "port": 8080
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerRecipe
 import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
+import com.enuvro.saltykmp.api.apiJson
 import com.enuvro.saltykmp.db.AppDatabase
 import com.enuvro.saltykmp.db.model.Difficulty
 import com.enuvro.saltykmp.db.model.Rating
@@ -159,24 +160,70 @@ class LocalStore(private val db: AppDatabase) {
     fun deleteCategory(id: String) = q.deleteCategoryById(id)
     fun deleteTag(id: String) = q.deleteTagById(id)
 
-    // Shopping lists. Synced as whole rows (most-recently-modified wins), so items carry no identity
-    // of their own — `contentsForList` moves as one blob.
-    fun shoppingLists(): List<ServerShoppingList> =
+    // Shopping lists. Synced as whole rows; items carry no server-side identity (their ids matter
+    // only to client-side three-way merges). Each row carries its sync bookkeeping: the server
+    // revision it was last agreed at plus a wire-JSON snapshot of that agreement (the merge BASE).
+
+    /** A local row plus its sync state. [syncedSnapshot] is null for legacy/never-synced rows. */
+    data class LocalShoppingList(
+        val list: ServerShoppingList,
+        val syncedRevision: Long?,
+        val syncedSnapshot: ServerShoppingList?,
+    ) {
+        /** Edited since the last server agreement? Compares this device's own stamps only — no
+         *  cross-machine clock comparison. Null snapshot (legacy row) is the caller's case to handle. */
+        val isDirty: Boolean
+            get() = syncedSnapshot != null && list.lastModifiedDate != syncedSnapshot.lastModifiedDate
+    }
+
+    fun shoppingLists(): List<ServerShoppingList> = shoppingListsWithSyncState().map { it.list }
+
+    fun shoppingListsWithSyncState(): List<LocalShoppingList> =
         q.selectAllShoppingLists().executeAsList().map {
-            ServerShoppingList(
-                id = it.id,
-                name = it.name,
-                isFreeform = it.isFreeform,
-                contentsForList = it.contentsForList,
-                contentsForFreeform = it.contentsForFreeform,
-                lastModifiedDate = dbToWireDate(it.lastModifiedDate),
+            LocalShoppingList(
+                list = ServerShoppingList(
+                    id = it.id,
+                    name = it.name,
+                    isFreeform = it.isFreeform,
+                    contentsForList = it.contentsForList,
+                    contentsForFreeform = it.contentsForFreeform,
+                    lastModifiedDate = dbToWireDate(it.lastModifiedDate),
+                ),
+                syncedRevision = it.syncedRevision,
+                // A snapshot that fails to decode (older build wrote junk?) degrades to "legacy row",
+                // which just means one timestamp-based seed sync — never a crash, never data loss.
+                syncedSnapshot = it.syncedSnapshot?.let { json ->
+                    runCatching { apiJson.decodeFromString(ServerShoppingList.serializer(), json) }.getOrNull()
+                },
             )
         }
 
+    /**
+     * Write a SERVER-agreed row (download, pull-everything): contents and sync bookkeeping move
+     * together, so the row lands already-clean with the server row itself as the snapshot.
+     */
     fun upsertShoppingList(l: ServerShoppingList) = q.upsertShoppingList(
         l.id, l.name, l.isFreeform, l.contentsForList ?: emptyList(), l.contentsForFreeform,
         wireToDbDate(l.lastModifiedDate),
+        l.revision, snapshotJson(l),
     )
+
+    /** Write a LOCAL row (conflict copy) that the server hasn't seen: no agreement to record yet. */
+    fun insertLocalShoppingList(l: ServerShoppingList) = q.upsertShoppingList(
+        l.id, l.name, l.isFreeform, l.contentsForList ?: emptyList(), l.contentsForFreeform,
+        wireToDbDate(l.lastModifiedDate),
+        null, null,
+    )
+
+    /**
+     * Record the server agreement after a successful UPLOAD without touching the row's contents:
+     * [accepted] is the server's response (our content + the revision it assigned).
+     */
+    fun markShoppingListSynced(accepted: ServerShoppingList) =
+        q.markShoppingListSynced(accepted.revision, snapshotJson(accepted), accepted.id)
+
+    private fun snapshotJson(l: ServerShoppingList): String? =
+        l.revision?.let { apiJson.encodeToString(ServerShoppingList.serializer(), l.copy(baseRevision = null)) }
 
     fun deleteShoppingList(id: String) = q.deleteShoppingListById(id)
 

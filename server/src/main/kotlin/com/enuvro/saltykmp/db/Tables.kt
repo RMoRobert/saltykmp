@@ -98,6 +98,10 @@ object ShoppingLists : Table("shopping_list") {
     val contentsForList = text("contents_for_list").nullable()
     val contentsForFreeform = text("contents_for_freeform").nullable()
     val lastModifiedDate = datetime("last_modified_date").nullable().index()
+    // Optimistic-concurrency counter, bumped on every accepted write (API sync and web edits alike).
+    // Clients compare it against the revision they last synced — unlike lastModifiedDate (stamped by
+    // the editing device), it reliably answers "has this row changed hands since I last looked".
+    val revision = long("revision").default(1)
     override val primaryKey = PrimaryKey(id)
 }
 

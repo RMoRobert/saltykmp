@@ -39,6 +39,20 @@ class SyncIntegrationTest {
         val images = mutableMapOf<String, ByteArray>()
         var registered = false
         var completed = false
+        /** Returned as the device's lastSyncDate on registration — set it to exercise watermark paths. */
+        var lastSyncDate: String? = null
+        /** Makes the next shopping-list DELETE 409 with the current row (simulates an edit racing a delete). */
+        var deleteConflictsOnce = false
+
+        /** Mirror of the real server's revision handling in ShoppingListRepository.save. */
+        fun saveShoppingList(l: ServerShoppingList): Pair<HttpStatusCode, ServerShoppingList> {
+            val current = shoppingLists[l.id]
+            val accepted = current == null || l.baseRevision == null || l.baseRevision == current.revision
+            if (!accepted) return HttpStatusCode.Conflict to current!!
+            val saved = l.copy(revision = (current?.revision ?: 0L) + 1L, baseRevision = null)
+            shoppingLists[l.id] = saved
+            return HttpStatusCode.Created to saved
+        }
 
         private inline fun <reified T> bodyOf(content: Any?): T =
             apiJson.decodeFromString((content as TextContent).text)
@@ -50,7 +64,7 @@ class SyncIntegrationTest {
             when {
                 path == "/api/recipes/sync/device" && post -> {
                     val first = !registered; registered = true
-                    jsonOk(apiJson.encodeToString(DeviceSyncInfo(deviceId = "test-device", isFirstSync = first)))
+                    jsonOk(apiJson.encodeToString(DeviceSyncInfo(deviceId = "test-device", isFirstSync = first, lastSyncDate = lastSyncDate)))
                 }
                 path.endsWith("/complete") && post -> { completed = true; respond("", HttpStatusCode.OK) }
 
@@ -92,14 +106,25 @@ class SyncIntegrationTest {
                 path == "/api/categories" && get -> jsonOk(apiJson.encodeToString(emptyList<ServerCategory>()), 0)
                 path == "/api/tags" && get -> jsonOk(apiJson.encodeToString(emptyList<ServerTag>()), 0)
                 path == "/api/shoppingLists" && get ->
-                    jsonOk(apiJson.encodeToString(shoppingLists.values.toList()), shoppingLists.size)
+                    // The real DB defaults revision to 1, so seeded rows never serve a null revision.
+                    jsonOk(
+                        apiJson.encodeToString(shoppingLists.values.map { it.copy(revision = it.revision ?: 1L) }),
+                        shoppingLists.size,
+                    )
                 path == "/api/shoppingLists" && post -> {
-                    val l = bodyOf<ServerShoppingList>(request.body); shoppingLists[l.id] = l
-                    jsonOk(apiJson.encodeToString(l), status = HttpStatusCode.Created)
+                    val (status, body) = saveShoppingList(bodyOf<ServerShoppingList>(request.body))
+                    jsonOk(apiJson.encodeToString(body), status = status)
                 }
                 path.startsWith("/api/shoppingLists/") && request.method == HttpMethod.Delete -> {
-                    shoppingLists.remove(path.substringAfterLast("/"))
-                    respond("", HttpStatusCode.NoContent)
+                    val id = path.substringAfterLast("/")
+                    val current = shoppingLists[id]
+                    if (deleteConflictsOnce && current != null) {
+                        deleteConflictsOnce = false
+                        jsonOk(apiJson.encodeToString(current.copy(revision = current.revision ?: 1L)), status = HttpStatusCode.Conflict)
+                    } else {
+                        shoppingLists.remove(id)
+                        respond("", HttpStatusCode.NoContent)
+                    }
                 }
 
                 else -> respond("", HttpStatusCode.NotFound)
@@ -195,6 +220,212 @@ class SyncIntegrationTest {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         AppDatabase.Schema.create(driver)
         return createAppDatabase(driver)
+    }
+
+    // ---- Shopping-list revision sync ----
+
+    private fun item(id: String, text: String, done: Boolean = false) =
+        com.enuvro.saltykmp.db.model.ShoppingListListContents(id = id, text = text, isCompleted = done)
+
+    /** Simulates a UI edit: rewrites the row's contents + date while PRESERVING the sync bookkeeping,
+     *  exactly what the apps' edit paths do (they never touch syncedRevision/syncedSnapshot). */
+    private fun editLocally(db: AppDatabase, local: LocalStore, edited: ServerShoppingList) {
+        val state = local.shoppingListsWithSyncState().first { it.list.id == edited.id }
+        db.queriesQueries.upsertShoppingList(
+            edited.id, edited.name, edited.isFreeform, edited.contentsForList ?: emptyList(),
+            edited.contentsForFreeform, LocalStore.wireToDbDate(edited.lastModifiedDate),
+            state.syncedRevision,
+            state.syncedSnapshot?.let { apiJson.encodeToString(ServerShoppingList.serializer(), it) },
+        )
+    }
+
+    /** Both sides in agreement at the server's revision (the state after any clean sync). */
+    private fun agree(local: LocalStore, server: FakeServer, list: ServerShoppingList): ServerShoppingList {
+        val (_, saved) = server.saveShoppingList(list)
+        local.upsertShoppingList(saved)
+        return saved
+    }
+
+    @Test
+    fun dirtyLocalRowUploadsAndComesBackClean() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        val agreed = agree(local, server, ServerShoppingList(
+            id = "L", name = "Groceries", isFreeform = false,
+            contentsForList = listOf(item("a", "Milk")),
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        ))
+
+        editLocally(db, local, agreed.copy(
+            contentsForList = listOf(item("a", "Milk"), item("b", "Eggs")),
+            lastModifiedDate = "2026-08-02T00:00:00.000Z",
+        ))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        val result = SyncService(api, local, deviceId = "d", deviceName = "Test").syncNow()
+
+        assertEquals(1, result.libraryUp)
+        assertEquals(0, result.conflictsMerged)
+        assertEquals(2, server.shoppingLists["L"]?.contentsForList?.size)
+        assertEquals(2L, server.shoppingLists["L"]?.revision, "accepted upload bumps the revision")
+        val state = local.shoppingListsWithSyncState().single()
+        assertEquals(2L, state.syncedRevision, "upload records the new agreement")
+        assertEquals(false, state.isDirty, "row is clean after upload")
+    }
+
+    @Test
+    fun serverChangedOnlyDownloadsWithoutUploading() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        val agreed = agree(local, server, ServerShoppingList(
+            id = "L", name = "Groceries", isFreeform = false,
+            contentsForList = listOf(item("a", "Milk")),
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        ))
+
+        // Another device (or the web UI) edits the server copy → revision moves past our agreement.
+        server.saveShoppingList(agreed.copy(
+            contentsForList = listOf(item("a", "Milk", done = true)),
+            lastModifiedDate = "2026-08-03T00:00:00.000Z",
+            baseRevision = agreed.revision,
+        ))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        val result = SyncService(api, local, deviceId = "d", deviceName = "Test").syncNow()
+
+        assertEquals(1, result.libraryDown)
+        assertEquals(0, result.libraryUp)
+        val state = local.shoppingListsWithSyncState().single()
+        assertEquals(true, state.list.contentsForList?.single()?.isCompleted)
+        assertEquals(2L, state.syncedRevision)
+        assertEquals(false, state.isDirty)
+    }
+
+    /** The headline scenario: both sides edited since the last agreement → three-way merge, no loss. */
+    @Test
+    fun concurrentEditsMergeItemLevelAndConverge() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        val agreed = agree(local, server, ServerShoppingList(
+            id = "L", name = "Groceries", isFreeform = false,
+            contentsForList = listOf(item("a", "Milk"), item("b", "Eggs")),
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        ))
+
+        // Web checks off Milk…
+        server.saveShoppingList(agreed.copy(
+            contentsForList = listOf(item("a", "Milk", done = true), item("b", "Eggs")),
+            lastModifiedDate = "2026-08-02T00:00:00.000Z",
+            baseRevision = agreed.revision,
+        ))
+        // …while this device adds Bread.
+        editLocally(db, local, agreed.copy(
+            contentsForList = listOf(item("a", "Milk"), item("b", "Eggs"), item("c", "Bread")),
+            lastModifiedDate = "2026-08-03T00:00:00.000Z",
+        ))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        val result = SyncService(api, local, deviceId = "d", deviceName = "Test").syncNow()
+
+        assertEquals(1, result.conflictsMerged)
+        assertEquals(0, result.conflictCopies)
+        val merged = server.shoppingLists["L"]!!
+        assertEquals(listOf("Milk", "Eggs", "Bread"), merged.contentsForList?.map { it.text })
+        assertEquals(true, merged.contentsForList?.first()?.isCompleted, "web's check-off survived")
+        assertEquals(3L, merged.revision)
+        val state = local.shoppingListsWithSyncState().single()
+        assertEquals(merged.contentsForList, state.list.contentsForList, "local converged to the merge")
+        assertEquals(3L, state.syncedRevision)
+        assertEquals(false, state.isDirty)
+    }
+
+    @Test
+    fun freeformConflictKeepsLocalTextAsANewCopyOnBothSides() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        val agreed = agree(local, server, ServerShoppingList(
+            id = "F", name = "Notes", isFreeform = true,
+            contentsForFreeform = "v0",
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        ))
+
+        server.saveShoppingList(agreed.copy(
+            contentsForFreeform = "server words",
+            lastModifiedDate = "2026-08-02T00:00:00.000Z",
+            baseRevision = agreed.revision,
+        ))
+        editLocally(db, local, agreed.copy(
+            contentsForFreeform = "local words",
+            lastModifiedDate = "2026-08-03T00:00:00.000Z",
+        ))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        val result = SyncService(api, local, deviceId = "d", deviceName = "My iPhone").syncNow()
+
+        assertEquals(1, result.conflictsMerged)
+        assertEquals(1, result.conflictCopies)
+        assertEquals("server words", server.shoppingLists["F"]?.contentsForFreeform, "shared list keeps the server text")
+
+        val copies = server.shoppingLists.values.filter { it.id != "F" }
+        assertEquals(1, copies.size, "the local text became one new list on the server")
+        assertEquals("local words", copies.single().contentsForFreeform)
+        assertTrue(copies.single().name!!.contains("conflicted copy from My iPhone"), "was: ${copies.single().name}")
+
+        // Local has both, clean, in agreement.
+        val states = local.shoppingListsWithSyncState()
+        assertEquals(2, states.size)
+        assertTrue(states.none { it.isDirty })
+    }
+
+    /** Pre-revision rows (no snapshot) get one timestamp-based decision, then bookkeeping is seeded. */
+    @Test
+    fun legacyRowIsSeededAndThenSyncsByRevision() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        // Server row at revision 1; local row identical but written WITHOUT bookkeeping (legacy build).
+        val (_, onServer) = server.saveShoppingList(ServerShoppingList(
+            id = "L", name = "Groceries", isFreeform = false,
+            contentsForList = listOf(item("a", "Milk")),
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        ))
+        local.insertLocalShoppingList(onServer.copy(revision = null))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "d", deviceName = "Test").syncNow()
+
+        val state = local.shoppingListsWithSyncState().single()
+        assertEquals(1L, state.syncedRevision, "equal-date legacy row seeds the agreement without transferring")
+        assertEquals(false, state.isDirty)
+    }
+
+    /** A server-only row that 409s its delete (edited under us) is downloaded, not lost. */
+    @Test
+    fun deleteRefusedByIfMatchDownloadsTheRowInstead() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.registered = true // not a first sync
+        server.lastSyncDate = "2026-08-10T00:00:00.000Z"
+        // Old server row (before the watermark) that we don't have locally → delete-by-absence fires…
+        server.saveShoppingList(ServerShoppingList(
+            id = "L", name = "Edited Meanwhile", isFreeform = true,
+            contentsForFreeform = "still wanted",
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        ))
+        // …but the delete is refused because the row just changed (If-Match mismatch on the server).
+        server.deleteConflictsOnce = true
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        val result = SyncService(api, local, deviceId = "d", deviceName = "Test").syncNow()
+
+        assertEquals("still wanted", local.shoppingLists().single().contentsForFreeform, "refused delete → download")
+        assertEquals(1, result.libraryDown)
+        assertTrue(server.shoppingLists.containsKey("L"), "row survives on the server too")
     }
 
     @Test

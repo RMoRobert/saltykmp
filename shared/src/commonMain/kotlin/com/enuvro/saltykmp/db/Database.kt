@@ -173,6 +173,18 @@ internal val SHARED_MIGRATIONS: List<SharedMigration> = listOf(
             driver.execute(null, """ALTER TABLE "shoppingList" ADD COLUMN "lastModifiedDate" TEXT""", 0)
         }
     },
+    // Per-row sync bookkeeping for revision-based shopping-list sync (see Schema.sq for what the
+    // columns mean and SHOPPING_LIST_REVISIONS_PLAN.md for the design). Appended at the END of the
+    // table so the other platform's positional SELECT * keeps working. Mirror: Salty's
+    // `saltySharedMigrations` with the SAME id.
+    SharedMigration("SHARED-V0003") { driver ->
+        if (!columnExists(driver, "shoppingList", "syncedRevision")) {
+            driver.execute(null, """ALTER TABLE "shoppingList" ADD COLUMN "syncedRevision" INTEGER""", 0)
+        }
+        if (!columnExists(driver, "shoppingList", "syncedSnapshot")) {
+            driver.execute(null, """ALTER TABLE "shoppingList" ADD COLUMN "syncedSnapshot" TEXT""", 0)
+        }
+    },
 )
 
 /** True if [table] has a column named [column]. [table] is a compile-time constant from the list above,

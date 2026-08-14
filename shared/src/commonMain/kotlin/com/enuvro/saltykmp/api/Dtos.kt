@@ -113,6 +113,13 @@ data class ServerShoppingList(
     val contentsForList: List<ShoppingListListContents>? = null,
     val contentsForFreeform: String? = null,
     val lastModifiedDate: String? = null,
+    /** Server-owned optimistic-concurrency counter: present on every GET/save response, bumped on
+     *  every accepted write. Null only from clients or servers that predate revisions. */
+    val revision: Long? = null,
+    /** Client → server on upload: the [revision] this edit is based on. The server rejects the write
+     *  with 409 (+ its current row) when this no longer matches — that mismatch IS conflict
+     *  detection. Legacy clients omit it and get timestamp-guarded last-writer-wins instead. */
+    val baseRevision: Long? = null,
 )
 
 /**

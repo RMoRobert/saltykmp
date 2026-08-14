@@ -3,9 +3,14 @@ package com.enuvro.saltykmp.sync
 import com.enuvro.saltykmp.api.RecipeManifestEntry
 import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
+import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
 import kotlinx.coroutines.CancellationException
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 
 /**
  * Orchestrates a full bidirectional sync — the Kotlin counterpart of the Swift `SaltySyncService`.
@@ -43,6 +48,7 @@ class SyncService(
             libraryUp = library.up, libraryDown = library.down,
             libraryDeleted = library.deletedLocal + library.deletedServer,
             imagesUp = recipes.imagesUp, imagesDown = recipes.imagesDown,
+            conflictsMerged = library.conflictsMerged, conflictCopies = library.conflictCopies,
         )
     }
 
@@ -111,7 +117,14 @@ class SyncService(
         categories.forEach { api.uploadCategory(it) }
         tags.forEach { api.uploadTag(it) }
         val shoppingLists = local.shoppingLists()
-        shoppingLists.forEach { api.uploadShoppingList(it) }
+        shoppingLists.forEach { l ->
+            // The server was just wiped, so these are fresh inserts; record each agreement so the
+            // next regular sync starts revision-based instead of legacy-seeding every row.
+            when (val out = api.uploadShoppingList(l)) {
+                is SaltyApiClient.ShoppingListSaveOutcome.Saved -> local.markShoppingListSynced(out.list)
+                is SaltyApiClient.ShoppingListSaveOutcome.Conflict -> {} // unreachable on an empty server
+            }
+        }
 
         var recipesUp = 0
         var imagesUp = 0
@@ -239,26 +252,177 @@ class SyncService(
     }
 
     /**
-     * Shopping lists reconcile exactly like the vocab tables: a COMPLETE server list, diffed against
-     * local by `lastModifiedDate`, with deletions inferred from absence. Whole-row last-writer-wins —
-     * list items have no independent identity, so a concurrent edit on another device overwrites this
-     * one's items wholesale. That trade is deliberate (see FEATURE_PLANS.md in the Salty repo).
+     * Shopping lists sync on per-row REVISIONS, not timestamps (see SHOPPING_LIST_REVISIONS_PLAN.md).
+     * For every row on both sides, two clock-free questions classify it:
+     *   dirty         — does the local row differ from its `syncedSnapshot` (last server agreement)?
+     *   serverChanged — does the server's `revision` differ from our `syncedRevision`?
+     * neither → in sync; dirty → upload (with baseRevision, so a race 409s instead of clobbering);
+     * serverChanged → download; BOTH → real conflict, resolved by [ShoppingListMerge] (three-way
+     * against the snapshot; freeform conflicts keep the local text as a new "conflicted copy" list).
+     *
+     * Legacy rows (no snapshot yet — pre-revision builds wrote them) get ONE timestamp-based decision
+     * to pick a direction, then the bookkeeping is seeded and every later sync is revision-based.
+     * Rows on only one side keep the watermark absence logic (no tombstones for lists, a deliberate
+     * FEATURE_PLANS.md decision), except server-side deletes now carry If-Match so a list that
+     * changed under us is downloaded instead of deleted.
      */
     private suspend fun syncShoppingLists(isFirstSync: Boolean, lastSync: Instant?): Counts {
         val server = api.fetchShoppingLists()
         val serverById = server.associateBy { it.id }
-        val localById = local.shoppingLists().associateBy { it.id }
-        val plan = SyncReconciler.plan(
-            local = localById.values.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
-            server = server.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
-            isFirstSync = isFirstSync, lastSyncDate = lastSync,
-        )
-        plan.toUpload.forEach { id -> localById[id]?.let { api.uploadShoppingList(it) } }
-        plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertShoppingList(it) } }
-        plan.toDeleteLocally.forEach { local.deleteShoppingList(it) }
-        plan.toDeleteOnServer.forEach { api.deleteShoppingList(it) }
-        return plan.counts()
+        val locals = local.shoppingListsWithSyncState()
+        val localIds = locals.mapTo(mutableSetOf()) { it.list.id }
+
+        var counts = Counts()
+
+        for (l in locals) {
+            val s = serverById[l.list.id]
+            counts += when {
+                s == null -> shoppingListAbsentOnServer(l, isFirstSync, lastSync)
+                l.syncedRevision == null || l.syncedSnapshot == null -> shoppingListLegacySeed(l, s)
+                else -> {
+                    val dirty = l.isDirty
+                    val serverChanged = s.revision != l.syncedRevision
+                    when {
+                        !dirty && !serverChanged -> Counts()
+                        dirty && !serverChanged -> uploadShoppingList(l.list, baseRevision = l.syncedRevision, snapshot = l.syncedSnapshot)
+                        !dirty -> { local.upsertShoppingList(s); Counts(down = 1) }
+                        else -> resolveShoppingListConflict(l, s)
+                    }
+                }
+            }
+        }
+
+        for (s in server) {
+            if (s.id in localIds) continue
+            // Server-only row: new to us, or deleted here. No tombstones for lists, so the watermark
+            // decides — except a failed If-Match delete proves the row changed, and change wins.
+            counts += if (isFirstSync || lastSync == null || LocalStore.parseOrPast(s.lastModifiedDate) > lastSync) {
+                local.upsertShoppingList(s)
+                Counts(down = 1)
+            } else when (val out = api.deleteShoppingList(s.id, expectedRevision = s.revision)) {
+                is SaltyApiClient.ShoppingListDeleteOutcome.Deleted -> Counts(deletedServer = 1)
+                is SaltyApiClient.ShoppingListDeleteOutcome.Conflict -> {
+                    local.upsertShoppingList(out.current)
+                    Counts(down = 1)
+                }
+            }
+        }
+        return counts
     }
+
+    /** Local row the server doesn't have: never-uploaded (push it) or server-deleted (respect it — unless we edited since). */
+    private suspend fun shoppingListAbsentOnServer(
+        l: LocalStore.LocalShoppingList,
+        isFirstSync: Boolean,
+        lastSync: Instant?,
+    ): Counts {
+        // baseRevision 0 = "I expect NO server row": an insert sails through (the server accepts any
+        // save of a row it doesn't have), but if another writer re-created the id between our GET and
+        // this POST, the mismatch 409s into a proper merge instead of silently last-writer-winning.
+        val everSynced = l.syncedRevision != null
+        return if (everSynced) {
+            if (l.isDirty) {
+                // Deleted on the server but edited here since our last agreement: edit beats delete.
+                uploadShoppingList(l.list, baseRevision = 0, snapshot = null)
+            } else {
+                local.deleteShoppingList(l.list.id)
+                Counts(deletedLocal = 1)
+            }
+        } else {
+            // Legacy/never-synced row: the old watermark logic, then the upload seeds the bookkeeping.
+            if (isFirstSync || lastSync == null || LocalStore.parseOrPast(l.list.lastModifiedDate) > lastSync) {
+                uploadShoppingList(l.list, baseRevision = 0, snapshot = null)
+            } else {
+                local.deleteShoppingList(l.list.id)
+                Counts(deletedLocal = 1)
+            }
+        }
+    }
+
+    /**
+     * Row exists on both sides but predates revision bookkeeping locally: ONE timestamp-based
+     * last-writer-wins decision (exactly what every sync did before revisions), whose outcome seeds
+     * `syncedRevision`/`syncedSnapshot` so this row never takes this path again.
+     */
+    private suspend fun shoppingListLegacySeed(l: LocalStore.LocalShoppingList, s: ServerShoppingList): Counts {
+        val localDate = LocalStore.parseOrPast(l.list.lastModifiedDate)
+        val serverDate = LocalStore.parseOrPast(s.lastModifiedDate)
+        return when {
+            localDate > serverDate -> uploadShoppingList(l.list, baseRevision = s.revision, snapshot = null)
+            serverDate > localDate -> { local.upsertShoppingList(s); Counts(down = 1) }
+            else -> { local.markShoppingListSynced(s); Counts() } // equal → agree; just record it
+        }
+    }
+
+    /** Upload one list; a 409 means it changed since we fetched → resolve as a conflict instead. */
+    private suspend fun uploadShoppingList(list: ServerShoppingList, baseRevision: Long?, snapshot: ServerShoppingList?): Counts =
+        when (val out = api.uploadShoppingList(list.copy(revision = null, baseRevision = baseRevision))) {
+            is SaltyApiClient.ShoppingListSaveOutcome.Saved -> {
+                local.markShoppingListSynced(out.list)
+                Counts(up = 1)
+            }
+            is SaltyApiClient.ShoppingListSaveOutcome.Conflict ->
+                resolveShoppingListConflict(
+                    LocalStore.LocalShoppingList(list, syncedRevision = baseRevision, syncedSnapshot = snapshot),
+                    out.current,
+                )
+        }
+
+    /**
+     * Both sides changed since the last agreement. Merge (three-way when a snapshot exists), push the
+     * result with the server's CURRENT revision as base, and store what the server accepted. A 409 on
+     * that push means yet another writer landed in between — retry once against the newest row; a
+     * second 409 leaves the row dirty for the next sync (never a wrong overwrite, by construction).
+     */
+    private suspend fun resolveShoppingListConflict(
+        l: LocalStore.LocalShoppingList,
+        s: ServerShoppingList,
+        retriesLeft: Int = 1,
+    ): Counts {
+        val resolution = ShoppingListMerge.resolve(
+            base = l.syncedSnapshot,
+            local = l.list,
+            server = s,
+            conflictCopyId = newListId(),
+            conflictCopyLabel = "conflicted copy from $deviceName ${nowDayStamp()}",
+        )
+        var counts = Counts(conflictsMerged = 1)
+
+        // The conflict copy is a brand-new list: keep it locally and push it up like any other row.
+        resolution.conflictCopy?.let { copy ->
+            local.insertLocalShoppingList(copy)
+            when (val out = api.uploadShoppingList(copy)) {
+                is SaltyApiClient.ShoppingListSaveOutcome.Saved -> local.markShoppingListSynced(out.list)
+                is SaltyApiClient.ShoppingListSaveOutcome.Conflict -> {} // fresh id — can't happen; next sync retries
+            }
+            counts += Counts(conflictCopies = 1)
+        }
+
+        when (val out = api.uploadShoppingList(resolution.merged.copy(baseRevision = s.revision))) {
+            is SaltyApiClient.ShoppingListSaveOutcome.Saved -> {
+                local.upsertShoppingList(out.list) // contents + bookkeeping land together, row is clean
+                counts += Counts(up = 1)
+            }
+            is SaltyApiClient.ShoppingListSaveOutcome.Conflict -> {
+                counts += if (retriesLeft > 0) {
+                    resolveShoppingListConflict(
+                        LocalStore.LocalShoppingList(resolution.merged, l.syncedRevision, l.syncedSnapshot),
+                        out.current,
+                        retriesLeft - 1,
+                    )
+                } else {
+                    Counts() // give up this round; the row stays dirty and next sync re-merges
+                }
+            }
+        }
+        return counts
+    }
+
+    @OptIn(ExperimentalUuidApi::class)
+    private fun newListId(): String = Uuid.random().toString().uppercase()
+
+    @OptIn(ExperimentalTime::class)
+    private fun nowDayStamp(): String = Clock.System.now().toString().take(10)
 
     private suspend fun syncCourses(isFirstSync: Boolean, lastSync: Instant?): Counts {
         val server = api.fetchCourses()
@@ -312,10 +476,12 @@ class SyncService(
     private data class Counts(
         val up: Int = 0, val down: Int = 0, val deletedLocal: Int = 0, val deletedServer: Int = 0,
         val imagesUp: Int = 0, val imagesDown: Int = 0,
+        val conflictsMerged: Int = 0, val conflictCopies: Int = 0,
     ) {
         operator fun plus(o: Counts) = Counts(
             up + o.up, down + o.down, deletedLocal + o.deletedLocal, deletedServer + o.deletedServer,
             imagesUp + o.imagesUp, imagesDown + o.imagesDown,
+            conflictsMerged + o.conflictsMerged, conflictCopies + o.conflictCopies,
         )
     }
 
@@ -330,10 +496,15 @@ data class SyncResult(
     val recipesUp: Int = 0, val recipesDown: Int = 0, val recipesDeleted: Int = 0,
     val libraryUp: Int = 0, val libraryDown: Int = 0, val libraryDeleted: Int = 0,
     val imagesUp: Int = 0, val imagesDown: Int = 0,
+    /** Shopping lists that changed on both sides and were auto-merged (see ShoppingListMerge). */
+    val conflictsMerged: Int = 0,
+    /** New "(conflicted copy …)" lists created to preserve an unmergeable side — worth surfacing
+     *  prominently: the user should know a duplicate now exists and why. */
+    val conflictCopies: Int = 0,
 ) {
     val isNoOp: Boolean
         get() = recipesUp + recipesDown + recipesDeleted + libraryUp + libraryDown + libraryDeleted +
-            imagesUp + imagesDown == 0
+            imagesUp + imagesDown + conflictsMerged + conflictCopies == 0
 
     /** e.g. "recipes 3↑ 1↓ · images 2↑ · organizers 5↑", or "Already up to date." */
     fun summary(): String {
@@ -350,6 +521,8 @@ data class SyncResult(
         group("recipes", recipesUp, recipesDown, recipesDeleted)
         group("images", imagesUp, imagesDown, 0)
         group("organizers", libraryUp, libraryDown, libraryDeleted)
+        if (conflictsMerged > 0) groups += "$conflictsMerged list conflict${if (conflictsMerged == 1) "" else "s"} merged"
+        if (conflictCopies > 0) groups += "$conflictCopies conflicted cop${if (conflictCopies == 1) "y" else "ies"} kept"
         return groups.joinToString(" · ")
     }
 }

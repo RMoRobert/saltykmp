@@ -111,8 +111,15 @@ FROM shoppingList
 ORDER BY name ASC;
 
 upsertShoppingList:
-INSERT OR REPLACE INTO shoppingList(id, name, isFreeform, contentsForList, contentsForFreeform, lastModifiedDate)
-VALUES (?, ?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO shoppingList(id, name, isFreeform, contentsForList, contentsForFreeform, lastModifiedDate, syncedRevision, syncedSnapshot)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- Record the server agreement for a row WITHOUT touching its contents — used after a successful
+-- upload, when the local row is already right and only the bookkeeping moves.
+markShoppingListSynced:
+UPDATE shoppingList
+SET syncedRevision = ?, syncedSnapshot = ?
+WHERE id = ?;
 
 deleteShoppingListById:
 DELETE FROM shoppingList

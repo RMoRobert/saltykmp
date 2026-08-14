@@ -9,5 +9,16 @@
     {{/items}}
 </ul>
 {{/isEmpty}}
+{{#createListForm}}
+<form method="post" action="/shoppingLists" class="inline-form create-list-form">
+    <input type="hidden" name="csrf" value="{{csrfToken}}">
+    <input type="text" name="name" placeholder="New list name…" aria-label="New list name" required>
+    <select name="type" aria-label="List type">
+        <option value="checklist">Checklist</option>
+        <option value="freeform">Freeform</option>
+    </select>
+    <button type="submit">Create</button>
+</form>
+{{/createListForm}}
 {{/content}}
 {{/layoutSidebar.mustache}}
