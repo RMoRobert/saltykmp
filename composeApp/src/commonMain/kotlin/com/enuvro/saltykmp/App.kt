@@ -3,6 +3,7 @@ package com.enuvro.saltykmp
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,6 +41,8 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.Restaurant
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -62,7 +65,9 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -116,7 +121,9 @@ import com.enuvro.saltykmp.di.linkedFolderSyncSupported
 import com.enuvro.saltykmp.di.decodeImageBitmap
 import com.enuvro.saltykmp.di.makeThumbnail
 import com.enuvro.saltykmp.di.rememberCameraCapture
+import com.enuvro.saltykmp.sync.LocalStore
 import com.enuvro.saltykmp.sync.SyncResult
+import com.enuvro.saltykmp.util.PreparedDates
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.path
 import io.github.vinceglb.filekit.readBytes
@@ -398,6 +405,7 @@ private enum class RecipeSort(val label: String) {
     SOURCE("Source"),
     RATING("Rating"),
     DIFFICULTY("Difficulty"),
+    LAST_MADE("Last Made"),
 }
 
 /** Sort [list] by [sort]; ISO-8601 date strings compare chronologically, so plain string order works. */
@@ -409,9 +417,18 @@ private fun sortRecipes(list: List<Recipe>, sort: RecipeSort, ascending: Boolean
         RecipeSort.SOURCE -> compareBy { it.source?.lowercase() ?: "" }
         RecipeSort.RATING -> compareBy { it.rating?.rawValue ?: 0L }
         RecipeSort.DIFFICULTY -> compareBy { it.difficulty?.rawValue ?: 0L }
+        RecipeSort.LAST_MADE -> compareBy { it.lastPrepared ?: "" }
     }
     val sorted = list.sortedWith(key.thenBy { it.name.lowercase() })
-    return if (ascending) sorted else sorted.reversed()
+    val ordered = if (ascending) sorted else sorted.reversed()
+    // Never-made recipes go LAST in both directions (the Swift app's ORDER BY does the same). Ascending
+    // would otherwise open with every recipe that has no date at all — noise, for a sort that exists to
+    // answer "what have I cooked lately".
+    return if (sort == RecipeSort.LAST_MADE) {
+        ordered.partition { !it.lastPrepared.isNullOrBlank() }.let { (made, never) -> made + never }
+    } else {
+        ordered
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -523,18 +540,112 @@ private fun RecipeListScreen(
                                 ?: recipe.imageFilename?.let { module.imageFiles.load(it) })
                                 ?.let { decodeImageBitmap(it) }
                         }
-                        ListItem(
-                            leadingContent = { RecipeThumbnail(thumb) },
-                            headlineContent = { Text(if (recipe.isFavorite == true) "★ ${recipe.name}" else recipe.name) },
-                            supportingContent = recipe.source?.takeIf { it.isNotBlank() }?.let { { Text(it) } },
-                            modifier = Modifier.clickable { onOpen(recipe.id) },
-                        )
+                        var rowMenu by remember(recipe.id) { mutableStateOf(false) }
+                        // When sorting by "Last Made", surface the date in the row itself — otherwise the
+                        // ordering has no visible explanation.
+                        val lastMade = remember(recipe.lastPrepared) {
+                            PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
+                        }
+                        val subtitle = when {
+                            sort == RecipeSort.LAST_MADE -> lastMade?.let { "Made $it" } ?: "Never made"
+                            else -> recipe.source?.takeIf { it.isNotBlank() }
+                        }
+                        Box {
+                            ListItem(
+                                leadingContent = { RecipeThumbnail(thumb) },
+                                headlineContent = { Text(if (recipe.isFavorite == true) "★ ${recipe.name}" else recipe.name) },
+                                supportingContent = subtitle?.let { { Text(it) } },
+                                modifier = Modifier.combinedClickable(
+                                    onClick = { onOpen(recipe.id) },
+                                    onLongClick = { rowMenu = true },
+                                ),
+                            )
+                            LastMadeMenu(
+                                expanded = rowMenu,
+                                currentLastPrepared = recipe.lastPrepared,
+                                onDismiss = { rowMenu = false },
+                                onSet = { wire -> module.localStore.setRecipePrepared(recipe.id, wire, nowTimestamp()) },
+                            )
+                        }
                         HorizontalDivider()
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * Long-press menu for a recipe's "last made on" date, plus the date picker "Set Date…" opens.
+ *
+ * [onSet] receives the wire timestamp to store (null clears the date); the caller pairs it with a fresh
+ * `lastModifiedPreparedDate` and — deliberately — leaves `lastModifiedDate` alone, so marking a recipe
+ * made never reorders the "Date Modified" sort. "Clear" is offered because a single date field
+ * overwrites irreversibly, so a mis-tap needs a way back.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LastMadeMenu(
+    expanded: Boolean,
+    currentLastPrepared: String?,
+    onDismiss: () -> Unit,
+    onSet: (String?) -> Unit,
+) {
+    var showPicker by remember { mutableStateOf(false) }
+
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(
+            text = { Text("Made Today") },
+            onClick = { onSet(nowTimestamp()); onDismiss() },
+        )
+        DropdownMenuItem(
+            text = { Text("Set Date…") },
+            onClick = { onDismiss(); showPicker = true },
+        )
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = { Text("Clear") },
+            onClick = { onSet(null); onDismiss() },
+        )
+    }
+
+    if (showPicker) {
+        // Seeded from the stored date so re-picking starts where the user left off. Future days are
+        // unselectable: a recipe can't have been made in the future.
+        val state = rememberDatePickerState(
+            initialSelectedDateMillis = PreparedDates.wireToPickerMillis(
+                LocalStore.dbToWireDate(currentLastPrepared)
+            ),
+            selectableDates = PastOrPresentDates,
+        )
+        DatePickerDialog(
+            onDismissRequest = { showPicker = false },
+            confirmButton = {
+                TextButton(
+                    enabled = state.selectedDateMillis != null,
+                    onClick = {
+                        state.selectedDateMillis?.let { onSet(PreparedDates.pickerMillisToWire(it)) }
+                        showPicker = false
+                    },
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPicker = false }) { Text("Cancel") }
+            },
+        ) {
+            DatePicker(state = state)
+        }
+    }
+}
+
+/** Restricts the "last made" picker to days that have already happened. */
+@OptIn(ExperimentalMaterial3Api::class)
+private object PastOrPresentDates : SelectableDates {
+    override fun isSelectableDate(utcTimeMillis: Long): Boolean =
+        utcTimeMillis <= PreparedDates.nowEpochMillis()
+
+    override fun isSelectableYear(year: Int): Boolean =
+        year <= PreparedDates.currentLocalYear()
 }
 
 @Composable
@@ -754,6 +865,8 @@ private fun RecipeDetailScreen(module: AppModule, id: String, onBack: () -> Unit
                 ratingStars(recipe.rating)?.let { add("Rating" to it) }
                 recipe.servings?.let { add("Servings" to it.toString()) }
                 recipe.yield?.takeIf { it.isNotBlank() }?.let { add("Yield" to it) }
+                PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
+                    ?.let { add("Last Made" to it) }
             }
             val flags = buildList {
                 if (recipe.isFavorite == true) add("★ Favorite")

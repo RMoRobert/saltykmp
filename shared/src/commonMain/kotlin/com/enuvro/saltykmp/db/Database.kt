@@ -185,6 +185,16 @@ internal val SHARED_MIGRATIONS: List<SharedMigration> = listOf(
             driver.execute(null, """ALTER TABLE "shoppingList" ADD COLUMN "syncedSnapshot" TEXT""", 0)
         }
     },
+    // Decouples the "last made on" date (`lastPrepared`) from the recipe body clock, so marking a recipe
+    // made doesn't bump lastModifiedDate and churn the "Date Modified" sort. Sync reconciles the field
+    // against this timestamp instead (see Schema.sq and SyncService.reconcilePreparedDates). Same
+    // guarded-ALTER shape as the entries above — the column is also in Schema.sq for fresh KMP DBs.
+    // Mirror: Salty's `saltySharedMigrations` with the SAME id.
+    SharedMigration("SHARED-V0004") { driver ->
+        if (!columnExists(driver, "recipe", "lastModifiedPreparedDate")) {
+            driver.execute(null, """ALTER TABLE "recipe" ADD COLUMN "lastModifiedPreparedDate" TEXT""", 0)
+        }
+    },
 )
 
 /** True if [table] has a column named [column]. [table] is a compile-time constant from the list above,

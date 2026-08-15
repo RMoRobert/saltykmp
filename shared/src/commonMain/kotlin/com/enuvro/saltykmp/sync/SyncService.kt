@@ -185,12 +185,70 @@ class SyncService(
         if (plan.toDeleteOnServer.isNotEmpty()) api.deleteRecipesOnServer(deviceId, plan.toDeleteOnServer)
 
         val (imagesUp, imagesDown) = syncImages(manifest, tombstones)
+        val (preparedUp, preparedDown) = syncPreparedDates(manifest, plan, tombstones)
 
         return Counts(
-            up = plan.toUpload.size, down = plan.toDownload.size,
+            // Prepared-date transfers fold into the recipe counts: they move real recipe data, just not a
+            // body edit. Keeping them out entirely would report "0 recipes" for a sync that changed rows.
+            up = plan.toUpload.size + preparedUp, down = plan.toDownload.size + preparedDown,
             deletedLocal = plan.toDeleteLocally.size, deletedServer = plan.toDeleteOnServer.size,
             imagesUp = imagesUp, imagesDown = imagesDown,
         )
+    }
+
+    /**
+     * Independent "last made on" reconciliation, keyed on lastModifiedPreparedDate — the same decoupling
+     * as [syncImages], for the opposite reason. Images get their own channel because re-sending bytes on a
+     * body edit is EXPENSIVE; prepared dates get one because marking a recipe made deliberately does NOT
+     * bump lastModifiedDate (that would reorder every client's "Date Modified" sort), so the body plan is
+     * blind to the change and would never move it.
+     *
+     * Newer stamp wins; a null stamp means "never marked made through a prepared-date-aware client" and
+     * always loses. A whole-row upload is what moves the value — safe because the bodies agree by the time
+     * a push happens here, so it re-sends matching content and moves only the prepared pair, needing no
+     * partial-update endpoint.
+     *
+     * Recipes whose bodies moved this cycle need only ONE direction, because the body transfer already
+     * carried the prepared pair through a merge at the far end (RecipeRepository.upsert server-side,
+     * LocalStore.upsertRecipe locally), both keyed on this same stamp:
+     *   - body UPLOADED — the server kept its own pair exactly when its stamp was newer, so only a pull
+     *     can still be owed. Pushing again would be a no-op.
+     *   - body DOWNLOADED — the local merge kept its own pair exactly when the local stamp was newer, so
+     *     only a push can still be owed.
+     * Skipping such ids entirely (the obvious simplification) leaves the losing side stale until the NEXT
+     * sync — see the clobber tests in SyncIntegrationTest, which converge in one pass because of this.
+     *
+     * Returns (uploaded, downloaded) counts.
+     */
+    private suspend fun syncPreparedDates(
+        manifest: List<RecipeManifestEntry>,
+        plan: SyncReconciler.Plan,
+        tombstones: Set<String>,
+    ): Pair<Int, Int> {
+        var up = 0
+        var down = 0
+        val uploadedBodies = plan.toUpload.toSet()
+        val downloadedBodies = plan.toDownload.toSet()
+        val deleted = plan.toDeleteLocally.toSet() + plan.toDeleteOnServer.toSet()
+        val serverById = manifest.associateBy { it.id }
+        // Read AFTER the body plan ran, so downloaded rows show their post-merge prepared pair.
+        val localById = local.recipePreparedEntries().associateBy { it.id }
+        // Intersection only: a recipe missing from either side has no body agreement to piggyback on.
+        for (id in (serverById.keys intersect localById.keys) - tombstones - deleted) {
+            val s = serverById.getValue(id)
+            val l = localById.getValue(id)
+            val serverStamp = LocalStore.parseOrPast(s.lastModifiedPreparedDate)
+            val localStamp = LocalStore.parseOrPast(l.lastModifiedPreparedDate)
+            when {
+                localStamp > serverStamp && id !in uploadedBodies ->
+                    local.recipeForUpload(id)?.let { api.uploadRecipe(it); up++ }
+                serverStamp > localStamp && id !in downloadedBodies -> {
+                    local.setRecipePrepared(id, s.lastPrepared, s.lastModifiedPreparedDate)
+                    down++
+                }
+            }
+        }
+        return up to down
     }
 
     /**

@@ -73,7 +73,10 @@ object RecipeRepository {
     }
 
     suspend fun manifest(userId: String): List<RecipeManifestEntry> = dbQuery {
-        Recipes.select(Recipes.id, Recipes.lastModifiedDate, Recipes.imageFilename, Recipes.lastModifiedImageDate)
+        Recipes.select(
+            Recipes.id, Recipes.lastModifiedDate, Recipes.imageFilename, Recipes.lastModifiedImageDate,
+            Recipes.lastPrepared, Recipes.lastModifiedPreparedDate,
+        )
             .where { Recipes.userId eq userId }
             .map {
                 RecipeManifestEntry(
@@ -81,6 +84,8 @@ object RecipeRepository {
                     lastModifiedDate = WireDate.format(it[Recipes.lastModifiedDate]),
                     imageFilename = it[Recipes.imageFilename],
                     lastModifiedImageDate = WireDate.format(it[Recipes.lastModifiedImageDate]),
+                    lastPrepared = WireDate.format(it[Recipes.lastPrepared]),
+                    lastModifiedPreparedDate = WireDate.format(it[Recipes.lastModifiedPreparedDate]),
                 )
             }
     }
@@ -98,7 +103,10 @@ object RecipeRepository {
             // text body by lastModifiedImageDate, so a stale text-only upload can't clobber a newer image
             // (and vice versa). Keep whichever side's image is newer; an incoming null/older date preserves
             // what's stored (e.g. an image set via the dedicated /image endpoint that this body predates).
-            val existing = Recipes.select(Recipes.imageFilename, Recipes.lastModifiedImageDate)
+            val existing = Recipes.select(
+                Recipes.imageFilename, Recipes.lastModifiedImageDate,
+                Recipes.lastPrepared, Recipes.lastModifiedPreparedDate,
+            )
                 .where { (Recipes.id eq recipe.id) and (Recipes.userId eq userId) }
                 .limit(1).singleOrNull()
             val incomingImageDate = WireDate.parse(recipe.lastModifiedImageDate)
@@ -107,6 +115,17 @@ object RecipeRepository {
                 (incomingImageDate != null && (existingImageDate == null || !incomingImageDate.isBefore(existingImageDate)))
             val mergedImageFilename = if (takeIncomingImage) recipe.imageFilename else existing.get(Recipes.imageFilename)
             val mergedImageDate = if (takeIncomingImage) incomingImageDate else existingImageDate
+            // Same independent-field merge for the "last made on" date, resolved by lastModifiedPreparedDate
+            // rather than the body clock. This is what makes a body edit racing a "mark as made" safe: the
+            // editing device uploads the whole row carrying whatever lastPrepared it knew, and if that
+            // predates a mark-made another device already pushed, the stored one survives. A client that
+            // doesn't send the stamp (older build, or a row never marked made) can never win here.
+            val incomingPreparedDate = WireDate.parse(recipe.lastModifiedPreparedDate)
+            val existingPreparedDate = existing?.get(Recipes.lastModifiedPreparedDate)
+            val takeIncomingPrepared = existing == null ||
+                (incomingPreparedDate != null && (existingPreparedDate == null || !incomingPreparedDate.isBefore(existingPreparedDate)))
+            val mergedPrepared = if (takeIncomingPrepared) WireDate.parse(recipe.lastPrepared) else existing.get(Recipes.lastPrepared)
+            val mergedPreparedDate = if (takeIncomingPrepared) incomingPreparedDate else existingPreparedDate
             Recipes.upsert {
             // Coalesce the columns the client treats as non-optional to concrete defaults, so a row is
             // always decodable client-side and we never store NULL where the app expects a value (mirrors
@@ -117,7 +136,8 @@ object RecipeRepository {
             it[name] = recipe.name
             it[createdDate] = WireDate.parse(recipe.createdDate) ?: WireDate.nowUtc()
             it[lastModifiedDate] = WireDate.parse(recipe.lastModifiedDate) ?: WireDate.nowUtc()
-            it[lastPrepared] = WireDate.parse(recipe.lastPrepared)
+            it[lastPrepared] = mergedPrepared
+            it[lastModifiedPreparedDate] = mergedPreparedDate
             it[sourceText] = recipe.source ?: ""
             it[sourceDetails] = recipe.sourceDetails ?: ""
             it[introduction] = recipe.introduction ?: ""
@@ -219,6 +239,7 @@ object RecipeRepository {
             createdDate = WireDate.format(row[Recipes.createdDate]),
             lastModifiedDate = WireDate.format(row[Recipes.lastModifiedDate]),
             lastPrepared = WireDate.format(row[Recipes.lastPrepared]),
+            lastModifiedPreparedDate = WireDate.format(row[Recipes.lastModifiedPreparedDate]),
             source = row[Recipes.sourceText],
             sourceDetails = row[Recipes.sourceDetails],
             introduction = row[Recipes.introduction],

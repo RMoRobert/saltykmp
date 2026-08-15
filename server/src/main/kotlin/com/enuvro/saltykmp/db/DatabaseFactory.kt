@@ -36,6 +36,10 @@ object DatabaseFactory {
             // SchemaUtils.create only creates missing TABLES; deployments that predate shopping-list
             // revisions need the column added. Idempotent on Postgres and H2 alike.
             exec("ALTER TABLE shopping_list ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1")
+            // Likewise for the prepared-date sync channel (client-side counterpart: SHARED-V0004).
+            // Nullable with no default: NULL means "no prepared-date agreement recorded yet", which the
+            // merge in RecipeRepository.upsert treats as "always lose to an incoming stamp".
+            exec("ALTER TABLE recipe ADD COLUMN IF NOT EXISTS last_modified_prepared_date TIMESTAMP")
         }
     }
 

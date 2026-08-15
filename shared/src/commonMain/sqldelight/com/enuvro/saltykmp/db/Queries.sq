@@ -24,12 +24,19 @@ upsertRecipe:
 INSERT OR REPLACE INTO recipe(
     id, name, createdDate, lastModifiedDate, lastPrepared, source, sourceDetails, introduction,
     difficulty, rating, imageFilename, imageThumbnailData, isFavorite, wantToMake, yield, servings,
-    courseId, directions, ingredients, notes, variations, preparationTimes, nutrition, lastModifiedImageDate
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    courseId, directions, ingredients, notes, variations, preparationTimes, nutrition, lastModifiedImageDate,
+    lastModifiedPreparedDate
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- Targeted image-state update (filename + thumbnail blob + image timestamp), independent of the body.
 updateRecipeImage:
 UPDATE recipe SET imageFilename = ?, imageThumbnailData = ?, lastModifiedImageDate = ? WHERE id = ?;
+
+-- Targeted "last made on" update, independent of the body: deliberately does NOT touch
+-- lastModifiedDate, so marking a recipe made never disturbs the "Date Modified" sort. The paired
+-- lastModifiedPreparedDate is what sync reconciles on (see SyncService.reconcilePreparedDates).
+updateRecipePrepared:
+UPDATE recipe SET lastPrepared = ?, lastModifiedPreparedDate = ? WHERE id = ?;
 
 deleteRecipeById:
 DELETE FROM recipe

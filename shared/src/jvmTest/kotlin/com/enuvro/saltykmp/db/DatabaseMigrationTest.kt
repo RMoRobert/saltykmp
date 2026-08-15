@@ -78,7 +78,7 @@ class DatabaseMigrationTest {
     @Test
     fun sharedMigrationIdsMatchTheSwiftApp() {
         assertEquals(
-            listOf("2026-06-recipe-add-lastModifiedImageDate", "SHARED-V0002", "SHARED-V0003"),
+            listOf("2026-06-recipe-add-lastModifiedImageDate", "SHARED-V0002", "SHARED-V0003", "SHARED-V0004"),
             SHARED_MIGRATIONS.map { it.id },
         )
     }
@@ -118,6 +118,39 @@ class DatabaseMigrationTest {
 
         assertEquals(true, columnPresent(driver, "shoppingList", "syncedRevision"))
         assertEquals(true, columnPresent(driver, "shoppingList", "syncedSnapshot"))
+    }
+
+    /** SHARED-V0004 must add the prepared-date stamp on a DB that predates it. */
+    @Test
+    fun recipeLastModifiedPreparedDateIsAddedToAnOlderDatabase() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        // A pre-SHARED-V0004 recipe table: has lastPrepared (it's been there since 0001) but no stamp.
+        driver.execute(
+            null,
+            """CREATE TABLE "recipe" ("id" TEXT PRIMARY KEY NOT NULL, "name" TEXT, "lastPrepared" TEXT,
+               "lastModifiedImageDate" TEXT)""",
+            0,
+        )
+        assertEquals(false, columnPresent(driver, "recipe", "lastModifiedPreparedDate"))
+
+        applySharedMigrations(driver, SHARED_MIGRATIONS.filter { it.id == "SHARED-V0004" })
+
+        assertEquals(true, columnPresent(driver, "recipe", "lastModifiedPreparedDate"))
+    }
+
+    /** The guarded ALTER must be a no-op on a fresh KMP DB, where Schema.sq already declares the column. */
+    @Test
+    fun sharedV0004IsANoOpWhenTheColumnAlreadyExists() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        driver.execute(
+            null,
+            """CREATE TABLE "recipe" ("id" TEXT PRIMARY KEY NOT NULL, "lastModifiedPreparedDate" TEXT)""",
+            0,
+        )
+
+        applySharedMigrations(driver, SHARED_MIGRATIONS.filter { it.id == "SHARED-V0004" })
+
+        assertEquals(true, columnPresent(driver, "recipe", "lastModifiedPreparedDate"))
     }
 
     private fun columnPresent(driver: SqlDriver, table: String, column: String): Boolean =

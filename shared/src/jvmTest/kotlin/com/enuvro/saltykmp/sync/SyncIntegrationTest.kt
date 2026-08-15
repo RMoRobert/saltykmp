@@ -54,6 +54,27 @@ class SyncIntegrationTest {
             return HttpStatusCode.Created to saved
         }
 
+        /**
+         * Mirror of the real server's independent-field merge in RecipeRepository.upsert: the "last made
+         * on" pair is resolved by lastModifiedPreparedDate (newer wins), NOT by the body clock — so a
+         * body upload carrying a stale prepared date can't clobber a newer mark-as-made.
+         */
+        fun saveRecipe(incoming: ServerRecipe): ServerRecipe {
+            val existing = recipes[incoming.id]
+            val incomingStamp = LocalStore.parseOrPast(incoming.lastModifiedPreparedDate)
+            val existingStamp = LocalStore.parseOrPast(existing?.lastModifiedPreparedDate)
+            val merged = if (existing == null || incomingStamp >= existingStamp) {
+                incoming
+            } else {
+                incoming.copy(
+                    lastPrepared = existing.lastPrepared,
+                    lastModifiedPreparedDate = existing.lastModifiedPreparedDate,
+                )
+            }
+            recipes[incoming.id] = merged
+            return merged
+        }
+
         private inline fun <reified T> bodyOf(content: Any?): T =
             apiJson.decodeFromString((content as TextContent).text)
 
@@ -70,7 +91,10 @@ class SyncIntegrationTest {
 
                 path == "/api/recipes/sync/manifest" && get ->
                     jsonOk(apiJson.encodeToString(recipes.values.map {
-                        RecipeManifestEntry(it.id, it.lastModifiedDate, it.imageFilename, it.lastModifiedImageDate)
+                        RecipeManifestEntry(
+                            it.id, it.lastModifiedDate, it.imageFilename, it.lastModifiedImageDate,
+                            it.lastPrepared, it.lastModifiedPreparedDate,
+                        )
                     }), recipes.size)
 
                 path == "/api/recipes" && get -> {
@@ -80,7 +104,7 @@ class SyncIntegrationTest {
                     jsonOk(apiJson.encodeToString(all.drop(page * size).take(size)), all.size)
                 }
                 path == "/api/recipes" && post -> {
-                    val r = bodyOf<ServerRecipe>(request.body); recipes[r.id] = r
+                    val r = saveRecipe(bodyOf(request.body))
                     jsonOk(apiJson.encodeToString(r), status = HttpStatusCode.Created)
                 }
                 path == "/api/recipes/sync/delete" && post -> {
@@ -498,6 +522,107 @@ class SyncIntegrationTest {
         assertEquals("Carrot Cake", server.recipes["r1"]?.name)
         assertEquals("2026-06-02T00:00:00.000Z", server.recipes["r1"]?.lastModifiedDate)
         assertEquals(0, imageSourceCalls, "a text-only edit must not re-transfer the image")
+    }
+
+    // ---- "Last made on" (prepared dates) --------------------------------------------------------
+    //
+    // The whole point of the separate channel: marking a recipe made does NOT bump lastModifiedDate, so
+    // the body reconciler is blind to it and these transfers have to come from the prepared-date pass.
+
+    @Test
+    fun markingMadeLocallyUploadsWithoutTouchingTheBodyClock() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        // A recipe already in sync with the server, bodies identical.
+        local.upsertRecipe(ServerRecipe(id = "r1", name = "Chili", lastModifiedDate = "2026-06-01T00:00:00.000Z"))
+        val server = FakeServer()
+        server.recipes["r1"] = ServerRecipe(id = "r1", name = "Chili", lastModifiedDate = "2026-06-01T00:00:00.000Z")
+
+        // "Made today" — sets the date and its stamp, deliberately leaving lastModifiedDate alone.
+        local.setRecipePrepared("r1", "2026-08-14T12:00:00.000Z", "2026-08-14T18:30:00.000Z")
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        assertEquals("2026-08-14T12:00:00.000Z", server.recipes["r1"]?.lastPrepared)
+        assertEquals("2026-08-14T18:30:00.000Z", server.recipes["r1"]?.lastModifiedPreparedDate)
+        // The body clock must NOT have moved — that's what keeps the "Date Modified" sort stable.
+        assertEquals("2026-06-01T00:00:00.000Z", server.recipes["r1"]?.lastModifiedDate)
+    }
+
+    @Test
+    fun markingMadeOnAnotherDeviceDownloadsLocally() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        local.upsertRecipe(ServerRecipe(id = "r1", name = "Chili", lastModifiedDate = "2026-06-01T00:00:00.000Z"))
+        val server = FakeServer()
+        // Same body, but the server already knows about a mark-as-made from elsewhere.
+        server.recipes["r1"] = ServerRecipe(
+            id = "r1", name = "Chili", lastModifiedDate = "2026-06-01T00:00:00.000Z",
+            lastPrepared = "2026-08-10T12:00:00.000Z", lastModifiedPreparedDate = "2026-08-10T20:00:00.000Z",
+        )
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        val r = local.recipeForUpload("r1")
+        assertEquals("2026-08-10T12:00:00.000Z", r?.lastPrepared)
+        assertEquals("2026-08-10T20:00:00.000Z", r?.lastModifiedPreparedDate)
+        assertEquals("2026-06-01T00:00:00.000Z", r?.lastModifiedDate)
+    }
+
+    /**
+     * The race the independent stamp exists to survive: this device edits the BODY while another device
+     * marks the recipe made. The body upload carries a stale prepared date, so without the field-level
+     * merge the mark would be silently erased.
+     */
+    @Test
+    fun aBodyEditDoesNotClobberANewerMarkAsMade() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        local.upsertRecipe(ServerRecipe(id = "r1", name = "Chili", lastModifiedDate = "2026-06-01T00:00:00.000Z"))
+
+        val server = FakeServer()
+        server.recipes["r1"] = ServerRecipe(
+            id = "r1", name = "Chili", lastModifiedDate = "2026-06-01T00:00:00.000Z",
+            lastPrepared = "2026-08-10T12:00:00.000Z", lastModifiedPreparedDate = "2026-08-10T20:00:00.000Z",
+        )
+
+        // Local body edit, made without ever seeing the other device's mark-as-made.
+        local.upsertRecipe(ServerRecipe(id = "r1", name = "Chili Verde", lastModifiedDate = "2026-08-12T00:00:00.000Z"))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        // The body edit won (it's newer) AND the prepared date survived on both sides.
+        assertEquals("Chili Verde", server.recipes["r1"]?.name)
+        assertEquals("2026-08-10T12:00:00.000Z", server.recipes["r1"]?.lastPrepared)
+        assertEquals("2026-08-10T12:00:00.000Z", local.recipeForUpload("r1")?.lastPrepared)
+    }
+
+    /**
+     * The mirror-image race: this device marks the recipe made while the SERVER body moves ahead. The
+     * body download carries a stale prepared date, so LocalStore.upsertRecipe has to keep the local one.
+     */
+    @Test
+    fun aBodyDownloadDoesNotClobberANewerLocalMarkAsMade() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        local.upsertRecipe(ServerRecipe(id = "r1", name = "Chili", lastModifiedDate = "2026-06-01T00:00:00.000Z"))
+        local.setRecipePrepared("r1", "2026-08-14T12:00:00.000Z", "2026-08-14T18:30:00.000Z")
+
+        val server = FakeServer()
+        // Server body is newer, but its prepared date predates the local mark (and here is absent).
+        server.recipes["r1"] = ServerRecipe(
+            id = "r1", name = "Server Chili", lastModifiedDate = "2026-08-20T00:00:00.000Z",
+        )
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        val r = local.recipeForUpload("r1")
+        assertEquals("Server Chili", r?.name, "the newer server body still wins")
+        assertEquals("2026-08-14T12:00:00.000Z", r?.lastPrepared, "the local mark-as-made survives it")
     }
 
     @Test

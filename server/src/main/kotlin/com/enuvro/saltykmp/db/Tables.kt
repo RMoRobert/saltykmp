@@ -35,6 +35,12 @@ object Recipes : Table("recipe") {
     // Bumped only on image change (set/replace/remove), independent of lastModifiedDate. Lets sync move
     // image bytes only when the image actually changed. Added after initial release → ALTER in DatabaseFactory.
     val lastModifiedImageDate = datetime("last_modified_image_date").nullable()
+    // Bumped only when lastPrepared changes ("marked as made"), independent of lastModifiedDate — so
+    // marking a recipe made never looks like a body edit to clients sorting by Date Modified. Sync
+    // reconciles lastPrepared against this, and upsert merges the field by it (newer wins) so a stale
+    // body upload can't clobber a newer prepared date. Added after initial release → ALTER in
+    // DatabaseFactory.
+    val lastModifiedPreparedDate = datetime("last_modified_prepared_date").nullable()
     val isFavorite = bool("is_favorite").nullable()
     val wantToMake = bool("want_to_make").nullable()
     val yield = text("yield").nullable()

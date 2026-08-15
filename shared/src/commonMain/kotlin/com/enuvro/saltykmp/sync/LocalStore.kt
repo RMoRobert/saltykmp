@@ -34,6 +34,13 @@ class LocalStore(private val db: AppDatabase) {
         q.selectAllRecipes().executeAsList()
             .map { ImageEntry(it.id, it.imageFilename, dbToWireDate(it.lastModifiedImageDate)) }
 
+    /** Per-recipe "last made on" state for the independent prepared-date pass (wire form). */
+    data class PreparedEntry(val id: String, val lastPrepared: String?, val lastModifiedPreparedDate: String?)
+
+    fun recipePreparedEntries(): List<PreparedEntry> =
+        q.selectAllRecipes().executeAsList()
+            .map { PreparedEntry(it.id, dbToWireDate(it.lastPrepared), dbToWireDate(it.lastModifiedPreparedDate)) }
+
     fun recipeForUpload(id: String): ServerRecipe? {
         val r = q.selectRecipeById(id).executeAsOneOrNull() ?: return null
         return ServerRecipe(
@@ -42,6 +49,7 @@ class LocalStore(private val db: AppDatabase) {
             createdDate = dbToWireDate(r.createdDate),
             lastModifiedDate = dbToWireDate(r.lastModifiedDate),
             lastPrepared = dbToWireDate(r.lastPrepared),
+            lastModifiedPreparedDate = dbToWireDate(r.lastModifiedPreparedDate),
             source = r.source,
             sourceDetails = r.sourceDetails,
             introduction = r.introduction,
@@ -75,6 +83,13 @@ class LocalStore(private val db: AppDatabase) {
             // row) so a text-only body update never disturbs the image, and a freshly-downloaded recipe keeps
             // a past image date — letting the image pass see the server's image as newer and fetch its bytes.
             val existing = q.selectRecipeById(s.id).executeAsOneOrNull()
+            // The "last made on" pair rides along with the body, but the body's clock doesn't decide it:
+            // keep whichever side's lastModifiedPreparedDate is newer. Without this, downloading a body
+            // edit made elsewhere would silently undo a mark-as-made this device hasn't uploaded yet.
+            // (The server applies the same merge in RecipeRepository.upsert, so both directions agree.)
+            val incomingPreparedStamp = parseOrPast(s.lastModifiedPreparedDate)
+            val existingPreparedStamp = parseOrPast(dbToWireDate(existing?.lastModifiedPreparedDate))
+            val keepLocalPrepared = existing != null && existingPreparedStamp > incomingPreparedStamp
             // Dates are stored in GRDB's "yyyy-MM-dd HH:mm:ss.SSS" format and Swift's non-optional columns
             // get concrete defaults (""/0/false/[]) so the Salty app can decode rows from this same DB.
             q.upsertRecipe(
@@ -82,7 +97,7 @@ class LocalStore(private val db: AppDatabase) {
                 name = s.name,
                 createdDate = wireToDbDate(s.createdDate) ?: nowDbDate(),
                 lastModifiedDate = wireToDbDate(s.lastModifiedDate) ?: nowDbDate(),
-                lastPrepared = wireToDbDate(s.lastPrepared),
+                lastPrepared = if (keepLocalPrepared) existing?.lastPrepared else wireToDbDate(s.lastPrepared),
                 source = s.source ?: "",
                 sourceDetails = s.sourceDetails ?: "",
                 introduction = s.introduction ?: "",
@@ -102,6 +117,9 @@ class LocalStore(private val db: AppDatabase) {
                 preparationTimes = s.preparationTimes ?: emptyList(),
                 nutrition = s.nutrition,
                 lastModifiedImageDate = existing?.lastModifiedImageDate ?: wireToDbDate(s.lastModifiedImageDate),
+                lastModifiedPreparedDate =
+                    if (keepLocalPrepared) existing?.lastModifiedPreparedDate
+                    else wireToDbDate(s.lastModifiedPreparedDate),
             )
             // Replace junction associations when the server provided them.
             s.categoryIds?.let { ids ->
@@ -141,6 +159,14 @@ class LocalStore(private val db: AppDatabase) {
      * image date for a downloaded image, or the row's existing value to leave it unchanged. */
     fun setRecipeImage(id: String, filename: String?, thumbnailData: ByteArray?, imageDate: String?) {
         q.updateRecipeImage(filename, thumbnailData, wireToDbDate(imageDate), id)
+    }
+
+    /** Sets the "last made on" date and its sync stamp WITHOUT touching lastModifiedDate — marking a
+     * recipe made is deliberately not a body edit, so it never reorders a "Date Modified" sort. Pass
+     * [lastPrepared] = null to clear the date. [preparedDate] is the wire/ISO stamp to record:
+     * `nowTimestamp()` for a local edit, or the server's stamp when applying a downloaded change. */
+    fun setRecipePrepared(id: String, lastPrepared: String?, preparedDate: String?) {
+        q.updateRecipePrepared(wireToDbDate(lastPrepared), wireToDbDate(preparedDate), id)
     }
 
     // ---- Library ----
