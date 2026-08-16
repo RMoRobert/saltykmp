@@ -110,12 +110,15 @@ class SyncService(
         api.fetchShoppingLists().forEach { api.deleteShoppingList(it.id) }
 
         // 2. Push the entire local library up. Organizers first so recipes can reference them.
+        // `force = true` marks these as deliberate mirror-this-device overwrites (see
+        // SaltyApiClient.FORCE_WRITE_HEADER) — inserts today, but it keeps a future server-side
+        // stale-write guard from vetoing a racing re-creation.
         val courses = local.courses()
         val categories = local.categories()
         val tags = local.tags()
-        courses.forEach { api.uploadCourse(it) }
-        categories.forEach { api.uploadCategory(it) }
-        tags.forEach { api.uploadTag(it) }
+        courses.forEach { api.uploadCourse(it, force = true) }
+        categories.forEach { api.uploadCategory(it, force = true) }
+        tags.forEach { api.uploadTag(it, force = true) }
         val shoppingLists = local.shoppingLists()
         shoppingLists.forEach { l ->
             // The server was just wiped, so these are fresh inserts; record each agreement so the
@@ -130,7 +133,7 @@ class SyncService(
         var imagesUp = 0
         for (entry in local.recipeEntries()) {
             val recipe = local.recipeForUpload(entry.id) ?: continue
-            api.uploadRecipe(recipe)
+            api.uploadRecipe(recipe, force = true)
             recipesUp++
             val filename = recipe.imageFilename
             if (filename != null && imageSource != null) {
@@ -494,8 +497,20 @@ class SyncService(
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadCourse(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertCourse(it) } }
         plan.toDeleteLocally.forEach { local.deleteCourse(it) }
-        plan.toDeleteOnServer.forEach { api.deleteCourse(it) }
-        return plan.counts()
+        // Server deletes are conditional on the timestamp the decision was based on: a row that
+        // changed after our fetch (e.g. a web rename racing this sync) is downloaded, not deleted.
+        var deletedOnServer = 0
+        var conflictDownloads = 0
+        plan.toDeleteOnServer.forEach { id ->
+            when (val out = api.deleteCourse(id, expectedLastModified = serverById[id]?.lastModifiedDate)) {
+                SaltyApiClient.LibraryDeleteOutcome.Deleted -> deletedOnServer++
+                is SaltyApiClient.LibraryDeleteOutcome.Conflict -> {
+                    local.upsertCourse(out.current)
+                    conflictDownloads++
+                }
+            }
+        }
+        return plan.counts().copy(down = plan.toDownload.size + conflictDownloads, deletedServer = deletedOnServer)
     }
 
     private suspend fun syncCategories(isFirstSync: Boolean, lastSync: Instant?): Counts {
@@ -510,8 +525,19 @@ class SyncService(
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadCategory(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertCategory(it) } }
         plan.toDeleteLocally.forEach { local.deleteCategory(it) }
-        plan.toDeleteOnServer.forEach { api.deleteCategory(it) }
-        return plan.counts()
+        // Conditional server deletes — see syncCourses.
+        var deletedOnServer = 0
+        var conflictDownloads = 0
+        plan.toDeleteOnServer.forEach { id ->
+            when (val out = api.deleteCategory(id, expectedLastModified = serverById[id]?.lastModifiedDate)) {
+                SaltyApiClient.LibraryDeleteOutcome.Deleted -> deletedOnServer++
+                is SaltyApiClient.LibraryDeleteOutcome.Conflict -> {
+                    local.upsertCategory(out.current)
+                    conflictDownloads++
+                }
+            }
+        }
+        return plan.counts().copy(down = plan.toDownload.size + conflictDownloads, deletedServer = deletedOnServer)
     }
 
     private suspend fun syncTags(isFirstSync: Boolean, lastSync: Instant?): Counts {
@@ -526,8 +552,19 @@ class SyncService(
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadTag(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertTag(it) } }
         plan.toDeleteLocally.forEach { local.deleteTag(it) }
-        plan.toDeleteOnServer.forEach { api.deleteTag(it) }
-        return plan.counts()
+        // Conditional server deletes — see syncCourses.
+        var deletedOnServer = 0
+        var conflictDownloads = 0
+        plan.toDeleteOnServer.forEach { id ->
+            when (val out = api.deleteTag(id, expectedLastModified = serverById[id]?.lastModifiedDate)) {
+                SaltyApiClient.LibraryDeleteOutcome.Deleted -> deletedOnServer++
+                is SaltyApiClient.LibraryDeleteOutcome.Conflict -> {
+                    local.upsertTag(out.current)
+                    conflictDownloads++
+                }
+            }
+        }
+        return plan.counts().copy(down = plan.toDownload.size + conflictDownloads, deletedServer = deletedOnServer)
     }
 
     /** Internal per-step tally; library steps are summed via [plus]. */

@@ -120,6 +120,59 @@ class SaltyApiClientTest {
     }
 
     @Test
+    fun libraryDeleteCarriesIfMatchAndDownloadsCurrentRowOnConflict() = runTest {
+        // The If-Match value is the timestamp the delete decision was based on; a 409 carries the
+        // current server row (a web rename raced the delete) for the caller to download instead.
+        var ifMatch: String? = null
+        val engine = MockEngine { request ->
+            ifMatch = request.headers[HttpHeaders.IfMatch]
+            respond(
+                """{"id": "cat-1", "name": "Renamed on web", "lastModifiedDate": "2026-08-16T12:00:00.000Z"}""",
+                HttpStatusCode.Conflict,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val api = SaltyApiClient("http://test", InMemoryTokenStore("t"), engine)
+
+        val outcome = api.deleteCategory("cat-1", expectedLastModified = "2026-08-16T10:00:00.000Z")
+        assertEquals("2026-08-16T10:00:00.000Z", ifMatch)
+        val conflict = outcome as SaltyApiClient.LibraryDeleteOutcome.Conflict
+        assertEquals("Renamed on web", conflict.current.name)
+    }
+
+    @Test
+    fun libraryDeleteOmitsIfMatchWhenNoExpectedStamp() = runTest {
+        var ifMatch: String? = "sentinel"
+        val engine = MockEngine { request ->
+            ifMatch = request.headers[HttpHeaders.IfMatch]
+            respond("", HttpStatusCode.NoContent)
+        }
+        val api = SaltyApiClient("http://test", InMemoryTokenStore("t"), engine)
+
+        val outcome = api.deleteCourse("course-1")
+        assertEquals(null, ifMatch)
+        assertEquals(SaltyApiClient.LibraryDeleteOutcome.Deleted, outcome)
+    }
+
+    @Test
+    fun forcedUploadsCarryTheForceHeaderAndRegularOnesDoNot() = runTest {
+        val headerPerRequest = mutableListOf<String?>()
+        val engine = MockEngine { request ->
+            headerPerRequest += request.headers[SaltyApiClient.FORCE_WRITE_HEADER]
+            respond(
+                """{"id": "c1", "name": "Breads"}""",
+                HttpStatusCode.Created,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val api = SaltyApiClient("http://test", InMemoryTokenStore("t"), engine)
+
+        api.uploadCategory(com.enuvro.saltykmp.api.ServerCategory("c1", "Breads"), force = true)
+        api.uploadCategory(com.enuvro.saltykmp.api.ServerCategory("c1", "Breads"))
+        assertEquals(listOf("1", null), headerPerRequest)
+    }
+
+    @Test
     fun deltaPagingAccumulatesAllPages() = runTest {
         val engine = MockEngine { request ->
             val page = request.url.parameters["page"]?.toInt() ?: 0

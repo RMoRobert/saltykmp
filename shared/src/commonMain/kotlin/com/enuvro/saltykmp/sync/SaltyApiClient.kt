@@ -93,6 +93,16 @@ class SaltyApiClient(
     engine: HttpClientEngine,
     private val pageSize: Int = 100,
 ) {
+    companion object {
+        /**
+         * Marks a write as a deliberate "mirror this device" overwrite, sent by
+         * [SyncService.pushEverythingToServer] (and the Swift app's force re-sync). The server
+         * doesn't read it yet; it exists so a future server-side stale-write guard (planned
+         * alongside web editing) can recognize and accept a force push. Ignored today.
+         */
+        const val FORCE_WRITE_HEADER = "X-Salty-Force"
+    }
+
     private val client = HttpClient(engine) {
         expectSuccess = false
         install(ContentNegotiation) { json(apiJson) }
@@ -176,9 +186,10 @@ class SaltyApiClient(
     suspend fun fetchRecipe(id: String): ServerRecipe =
         client.get("$baseUrl/api/recipes/${seg(id)}") { auth() }.ensureOk().body()
 
-    suspend fun uploadRecipe(recipe: ServerRecipe): ServerRecipe =
+    suspend fun uploadRecipe(recipe: ServerRecipe, force: Boolean = false): ServerRecipe =
         client.post("$baseUrl/api/recipes") {
             auth(); contentType(ContentType.Application.Json); setBody(recipe)
+            if (force) header(FORCE_WRITE_HEADER, "1")
         }.ensureOk().body()
 
     /** Uploads image bytes. [imageDate] (client-authoritative lastModifiedImageDate, wire form) is stored
@@ -246,16 +257,59 @@ class SaltyApiClient(
     suspend fun fetchCategories(): List<ServerCategory> = client.get("$baseUrl/api/categories") { auth() }.ensureOk().body()
     suspend fun fetchTags(): List<ServerTag> = client.get("$baseUrl/api/tags") { auth() }.ensureOk().body()
 
-    suspend fun uploadCourse(c: ServerCourse): ServerCourse =
-        client.post("$baseUrl/api/courses") { auth(); contentType(ContentType.Application.Json); setBody(c) }.ensureOk().body()
-    suspend fun uploadCategory(c: ServerCategory): ServerCategory =
-        client.post("$baseUrl/api/categories") { auth(); contentType(ContentType.Application.Json); setBody(c) }.ensureOk().body()
-    suspend fun uploadTag(t: ServerTag): ServerTag =
-        client.post("$baseUrl/api/tags") { auth(); contentType(ContentType.Application.Json); setBody(t) }.ensureOk().body()
+    suspend fun uploadCourse(c: ServerCourse, force: Boolean = false): ServerCourse =
+        client.post("$baseUrl/api/courses") {
+            auth(); contentType(ContentType.Application.Json); setBody(c)
+            if (force) header(FORCE_WRITE_HEADER, "1")
+        }.ensureOk().body()
+    suspend fun uploadCategory(c: ServerCategory, force: Boolean = false): ServerCategory =
+        client.post("$baseUrl/api/categories") {
+            auth(); contentType(ContentType.Application.Json); setBody(c)
+            if (force) header(FORCE_WRITE_HEADER, "1")
+        }.ensureOk().body()
+    suspend fun uploadTag(t: ServerTag, force: Boolean = false): ServerTag =
+        client.post("$baseUrl/api/tags") {
+            auth(); contentType(ContentType.Application.Json); setBody(t)
+            if (force) header(FORCE_WRITE_HEADER, "1")
+        }.ensureOk().body()
 
-    suspend fun deleteCourse(id: String) { client.delete("$baseUrl/api/courses/${seg(id)}") { auth() } }
-    suspend fun deleteCategory(id: String) { client.delete("$baseUrl/api/categories/${seg(id)}") { auth() } }
-    suspend fun deleteTag(id: String) { client.delete("$baseUrl/api/tags/${seg(id)}") { auth() } }
+    /**
+     * Outcome of a conditional course/category/tag delete. A 409 means the row changed on the
+     * server after this client fetched it, and carries the CURRENT row so the caller downloads it
+     * instead of deleting — edit beats delete, the same contract shopping lists have via
+     * revision If-Match. Everything else (including errors) reads as [Deleted], preserving these
+     * deletes' historical best-effort tolerance: a miss is retried by a later sync.
+     */
+    sealed interface LibraryDeleteOutcome<out T> {
+        data object Deleted : LibraryDeleteOutcome<Nothing>
+        data class Conflict<T>(val current: T) : LibraryDeleteOutcome<T>
+    }
+
+    /**
+     * [expectedLastModified] (wire form — the stamp the delete decision was based on) rides the
+     * If-Match header. Today's server ignores it and deletes unconditionally; a future server
+     * (planned alongside web editing) answers 409 + current row when the stored stamp differs.
+     * Passed as null by the force-push path, where local is deliberately the source of truth.
+     */
+    suspend fun deleteCourse(id: String, expectedLastModified: String? = null): LibraryDeleteOutcome<ServerCourse> =
+        deleteLibraryItem("courses", id, expectedLastModified)
+    suspend fun deleteCategory(id: String, expectedLastModified: String? = null): LibraryDeleteOutcome<ServerCategory> =
+        deleteLibraryItem("categories", id, expectedLastModified)
+    suspend fun deleteTag(id: String, expectedLastModified: String? = null): LibraryDeleteOutcome<ServerTag> =
+        deleteLibraryItem("tags", id, expectedLastModified)
+
+    private suspend inline fun <reified T> deleteLibraryItem(
+        collection: String,
+        id: String,
+        expectedLastModified: String?,
+    ): LibraryDeleteOutcome<T> {
+        val resp = client.delete("$baseUrl/api/$collection/${seg(id)}") {
+            auth()
+            expectedLastModified?.let { header(HttpHeaders.IfMatch, it) }
+        }
+        if (resp.status == HttpStatusCode.Conflict) return LibraryDeleteOutcome.Conflict(resp.body())
+        return LibraryDeleteOutcome.Deleted
+    }
 
     // Shopping lists. Same full-list shape as the vocab tables above — the GET must return every list,
     // since deletions are detected by absence from it. Writes are optimistic-concurrency-aware:
