@@ -97,7 +97,21 @@ object RecipeRepository {
         rowToRecipe(row, categoryIdsFor(listOf(id))[id].orEmpty(), tagIdsFor(listOf(id))[id].orEmpty())
     }
 
-    suspend fun upsert(userId: String, recipe: ServerRecipe): ServerRecipe {
+    /**
+     * @param imageIsStored tells whether a filename names an image this server actually holds.
+     *
+     * A body upload carries the UPLOADER'S LOCAL image filename, which is not always the name stored
+     * here: a client that converts on upload (HEIC → JPEG) keeps `<id>.heic` locally while the server
+     * holds `<id>.jpg`. Honouring such a name pointed the row at a file that doesn't exist and — via
+     * the route's `deleteOrphanedImage` — deleted the real one. Names this server can't serve are now
+     * ignored, leaving the stored image untouched; the dedicated `/image` endpoints own that column.
+     * Defaults to accepting everything, so tests and non-HTTP callers are unaffected.
+     */
+    suspend fun upsert(
+        userId: String,
+        recipe: ServerRecipe,
+        imageIsStored: (String) -> Boolean = { true },
+    ): ServerRecipe {
         dbQuery {
             // Image sub-record merge: the image (filename + its timestamp) is resolved independently of the
             // text body by lastModifiedImageDate, so a stale text-only upload can't clobber a newer image
@@ -111,9 +125,14 @@ object RecipeRepository {
                 .limit(1).singleOrNull()
             val incomingImageDate = WireDate.parse(recipe.lastModifiedImageDate)
             val existingImageDate = existing?.get(Recipes.lastModifiedImageDate)
-            val takeIncomingImage = existing == null ||
-                (incomingImageDate != null && (existingImageDate == null || !incomingImageDate.isBefore(existingImageDate)))
-            val mergedImageFilename = if (takeIncomingImage) recipe.imageFilename else existing.get(Recipes.imageFilename)
+            // A null filename is honoured (that is how an image REMOVAL riding a body upload propagates);
+            // a name we don't hold is not — see the note on [imageIsStored].
+            val incomingImageIsUsable = recipe.imageFilename?.let(imageIsStored) ?: true
+            val takeIncomingImage = incomingImageIsUsable && (
+                existing == null ||
+                    (incomingImageDate != null && (existingImageDate == null || !incomingImageDate.isBefore(existingImageDate)))
+                )
+            val mergedImageFilename = if (takeIncomingImage) recipe.imageFilename else existing?.get(Recipes.imageFilename)
             val mergedImageDate = if (takeIncomingImage) incomingImageDate else existingImageDate
             // Same independent-field merge for the "last made on" date, resolved by lastModifiedPreparedDate
             // rather than the body clock. This is what makes a body edit racing a "mark as made" safe: the

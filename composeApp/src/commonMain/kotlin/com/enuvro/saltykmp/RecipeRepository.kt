@@ -9,6 +9,7 @@ import com.enuvro.saltykmp.db.Recipe
 import com.enuvro.saltykmp.db.Tag
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 /** Reactive reads over the local SQLDelight database for the UI. */
 class RecipeRepository(db: AppDatabase) {
@@ -40,4 +41,19 @@ class RecipeRepository(db: AppDatabase) {
 
     fun tags(): Flow<List<Tag>> =
         q.selectAllTags().asFlow().mapToList(Dispatchers.Default)
+
+    /**
+     * recipeId → category names, for search and list subtitles. One query for the whole library rather
+     * than a lookup per row; the map re-emits whenever a recipe/category/junction row changes.
+     */
+    fun categoryNamesByRecipe(): Flow<Map<String, List<String>>> =
+        q.selectAllRecipeCategoryNames().asFlow().mapToList(Dispatchers.Default).map { rows ->
+            rows.groupBy({ it.recipeId }, { it.name.orEmpty() })
+        }
+
+    /** recipeId → tag names; see [categoryNamesByRecipe]. */
+    fun tagNamesByRecipe(): Flow<Map<String, List<String>>> =
+        q.selectAllRecipeTagNames().asFlow().mapToList(Dispatchers.Default).map { rows ->
+            rows.groupBy({ it.recipeId }, { it.name.orEmpty() })
+        }
 }

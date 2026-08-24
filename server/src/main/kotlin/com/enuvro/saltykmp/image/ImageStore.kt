@@ -15,6 +15,45 @@ import java.io.File
 class ImageTooLargeException(message: String) : RuntimeException(message)
 
 /**
+ * Thrown by [ImageStore.store] for bytes that are not one of the formats this server can serve.
+ *
+ * The server resizes and thumbnails with ImageIO, which handles JPEG, PNG and GIF and nothing else. A
+ * format it can't read used to be stored anyway: the resize silently no-opped, the thumbnail endpoint
+ * 404'd forever, and — because [ImageStore.imagePixelCount] also can't read it — the decompression-bomb
+ * guard didn't apply either. Refusing at the door is both safer and honest to the client.
+ */
+class UnsupportedImageFormatException(message: String) : RuntimeException(message)
+
+/** An image format the server is prepared to store, and the extension it is stored under. */
+enum class ImageFormat(val extension: String) {
+    JPEG("jpg"),
+    PNG("png"),
+    GIF("gif"),
+    ;
+
+    companion object {
+        /**
+         * Identifies the format from the bytes themselves, or null for anything else.
+         *
+         * The declared Content-Type is deliberately NOT consulted. It used to pick the stored extension,
+         * which meant any client that mislabelled an upload — a stale build guessing from a filename, or
+         * a hand-rolled request — made the server write (say) HEIC content to `<id>.jpg`. Nothing
+         * downstream recovers from that, and every client then fails to decode it. The bytes are the
+         * only trustworthy source, so they are what the extension is derived from.
+         */
+        fun detect(bytes: ByteArray): ImageFormat? = when {
+            bytes.startsWith(0xFF, 0xD8, 0xFF) -> JPEG
+            bytes.startsWith(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) -> PNG
+            bytes.startsWith(0x47, 0x49, 0x46, 0x38) -> GIF // "GIF8"
+            else -> null
+        }
+
+        private fun ByteArray.startsWith(vararg expected: Int): Boolean =
+            size >= expected.size && expected.withIndex().all { (i, b) -> this[i] == b.toByte() }
+    }
+}
+
+/**
  * Filesystem-backed recipe image storage; files are named by recipe id + extension. [maxPixels] caps the
  * decoded resolution (width×height) accepted by [store], rejecting decompression bombs before any full decode.
  */
@@ -26,19 +65,29 @@ class ImageStore(private val baseDir: Path, private val maxPixels: Long = DEFAUL
         Files.createDirectories(baseDir)
     }
 
-    fun store(recipeId: String, bytes: ByteArray, extension: String): String {
+    /**
+     * Stores an image for [recipeId] and returns the filename it was stored under.
+     *
+     * The extension comes from the BYTES, never from a caller-supplied hint — see [ImageFormat.detect].
+     * Anything that isn't JPEG, PNG or GIF is refused rather than stored unreadably.
+     */
+    fun store(recipeId: String, bytes: ByteArray): String {
+        val format = ImageFormat.detect(bytes)
+            ?: throw UnsupportedImageFormatException(
+                "Unsupported image format. The server stores JPEG, PNG and GIF; convert the image first.",
+            )
+
         // Reject decompression bombs up front: a small compressed file can declare enormous dimensions that
         // balloon to gigabytes once decoded/resized. Read the dimensions from the header (no pixel decode)
-        // and refuse anything over the pixel budget. Unknown/unreadable formats return null and are stored
-        // as-is — they're never decoded server-side except by ImageIO, which is itself bounded here.
+        // and refuse anything over the pixel budget. Now that only ImageIO-readable formats get this far, a
+        // null here means a truncated or corrupt file rather than a format we simply couldn't measure.
         val pixels = imagePixelCount(bytes)
         if (pixels != null && pixels > maxPixels) {
             throw ImageTooLargeException("Image resolution ${pixels / 1_000_000}MP exceeds the ${maxPixels / 1_000_000}MP limit")
         }
-        val filename = "$recipeId.${extension.trimStart('.')}"
-        val processedBytes = if (extension.lowercase().let { it == "jpg" || it == "jpeg" || it == "png" }) {
-            resizeImage(bytes, extension, 1200)
-        } else bytes
+
+        val filename = "$recipeId.${format.extension}"
+        val processedBytes = if (format == ImageFormat.GIF) bytes else resizeImage(bytes, format.extension, 1200)
         Files.write(baseDir.resolve(filename), processedBytes)
         deleteThumb(filename) // invalidate any cached thumbnail for this name
         return filename

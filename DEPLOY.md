@@ -217,3 +217,70 @@ it once happy: `docker volume rm $(basename "$PWD")_salty-db` (irreversible).
   Fine for first deploy; a future schema change needs a migration step (Flyway/Exposed migrations).
 - **CORS** is not enabled (native clients don't need it); add it if a browser-based web UI is introduced.
 - **Backups:** back up the `salty-db18` and `salty-images` Docker volumes.
+
+---
+
+# Building the Android app for Play (internal testing)
+
+Play needs a **signed Android App Bundle** (`.aab`). Signing is configured from `keystore.properties`
+at the repo root — gitignored, since it holds the keystore password.
+
+## 1. One-time: point the build at your upload key
+
+```bash
+cp keystore.properties.example keystore.properties
+```
+
+Fill it in (absolute path to the `.jks`, alias, both passwords). Nothing else needs changing.
+
+**Which key?** If `com.enuvro.saltykmp` is already on Play, it must be the key Play expects — your
+*upload* key if the app is enrolled in Play App Signing, otherwise the original release key. A
+mismatched key is rejected at upload and can only be changed through Google's key-reset process. For a
+brand-new listing, any key works; generate one with:
+
+```bash
+keytool -genkeypair -v -keystore upload-key.jks -alias salty-upload -keyalg RSA -keysize 2048 -validity 10000
+```
+
+Back that file up somewhere durable — losing it means losing the ability to update the app.
+
+## 2. Build the bundle
+
+```bash
+./gradlew :composeApp:bundleRelease
+```
+
+Output: `composeApp/build/outputs/bundle/release/composeApp-release.aab`
+
+Without `keystore.properties` the build still succeeds but the bundle is **unsigned** and Play will
+reject it. To confirm a bundle is signed:
+
+```bash
+unzip -l composeApp/build/outputs/bundle/release/composeApp-release.aab | grep -c 'META-INF/.*\.RSA'
+```
+
+## 3. Upload
+
+Play Console → your app → **Testing → Internal testing → Create new release** → upload the `.aab`,
+add testers, roll out. Internal testing reaches testers in minutes and skips the full review queue.
+
+## Version numbers
+
+Both come from `appVersion` in the root `gradle.properties` (currently `3.2.100`):
+
+- `versionName` = `appVersion` verbatim
+- `versionCode` = `major * 10_000_000 + minor * 100_000 + patch` (so `3.2.100` → `30200100`)
+
+**Play rejects a versionCode it has already seen**, so bump `appVersion` before every upload. Because
+the code is derived, minor must stay < 100 and patch < 100_000.
+
+## Things that bite in a release build (but not in debug)
+
+- **Plain HTTP is blocked.** `usesCleartextTraffic` is false in release by design, so a Salty Server
+  reached over `http://` will fail for testers with a network error. Testers need an `https://` server.
+  This is the single most likely "it works on my machine" report.
+- **R8/minification is off** (`isMinifyEnabled = false`). Deliberate: SQLDelight, Ktor, and
+  kotlinx-serialization all need keep rules that don't exist yet, and nothing has been shrink-tested.
+  That keeps the download larger than it needs to be; enabling it is its own piece of work.
+- The linked-folder sync and the iOS bookmark round-trip are still **not device-tested** against a real
+  cloud provider (see TODO.md) — worth saying so in the tester release notes.

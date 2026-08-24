@@ -11,6 +11,7 @@ import com.enuvro.saltykmp.db.DeviceRepository
 import com.enuvro.saltykmp.db.RecipeRepository
 import com.enuvro.saltykmp.image.ImageStore
 import com.enuvro.saltykmp.image.ImageTooLargeException
+import com.enuvro.saltykmp.image.UnsupportedImageFormatException
 import com.enuvro.saltykmp.util.WireDate
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -163,7 +164,10 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                 val recipe = call.receive<ServerRecipe>()
                 val userId = call.userId()
                 val oldFilename = RecipeRepository.imageFilename(userId, recipe.id)
-                val saved = RecipeRepository.upsert(userId, recipe)
+                // imageStore::exists makes the upsert ignore an incoming imageFilename this server does
+                // not hold — the uploader's local name after a client-side conversion — which would
+                // otherwise point the row at a missing file and make deleteOrphanedImage remove the real one.
+                val saved = RecipeRepository.upsert(userId, recipe, imageStore::exists)
                 deleteOrphanedImage(imageStore, oldFilename, saved.imageFilename)
                 call.respond(HttpStatusCode.Created, saved)
             }
@@ -172,7 +176,7 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                 val recipe = incoming.copy(id = call.parameters["id"]!!)
                 val userId = call.userId()
                 val oldFilename = RecipeRepository.imageFilename(userId, recipe.id)
-                val saved = RecipeRepository.upsert(userId, recipe)
+                val saved = RecipeRepository.upsert(userId, recipe, imageStore::exists)
                 // When a sync upload clears or changes imageFilename, remove the now-unreferenced file
                 // (the dedicated image endpoints already clean up; this covers the recipe-upsert path).
                 deleteOrphanedImage(imageStore, oldFilename, saved.imageFilename)
@@ -201,6 +205,7 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                 var stored: String? = null
                 var oversized = false
                 var dimTooLarge = false
+                var unsupportedFormat = false
                 // Client-authoritative image timestamp (optional form field). Stored verbatim so the
                 // uploading device doesn't see the server as "newer" and re-download its own image.
                 var imageDateStr: String? = null
@@ -212,23 +217,24 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                             if (bytes.size > MAX_IMAGE_UPLOAD_BYTES) {
                                 oversized = true
                             } else {
-                                val ext = when (part.contentType?.withoutParameters()) {
-                                    ContentType.Image.PNG -> "png"
-                                    ContentType.Image.GIF -> "gif"
-                                    else -> "jpg"
-                                }
                                 try {
+                                    // The stored extension comes from the BYTES (ImageStore.store), not
+                                    // from this part's Content-Type — a mislabelled upload used to write
+                                    // e.g. HEIC content to "<id>.jpg", which nothing downstream can read.
+                                    //
                                     // Store first, then remove any previous image — but only when it had a
                                     // different name (a same-name store already overwrote it). This way a
                                     // rejected upload (e.g. an over-resolution bomb) can't destroy the
                                     // existing good image.
-                                    val newName = imageStore.store(id, bytes, ext)
+                                    val newName = imageStore.store(id, bytes)
                                     RecipeRepository.imageFilename(userId, id)
                                         ?.takeIf { it != newName }
                                         ?.let { imageStore.delete(it) }
                                     stored = newName
                                 } catch (e: ImageTooLargeException) {
                                     dimTooLarge = true
+                                } catch (e: UnsupportedImageFormatException) {
+                                    unsupportedFormat = true
                                 }
                             }
                         }
@@ -243,6 +249,16 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                 }
                 if (dimTooLarge) {
                     call.respond(HttpStatusCode.PayloadTooLarge, mapOf("error" to "Image resolution exceeds the allowed maximum"))
+                    return@post
+                }
+                if (unsupportedFormat) {
+                    // 415, not 400: the request was well-formed, the payload's media type isn't one we can
+                    // serve. A client that can't convert locally gets a clear answer instead of silently
+                    // uploading something no other device will be able to open.
+                    call.respond(
+                        HttpStatusCode.UnsupportedMediaType,
+                        mapOf("error" to "Unsupported image format. The server stores JPEG, PNG and GIF; convert the image first."),
+                    )
                     return@post
                 }
                 val filename = stored

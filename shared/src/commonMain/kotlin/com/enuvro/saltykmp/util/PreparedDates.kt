@@ -2,6 +2,7 @@ package com.enuvro.saltykmp.util
 
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.number
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.ExperimentalTime
@@ -29,7 +30,7 @@ object PreparedDates {
     @OptIn(ExperimentalTime::class)
     fun pickerMillisToWire(utcMillis: Long, zone: TimeZone = TimeZone.currentSystemDefault()): String {
         val day = Instant.fromEpochMilliseconds(utcMillis).toLocalDateTime(TimeZone.UTC).date
-        return LocalDateTime(day.year, day.monthNumber, day.day, 12, 0, 0)
+        return LocalDateTime(day.year, day.month, day.day, 12, 0, 0)
             .toInstant(zone)
             .let { Instant.fromEpochMilliseconds(it.toEpochMilliseconds()) }
             .toString()
@@ -70,7 +71,7 @@ object PreparedDates {
             ?.let { runCatching { Instant.parse(it) }.getOrNull() }
             ?.toLocalDateTime(zone)
             ?.date
-            ?.let { Triple(it.year, it.monthNumber, it.day) }
+            ?.let { Triple(it.year, it.month.number, it.day) }
 
     private val MONTH_ABBREVIATIONS = listOf(
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",

@@ -44,7 +44,7 @@ class AutoSyncManager(
         }
     }
 
-    /** Signal that the local library changed (recipe/organizer add, edit, or delete). Safe to call anytime. */
+    /** Signal that the local library changed (recipe/classifier add, edit, or delete). Safe to call anytime. */
     fun notifyChange() {
         if (settings.autoSyncEnabled) changes.tryEmit(Unit)
     }

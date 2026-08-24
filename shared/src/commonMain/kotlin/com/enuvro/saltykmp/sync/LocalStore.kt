@@ -7,6 +7,8 @@ import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.api.apiJson
 import com.enuvro.saltykmp.db.AppDatabase
+import com.enuvro.saltykmp.db.LibraryDuplicateMerger
+import com.enuvro.saltykmp.db.LibraryMergeSummary
 import com.enuvro.saltykmp.db.model.Difficulty
 import com.enuvro.saltykmp.db.model.Rating
 import kotlin.time.Clock
@@ -107,7 +109,7 @@ class LocalStore(private val db: AppDatabase) {
                 imageThumbnailData = existing?.imageThumbnailData,
                 isFavorite = s.isFavorite ?: false,
                 wantToMake = s.wantToMake ?: false,
-                yield_ = s.yield ?: "",
+                yield = s.yield ?: "",
                 servings = s.servings?.toLong(),
                 courseId = courseId,
                 directions = s.directions ?: emptyList(),
@@ -122,13 +124,24 @@ class LocalStore(private val db: AppDatabase) {
                     else wireToDbDate(s.lastModifiedPreparedDate),
             )
             // Replace junction associations when the server provided them.
+            //
+            // Ids this library doesn't have are SKIPPED, not written. The server never cleans its
+            // junction rows when a category or tag is deleted, so it keeps serving those ids
+            // indefinitely — and with foreign keys enforced here, writing one fails the whole
+            // transaction, which (because the server serves the same recipe every time) breaks every
+            // subsequent sync until someone re-saves that recipe elsewhere. The Swift app skips
+            // unknown ids for exactly this reason.
             s.categoryIds?.let { ids ->
                 q.deleteRecipeCategoriesByRecipeId(s.id)
-                ids.distinct().forEach { catId -> q.upsertRecipeCategory(idFor(s.id, catId), s.id, catId) }
+                val known = q.selectAllCategories().executeAsList().mapTo(mutableSetOf()) { it.id }
+                ids.distinct().filter { it in known }
+                    .forEach { catId -> q.upsertRecipeCategory(idFor(s.id, catId), s.id, catId) }
             }
             s.tagIds?.let { ids ->
                 q.deleteRecipeTagsByRecipeId(s.id)
-                ids.distinct().forEach { tagId -> q.upsertRecipeTag(idFor(s.id, tagId), s.id, tagId) }
+                val known = q.selectAllTags().executeAsList().mapTo(mutableSetOf()) { it.id }
+                ids.distinct().filter { it in known }
+                    .forEach { tagId -> q.upsertRecipeTag(idFor(s.id, tagId), s.id, tagId) }
             }
         }
     }
@@ -178,13 +191,25 @@ class LocalStore(private val db: AppDatabase) {
     fun tags(): List<ServerTag> =
         q.selectAllTags().executeAsList().map { ServerTag(it.id, it.name, dbToWireDate(it.lastModifiedDate)) }
 
-    fun upsertCourse(c: ServerCourse) = q.upsertCourse(c.id, c.name, wireToDbDate(c.lastModifiedDate))
-    fun upsertCategory(c: ServerCategory) = q.upsertCategory(c.id, c.name, wireToDbDate(c.lastModifiedDate))
-    fun upsertTag(t: ServerTag) = q.upsertTag(t.id, t.name, wireToDbDate(t.lastModifiedDate))
+    // Named arguments throughout: the upserts are grouped statements (UPDATE + INSERT OR IGNORE), so
+    // SQLDelight derives the parameter ORDER from first appearance in the SQL, not from the column list.
+    fun upsertCourse(c: ServerCourse) =
+        q.upsertCourse(name = c.name, lastModifiedDate = wireToDbDate(c.lastModifiedDate), id = c.id)
+    fun upsertCategory(c: ServerCategory) =
+        q.upsertCategory(name = c.name, lastModifiedDate = wireToDbDate(c.lastModifiedDate), id = c.id)
+    fun upsertTag(t: ServerTag) =
+        q.upsertTag(name = t.name, lastModifiedDate = wireToDbDate(t.lastModifiedDate), id = t.id)
 
     fun deleteCourse(id: String) = q.deleteCourseById(id)
     fun deleteCategory(id: String) = q.deleteCategoryById(id)
     fun deleteTag(id: String) = q.deleteTagById(id)
+
+    /**
+     * Folds same-named courses, categories and tags into one row each — the tidy-up a sync owes the
+     * library after reconciling those three tables by id. See [LibraryDuplicateMerger].
+     */
+    fun consolidateDuplicateLibraryItems(): LibraryMergeSummary =
+        LibraryDuplicateMerger(db).consolidateDuplicates()
 
     // Shopping lists. Synced as whole rows; items carry no server-side identity (their ids matter
     // only to client-side three-way merges). Each row carries its sync bookkeeping: the server
@@ -229,16 +254,16 @@ class LocalStore(private val db: AppDatabase) {
      * together, so the row lands already-clean with the server row itself as the snapshot.
      */
     fun upsertShoppingList(l: ServerShoppingList) = q.upsertShoppingList(
-        l.id, l.name, l.isFreeform, l.contentsForList ?: emptyList(), l.contentsForFreeform,
-        wireToDbDate(l.lastModifiedDate),
-        l.revision, snapshotJson(l),
+        name = l.name, isFreeform = l.isFreeform, contentsForList = l.contentsForList ?: emptyList(),
+        contentsForFreeform = l.contentsForFreeform, lastModifiedDate = wireToDbDate(l.lastModifiedDate),
+        syncedRevision = l.revision, syncedSnapshot = snapshotJson(l), id = l.id,
     )
 
     /** Write a LOCAL row (conflict copy) that the server hasn't seen: no agreement to record yet. */
     fun insertLocalShoppingList(l: ServerShoppingList) = q.upsertShoppingList(
-        l.id, l.name, l.isFreeform, l.contentsForList ?: emptyList(), l.contentsForFreeform,
-        wireToDbDate(l.lastModifiedDate),
-        null, null,
+        name = l.name, isFreeform = l.isFreeform, contentsForList = l.contentsForList ?: emptyList(),
+        contentsForFreeform = l.contentsForFreeform, lastModifiedDate = wireToDbDate(l.lastModifiedDate),
+        syncedRevision = null, syncedSnapshot = null, id = l.id,
     )
 
     /**
@@ -250,6 +275,17 @@ class LocalStore(private val db: AppDatabase) {
 
     private fun snapshotJson(l: ServerShoppingList): String? =
         l.revision?.let { apiJson.encodeToString(ServerShoppingList.serializer(), l.copy(baseRevision = null)) }
+
+    /**
+     * Write a LOCAL EDIT to an existing row: contents and [ServerShoppingList.lastModifiedDate] move while
+     * the sync bookkeeping stays put, so the row reads as dirty at the next sync and uploads with the
+     * `baseRevision` it was actually edited from. Use this for every user edit; [upsertShoppingList] is for
+     * server-agreed rows only, and would mark the edit as already-synced.
+     */
+    fun updateLocalShoppingList(l: ServerShoppingList) = q.updateShoppingListContents(
+        l.name, l.isFreeform, l.contentsForList ?: emptyList(), l.contentsForFreeform,
+        wireToDbDate(l.lastModifiedDate), l.id,
+    )
 
     fun deleteShoppingList(id: String) = q.deleteShoppingListById(id)
 

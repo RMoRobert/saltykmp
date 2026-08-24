@@ -7,7 +7,7 @@ import kotlin.test.assertTrue
 /**
  * Regression: local timestamps may carry nanoseconds (Instant.toString()) while the server round-trips
  * at millisecond precision (`...SSS'Z'`). Without normalization the reconciler saw local as perpetually
- * newer and re-uploaded every recipe/vocab item on every sync. [LocalStore.parseOrPast] truncates to ms.
+ * newer and re-uploaded every recipe/classifier item on every sync. [LocalStore.parseOrPast] truncates to ms.
  */
 class SyncDatePrecisionTests {
 

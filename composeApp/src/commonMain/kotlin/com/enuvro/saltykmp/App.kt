@@ -7,6 +7,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -16,9 +17,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,9 +29,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ListAlt
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -37,10 +42,16 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.BookmarkAdded
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.Restaurant
+import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DrawerValue
@@ -49,31 +60,45 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.PermanentDrawerSheet
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -83,6 +108,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
@@ -92,7 +119,15 @@ import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -100,6 +135,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -118,6 +154,9 @@ import com.enuvro.saltykmp.db.model.Variation
 import com.enuvro.saltykmp.di.currentLibraryDir
 import com.enuvro.saltykmp.di.customLibraryLocationSupported
 import com.enuvro.saltykmp.di.linkedFolderSyncSupported
+import com.enuvro.saltykmp.search.RecipeSearch
+import com.enuvro.saltykmp.search.RecipeSearchField
+import com.enuvro.saltykmp.search.RecipeSearchFields
 import com.enuvro.saltykmp.di.decodeImageBitmap
 import com.enuvro.saltykmp.di.makeThumbnail
 import com.enuvro.saltykmp.di.rememberCameraCapture
@@ -133,8 +172,12 @@ import io.github.vinceglb.filekit.dialogs.compose.rememberFilePickerLauncher
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
-/** The three things recipes are organized by, each editable with identical (name) CRUD (mirrors the Swift app). */
-private enum class OrganizerKind(val title: String, val singular: String) {
+/**
+ * The three classifiers a recipe can be filed under. "Classifier" is this codebase's catch-all for the
+ * set — the app has no single user-facing word for them, and calling them "the library" would wrongly
+ * suggest the recipes themselves. Each is editable with identical (name) CRUD (mirrors the Swift app).
+ */
+internal enum class ClassifierKind(val title: String, val singular: String) {
     Courses("Courses", "Course"),
     Categories("Categories", "Category"),
     Tags("Tags", "Tag"),
@@ -143,8 +186,11 @@ private enum class OrganizerKind(val title: String, val singular: String) {
 private sealed interface Screen {
     data object List : Screen
     data class Detail(val id: String) : Screen
-    data class Edit(val id: String?) : Screen
-    data class ManageOrganizer(val kind: OrganizerKind) : Screen
+    /** [imported] seeds a brand-new recipe from the web importer; null for a blank new recipe or an edit. */
+    data class Edit(val id: String?, val imported: ImportedRecipe? = null) : Screen
+    data class ManageClassifier(val kind: ClassifierKind) : Screen
+    data object ShoppingLists : Screen
+    data class ShoppingListDetail(val id: String) : Screen
     data object Settings : Screen
 }
 
@@ -241,9 +287,19 @@ private fun SaltyTheme(content: @Composable () -> Unit) {
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun App() {
+fun App(commands: AppCommands? = null) {
     val module = remember { AppModule() }
     var screen by remember { mutableStateOf<Screen>(Screen.List) }
+    // Hoisted out of the list screen so it survives navigating into a recipe and back — and so a tag or
+    // category chip on the detail screen can jump the list to that filter.
+    var recipeFilter by remember { mutableStateOf<RecipeFilter>(RecipeFilter.All) }
+    // App-level rather than inside the recipe list, so the desktop menu bar can start an import from
+    // wherever the user happens to be.
+    var showWebImport by remember { mutableStateOf(false) }
+    // Bumped by the Find command; the recipe list opens its search field whenever this changes.
+    var findRequest by remember { mutableStateOf(0) }
+    var menuSyncRunning by remember { mutableStateOf(false) }
+    val snackbarHost = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     // Reconcile the linked sync folder BEFORE any screen opens the database (a COPY_IN replaces the local
     // DB file, which is only safe while the DB is closed). Gate the UI until that completes.
@@ -260,6 +316,61 @@ fun App() {
             println("LibraryFolderLink: DB opened — recipe count = ${count.getOrNull() ?: "READ FAILED: ${count.exceptionOrNull()?.message}"}")
         }
     }
+    // Leaving the app is the natural moment to copy recent edits to the linked folder (no-op when unlinked or
+    // unchanged). ON_STOP maps to the activity stopping on Android and the app backgrounding on iOS.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { module.onAppBackground() }
+
+    /** Back out of the current sub-screen. A shopping list returns to the lists, not out to the recipes. */
+    fun goBack() {
+        screen = if (screen is Screen.ShoppingListDetail) Screen.ShoppingLists else Screen.List
+    }
+
+    /** Announce an outcome; replaces any showing snackbar so a fast second action isn't queued behind it. */
+    fun notify(message: String) {
+        scope.launch {
+            snackbarHost.currentSnackbarData?.dismiss()
+            snackbarHost.showSnackbar(message)
+        }
+    }
+
+    // Commands from the host platform (today: the desktop menu bar and its keyboard shortcuts). The handler
+    // is installed for as long as the app is composed; anything sent outside that window is dropped rather
+    // than crashing, which is what makes a menu item safe to click during startup.
+    DisposableEffect(commands) {
+        commands?.handler = handler@{ command ->
+            when (command) {
+                AppCommand.NewRecipe -> screen = Screen.Edit(null)
+                AppCommand.ImportFromWeb -> showWebImport = true
+                AppCommand.OpenSettings -> screen = Screen.Settings
+                AppCommand.ShowAllRecipes -> { recipeFilter = RecipeFilter.All; screen = Screen.List }
+                AppCommand.ShowFavorites -> { recipeFilter = RecipeFilter.Favorites; screen = Screen.List }
+                AppCommand.ShowWantToMake -> { recipeFilter = RecipeFilter.WantToMake; screen = Screen.List }
+                AppCommand.ShowShoppingLists -> screen = Screen.ShoppingLists
+                // Find belongs to whichever list is on screen — recipes or shopping lists, both of which
+                // watch this counter. On Settings or an editor there is nothing to search, so it's dropped.
+                AppCommand.FindInList -> if (screen != Screen.Settings && screen !is Screen.ManageClassifier) {
+                    findRequest++
+                }
+                AppCommand.Back -> goBack()
+                AppCommand.SyncNow -> {
+                    if (menuSyncRunning) return@handler
+                    menuSyncRunning = true
+                    scope.launch {
+                        val message = try {
+                            "Sync complete — " + module.sync().summary()
+                        } catch (e: Throwable) {
+                            "Sync failed: ${e.message}"
+                        } finally {
+                            menuSyncRunning = false
+                        }
+                        notify(message)
+                    }
+                }
+            }
+        }
+        onDispose { commands?.handler = null }
+    }
+
     SaltyTheme {
         when (startupPhase) {
             StartupPhase.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -294,7 +405,24 @@ fun App() {
                     },
                 )
             }
-            StartupPhase.Ready -> AppContent(module, screen, onScreen = { screen = it })
+            StartupPhase.Ready -> AppContent(
+                module = module,
+                screen = screen,
+                onScreen = { screen = it },
+                recipeFilter = recipeFilter,
+                onRecipeFilter = { recipeFilter = it },
+                snackbarHost = snackbarHost,
+                onBack = { goBack() },
+                findRequest = findRequest,
+                onImportFromWeb = { showWebImport = true },
+            )
+        }
+        if (showWebImport) {
+            WebImportDialog(
+                module,
+                onDismiss = { showWebImport = false },
+                onImported = { showWebImport = false; screen = Screen.Edit(null, it) },
+            )
         }
     }
 }
@@ -308,13 +436,77 @@ private fun folderSyncMessage(result: LibraryFolderSyncResult): String = when (r
     LibraryFolderSyncResult.PUSHED -> "Library copied to the linked folder."
     LibraryFolderSyncResult.PULLED -> "Loaded the newer library from the folder."
     LibraryFolderSyncResult.SEEDED -> "Linked folder initialized with your library."
+    LibraryFolderSyncResult.FOLDER_NEWER -> "The folder has a newer library — it will be loaded the next time the app starts."
     LibraryFolderSyncResult.CONFLICT -> "Both this device and the folder changed — you'll be asked which to keep on next launch."
     LibraryFolderSyncResult.ERROR -> "Couldn't access the linked folder."
 }
 
+/**
+ * Everything a screen needs from the app shell, in one object. The compact and wide layouts would
+ * otherwise repeat the same nine parameters at every call site.
+ */
+private class AppShell(
+    val module: AppModule,
+    val screen: Screen,
+    val filter: RecipeFilter,
+    val findRequest: Int,
+    val onScreen: (Screen) -> Unit,
+    val onFilter: (RecipeFilter) -> Unit,
+    val onBack: () -> Unit,
+    val onImportFromWeb: () -> Unit,
+    val showUndo: (message: String, undo: () -> Unit) -> Unit,
+) {
+    /** Show the library sliced by [f]; also leaves whatever sub-screen asked for it. */
+    fun openFilter(f: RecipeFilter) {
+        onFilter(f)
+        onScreen(Screen.List)
+    }
+
+    /** True while the recipe list (or a recipe opened from it) is the active area. */
+    val onRecipes: Boolean
+        get() = screen is Screen.List || screen is Screen.Detail || screen is Screen.Edit
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun AppContent(module: AppModule, screen: Screen, onScreen: (Screen) -> Unit) {
+private fun AppContent(
+    module: AppModule,
+    screen: Screen,
+    onScreen: (Screen) -> Unit,
+    recipeFilter: RecipeFilter,
+    onRecipeFilter: (RecipeFilter) -> Unit,
+    snackbarHost: SnackbarHostState,
+    onBack: () -> Unit,
+    findRequest: Int,
+    onImportFromWeb: () -> Unit,
+) {
+    val snackbarScope = rememberCoroutineScope()
+
+    /** Show [message] with an Undo action that runs [undo] if tapped. */
+    fun showUndo(message: String, undo: () -> Unit) {
+        snackbarScope.launch {
+            snackbarHost.currentSnackbarData?.dismiss()
+            val result = snackbarHost.showSnackbar(
+                message = message,
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Long,
+            )
+            if (result == SnackbarResult.ActionPerformed) undo()
+        }
+    }
+
+    val shell = AppShell(
+        module = module,
+        screen = screen,
+        filter = recipeFilter,
+        findRequest = findRequest,
+        onScreen = onScreen,
+        onFilter = onRecipeFilter,
+        onBack = onBack,
+        onImportFromWeb = onImportFromWeb,
+        showUndo = ::showUndo,
+    )
+
     Column(Modifier.fillMaxSize()) {
         // A persistent, dismissible banner when several auto-syncs in a row have failed (Swift app parity).
         val autoSyncFailing by module.autoSync.failing.collectAsState()
@@ -325,27 +517,252 @@ private fun AppContent(module: AppModule, screen: Screen, onScreen: (Screen) -> 
             )
         }
         // System / gesture back returns to the list from any sub-screen.
-        BackHandler(enabled = screen != Screen.List) { onScreen(Screen.List) }
+        BackHandler(enabled = screen != Screen.List) { onBack() }
         // The active screen fills the space below the banner (each screen is its own fillMaxSize Scaffold).
         Box(Modifier.weight(1f)) {
-            when (val s = screen) {
-                Screen.List -> RecipeListScreen(
-                    module,
-                    onOpen = { onScreen(Screen.Detail(it)) },
-                    onNew = { onScreen(Screen.Edit(null)) },
-                    onManage = { onScreen(Screen.ManageOrganizer(it)) },
-                    onSettings = { onScreen(Screen.Settings) },
-                )
-                is Screen.Detail -> RecipeDetailScreen(
-                    module, s.id,
-                    onBack = { onScreen(Screen.List) },
-                    onEdit = { onScreen(Screen.Edit(s.id)) },
-                )
-                is Screen.Edit -> RecipeEditScreen(module, s.id, onDone = { onScreen(Screen.List) })
-                is Screen.ManageOrganizer -> OrganizerEditScreen(module, s.kind, onBack = { onScreen(Screen.List) })
-                Screen.Settings -> SettingsScreen(module, onBack = { onScreen(Screen.List) })
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                // Everything adaptive keys off this one value: phone-width keeps the modal drawer and a
+                // single screen at a time; wider windows get a rail, then two panes, then a full sidebar.
+                when (val width = widthClassFor(maxWidth)) {
+                    WidthClass.Compact -> CompactLayout(shell)
+                    else -> WideLayout(shell, width)
+                }
+            }
+            // Last child: on top for both drawing and hit-testing. App-level rather than per-screen because
+            // the action that raises it (deleting a recipe) navigates away from the screen that triggered it.
+            SnackbarHost(snackbarHost, Modifier.align(Alignment.BottomCenter))
+        }
+    }
+}
+
+/** Phone layout: one screen at a time, navigation behind a modal drawer on the recipe list. */
+@Composable
+private fun CompactLayout(shell: AppShell) {
+    when (val s = shell.screen) {
+        Screen.List -> RecipeListScreen(shell)
+        is Screen.Detail -> RecipeDetailScreen(
+            shell.module, s.id,
+            onBack = shell.onBack,
+            onClose = shell.onBack,
+            onEdit = { shell.onScreen(Screen.Edit(s.id)) },
+            onFilter = { shell.openFilter(it) },
+            onDeleted = shell.showUndo,
+        )
+        is Screen.Edit -> RecipeEditScreen(
+            shell.module, s.id, s.imported,
+            onDone = { savedId -> shell.onScreen(savedId?.let { Screen.Detail(it) } ?: Screen.List) },
+        )
+        is Screen.ManageClassifier -> ClassifierEditScreen(shell.module, s.kind, onBack = shell.onBack)
+        Screen.ShoppingLists -> ShoppingListsScreen(
+            shell.module,
+            onOpen = { shell.onScreen(Screen.ShoppingListDetail(it)) },
+            onBack = shell.onBack,
+            findRequest = shell.findRequest,
+        )
+        is Screen.ShoppingListDetail -> ShoppingListDetailScreen(
+            shell.module, s.id,
+            // Back from a list returns to the lists, not all the way out to the recipes.
+            onBack = shell.onBack,
+            onClose = { shell.onScreen(Screen.ShoppingLists) },
+            onUndoable = shell.showUndo,
+        )
+        Screen.Settings -> SettingsScreen(shell.module, onBack = shell.onBack)
+    }
+}
+
+/**
+ * Tablet / desktop layout. Navigation is always visible — an icon rail up to 1200dp, the full sidebar
+ * above it — and from 840dp the list and what's selected in it sit side by side, the way the Swift app's
+ * `NavigationSplitView` does on a Mac. Where the rail is used the modal drawer is still one tap away, so
+ * Categories / Courses / Tags (which don't fit a rail) are never out of reach.
+ */
+@Composable
+private fun WideLayout(shell: AppShell, width: WidthClass) {
+    if (width.permanentSidebar) {
+        Row(Modifier.fillMaxSize()) {
+            PermanentDrawerSheet(Modifier.width(SIDEBAR_WIDTH)) { SaltyDrawerContents(shell) }
+            VerticalDivider()
+            Box(Modifier.weight(1f)) { WideContent(shell, width) }
+        }
+    } else {
+        val drawerState = rememberDrawerState(DrawerValue.Closed)
+        val scope = rememberCoroutineScope()
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet { SaltyDrawerContents(shell, onNavigated = { scope.launch { drawerState.close() } }) }
+            },
+        ) {
+            Row(Modifier.fillMaxSize()) {
+                SaltyNavigationRail(shell, onMenu = { scope.launch { drawerState.open() } })
+                VerticalDivider()
+                Box(Modifier.weight(1f)) { WideContent(shell, width) }
             }
         }
+    }
+}
+
+/** The content area to the right of the rail / sidebar: one pane at medium widths, two from 840dp up. */
+@Composable
+private fun WideContent(shell: AppShell, width: WidthClass) {
+    when (val s = shell.screen) {
+        Screen.List, is Screen.Detail, is Screen.Edit -> if (width.twoPane) {
+            Row(Modifier.fillMaxSize()) {
+                RecipeListPane(
+                    shell,
+                    selectedId = (s as? Screen.Detail)?.id ?: (s as? Screen.Edit)?.id,
+                    modifier = Modifier.width(LIST_PANE_WIDTH),
+                )
+                VerticalDivider()
+                Box(Modifier.weight(1f)) { RecipeDetailPane(shell, s) }
+            }
+        } else {
+            when (s) {
+                Screen.List -> RecipeListPane(shell, selectedId = null)
+                is Screen.Detail -> RecipeDetailScreen(
+                    shell.module, s.id,
+                    onBack = shell.onBack,
+                    onClose = shell.onBack,
+                    onEdit = { shell.onScreen(Screen.Edit(s.id)) },
+                    onFilter = { shell.openFilter(it) },
+                    onDeleted = shell.showUndo,
+                )
+                is Screen.Edit -> RecipeEditScreen(
+                    shell.module, s.id, s.imported,
+                    onDone = { savedId -> shell.onScreen(savedId?.let { Screen.Detail(it) } ?: Screen.List) },
+                )
+            }
+        }
+        Screen.ShoppingLists, is Screen.ShoppingListDetail -> if (width.twoPane) {
+            Row(Modifier.fillMaxSize()) {
+                ShoppingListsScreen(
+                    shell.module,
+                    onOpen = { shell.onScreen(Screen.ShoppingListDetail(it)) },
+                    onBack = null,
+                    selectedId = (s as? Screen.ShoppingListDetail)?.id,
+                    findRequest = shell.findRequest,
+                    modifier = Modifier.width(LIST_PANE_WIDTH),
+                )
+                VerticalDivider()
+                Box(Modifier.weight(1f)) {
+                    if (s is Screen.ShoppingListDetail) {
+                        ShoppingListDetailScreen(
+                            shell.module, s.id,
+                            onBack = null,
+                            onClose = { shell.onScreen(Screen.ShoppingLists) },
+                            onUndoable = shell.showUndo,
+                        )
+                    } else {
+                        PanePlaceholder(
+                            icon = Icons.AutoMirrored.Filled.ListAlt,
+                            title = "No list selected",
+                            body = "Pick a shopping list on the left, or start a new one.",
+                        )
+                    }
+                }
+            }
+        } else {
+            when (s) {
+                Screen.ShoppingLists -> ShoppingListsScreen(
+                    shell.module,
+                    onOpen = { shell.onScreen(Screen.ShoppingListDetail(it)) },
+                    onBack = null,
+                    findRequest = shell.findRequest,
+                )
+                is Screen.ShoppingListDetail -> ShoppingListDetailScreen(
+                    shell.module, s.id,
+                    onBack = shell.onBack,
+                    onClose = { shell.onScreen(Screen.ShoppingLists) },
+                    onUndoable = shell.showUndo,
+                )
+            }
+        }
+        // Settings and the classifier editors are app-level, not a slice of the library, so they take the
+        // whole content area (the navigation beside them stays put) rather than a detail pane.
+        is Screen.ManageClassifier -> ClassifierEditScreen(shell.module, s.kind, onBack = shell.onBack)
+        Screen.Settings -> SettingsScreen(shell.module, onBack = shell.onBack)
+    }
+}
+
+/** Right-hand pane of the recipes split view: the open recipe, the editor, or a "pick one" placeholder. */
+@Composable
+private fun RecipeDetailPane(shell: AppShell, screen: Screen) {
+    when (screen) {
+        is Screen.Detail -> RecipeDetailScreen(
+            shell.module, screen.id,
+            // No back arrow in a split view: the list it would return to never went away.
+            onBack = null,
+            onClose = { shell.onScreen(Screen.List) },
+            onEdit = { shell.onScreen(Screen.Edit(screen.id)) },
+            onFilter = { shell.openFilter(it) },
+            onDeleted = shell.showUndo,
+            wide = true,
+        )
+        is Screen.Edit -> RecipeEditScreen(
+            shell.module, screen.id, screen.imported,
+            onDone = { savedId -> shell.onScreen(savedId?.let { Screen.Detail(it) } ?: Screen.List) },
+        )
+        else -> PanePlaceholder(
+            icon = Icons.Outlined.Restaurant,
+            title = "No recipe selected",
+            body = "Choose a recipe on the left to read it here.",
+        )
+    }
+}
+
+/** Centered "nothing selected yet" filler for an empty detail pane. */
+@Composable
+private fun PanePlaceholder(icon: ImageVector, title: String, body: String) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        EmptyState(icon = icon, title = title, body = body)
+    }
+}
+
+/**
+ * Icon rail for medium/expanded windows: the fixed destinations only. Categories / Courses / Tags are
+ * lists of arbitrary length and can't live on a rail, so the menu button opens the full drawer over it.
+ */
+@Composable
+private fun SaltyNavigationRail(shell: AppShell, onMenu: () -> Unit) {
+    NavigationRail(
+        header = {
+            IconButton(onClick = onMenu) {
+                Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+            }
+        },
+    ) {
+        NavigationRailItem(
+            selected = shell.onRecipes && shell.filter is RecipeFilter.All,
+            onClick = { shell.openFilter(RecipeFilter.All) },
+            icon = { Icon(Icons.Outlined.Restaurant, contentDescription = null) },
+            label = { Text("Recipes") },
+        )
+        NavigationRailItem(
+            selected = shell.onRecipes && shell.filter is RecipeFilter.Favorites,
+            onClick = { shell.openFilter(RecipeFilter.Favorites) },
+            icon = { Icon(Icons.Filled.Star, contentDescription = null) },
+            label = { Text("Favorites") },
+        )
+        NavigationRailItem(
+            selected = shell.onRecipes && shell.filter is RecipeFilter.WantToMake,
+            onClick = { shell.openFilter(RecipeFilter.WantToMake) },
+            icon = { Icon(Icons.Filled.BookmarkAdded, contentDescription = null) },
+            label = { Text("To Make") },
+        )
+        NavigationRailItem(
+            selected = shell.screen is Screen.ShoppingLists || shell.screen is Screen.ShoppingListDetail,
+            onClick = { shell.onScreen(Screen.ShoppingLists) },
+            icon = { Icon(Icons.AutoMirrored.Filled.ListAlt, contentDescription = null) },
+            label = { Text("Lists") },
+        )
+        Spacer(Modifier.weight(1f))
+        NavigationRailItem(
+            selected = shell.screen is Screen.Settings,
+            onClick = { shell.onScreen(Screen.Settings) },
+            icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+            label = { Text("Settings") },
+        )
+        Spacer(Modifier.height(12.dp))
     }
 }
 
@@ -382,6 +799,14 @@ private sealed interface RecipeFilter {
 
     data object All : RecipeFilter {
         override val title = "All Recipes"
+    }
+
+    data object Favorites : RecipeFilter {
+        override val title = "Favorites"
+    }
+
+    data object WantToMake : RecipeFilter {
+        override val title = "Want to Make"
     }
 
     data class Course(val id: String, val name: String) : RecipeFilter {
@@ -431,144 +856,320 @@ private fun sortRecipes(list: List<Recipe>, sort: RecipeSort, ascending: Boolean
     }
 }
 
+/**
+ * Phone-width recipe list: the pane plus the modal drawer it opens. Wider layouts render
+ * [RecipeListPane] directly, with the navigation already on screen beside it.
+ */
+@Composable
+private fun RecipeListScreen(shell: AppShell) {
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                SaltyDrawerContents(shell, onNavigated = { scope.launch { drawerState.close() } })
+            }
+        },
+    ) {
+        RecipeListPane(
+            shell,
+            selectedId = null,
+            navigationIcon = {
+                IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                    Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+                }
+            },
+        )
+    }
+}
+
+/**
+ * The recipe list itself: app bar (search / sort / overflow), the rows, and the new-recipe FAB.
+ *
+ * [selectedId] is set only in a two-pane layout, where the row for the recipe showing on the right is
+ * highlighted; [navigationIcon] is the drawer button on layouts that have one and empty where the
+ * navigation is already visible.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RecipeListScreen(
-    module: AppModule,
-    onOpen: (String) -> Unit,
-    onNew: () -> Unit,
-    onManage: (OrganizerKind) -> Unit,
-    onSettings: () -> Unit,
+private fun RecipeListPane(
+    shell: AppShell,
+    selectedId: String?,
+    navigationIcon: @Composable () -> Unit = {},
+    modifier: Modifier = Modifier,
 ) {
-    var filter by remember { mutableStateOf<RecipeFilter>(RecipeFilter.All) }
+    val module = shell.module
+    val filter = shell.filter
     var sort by remember {
         mutableStateOf(runCatching { RecipeSort.valueOf(module.settings.recipeSort) }.getOrDefault(RecipeSort.NAME))
     }
     var ascending by remember { mutableStateOf(module.settings.recipeSortAscending) }
     var sortMenu by remember { mutableStateOf(false) }
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
+    // Search is opt-in: the field replaces the title while active, and closing it clears the query so the
+    // list can never stay silently filtered by a query the user can't see.
+    var searchActive by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var searchOptionsMenu by remember { mutableStateOf(false) }
+    var overflowMenu by remember { mutableStateOf(false) }
+    var searchFields by remember { mutableStateOf(module.settings.searchFields) }
+
+    // The desktop menu bar's Find command (⌘F) arrives as a bumped counter. Skipping 0 keeps the field
+    // shut on first composition.
+    LaunchedEffect(shell.findRequest) {
+        if (shell.findRequest > 0) searchActive = true
+    }
 
     val recipes by remember(filter) {
         when (val f = filter) {
-            RecipeFilter.All -> module.repository.recipes()
+            // Favorites / Want to Make are flags on the recipe row rather than their own query; they read
+            // the full list and narrow it below, the way the Swift sidebar's scope + forced flag does.
+            RecipeFilter.All, RecipeFilter.Favorites, RecipeFilter.WantToMake -> module.repository.recipes()
             is RecipeFilter.Course -> module.repository.recipesForCourse(f.id)
             is RecipeFilter.Category -> module.repository.recipesForCategory(f.id)
             is RecipeFilter.Tag -> module.repository.recipesForTag(f.id)
         }
     }.collectAsState(initial = emptyList())
-    val sorted = remember(recipes, sort, ascending) { sortRecipes(recipes, sort, ascending) }
+    val courses by module.repository.courses().collectAsState(initial = emptyList())
+    val categoryNamesByRecipe by module.repository.categoryNamesByRecipe().collectAsState(initial = emptyMap())
+    val tagNamesByRecipe by module.repository.tagNamesByRecipe().collectAsState(initial = emptyMap())
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            RecipeDrawer(
-                module,
-                selected = filter,
-                onSelect = { picked ->
-                    filter = picked
-                    scope.launch { drawerState.close() }
+    val flagged = remember(recipes, filter) {
+        when (filter) {
+            RecipeFilter.Favorites -> recipes.filter { it.isFavorite }
+            RecipeFilter.WantToMake -> recipes.filter { it.wantToMake }
+            else -> recipes
+        }
+    }
+    val searched = remember(flagged, query, searchFields, courses, categoryNamesByRecipe, tagNamesByRecipe) {
+        if (query.isBlank()) {
+            flagged
+        } else {
+            val courseNames = courses.associate { it.id to it.name.orEmpty() }
+            flagged.filter { r ->
+                RecipeSearch.matches(
+                    RecipeSearchFields(
+                        name = r.name,
+                        introduction = r.introduction,
+                        ingredients = r.ingredients.map { it.text },
+                        notes = r.notes.flatMap { listOf(it.title, it.content) },
+                        variations = r.variations.flatMap { listOf(it.variationName, it.text) },
+                        courseName = r.courseId?.let { courseNames[it] },
+                        categoryNames = categoryNamesByRecipe[r.id].orEmpty(),
+                        tagNames = tagNamesByRecipe[r.id].orEmpty(),
+                    ),
+                    query,
+                    searchFields,
+                )
+            }
+        }
+    }
+    val sorted = remember(searched, sort, ascending) { sortRecipes(searched, sort, ascending) }
+
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        topBar = {
+            TopAppBar(
+                title = {
+                    if (searchActive) {
+                        val focus = remember { FocusRequester() }
+                        LaunchedEffect(Unit) { focus.requestFocus() }
+                        TextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            placeholder = { Text("Search ${filter.title}") },
+                            singleLine = true,
+                            trailingIcon = if (query.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { query = "" }) {
+                                        Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                                    }
+                                }
+                            } else null,
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focus)
+                                // Escape closes search, the way it does in every desktop search field.
+                                // Handled on the field rather than on the window so it can never fire
+                                // while the user is typing somewhere else.
+                                .onPreviewKeyEvent { event ->
+                                    if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
+                                        searchActive = false
+                                        query = ""
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                },
+                        )
+                    } else {
+                        Text(filter.title)
+                    }
                 },
-                onManage = { kind ->
-                    scope.launch { drawerState.close() }
-                    onManage(kind)
+                navigationIcon = navigationIcon,
+                actions = {
+                    if (searchActive) {
+                        Box {
+                            IconButton(onClick = { searchOptionsMenu = true }) {
+                                Icon(Icons.Filled.FilterList, contentDescription = "Search options")
+                            }
+                            DropdownMenu(
+                                expanded = searchOptionsMenu,
+                                onDismissRequest = { searchOptionsMenu = false },
+                            ) {
+                                Text(
+                                    "Search in",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                )
+                                RecipeSearchField.entries.forEach { field ->
+                                    val on = field in searchFields
+                                    DropdownMenuItem(
+                                        text = { Text(field.label) },
+                                        leadingIcon = if (on) {
+                                            { Icon(Icons.Filled.Check, contentDescription = null) }
+                                        } else null,
+                                        onClick = {
+                                            // Never let the last option be switched off: an empty set
+                                            // would search nothing and read as "no recipes match".
+                                            val next = if (on) searchFields - field else searchFields + field
+                                            searchFields = next.ifEmpty { RecipeSearchField.DEFAULTS }
+                                            module.settings.searchFields = searchFields
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        IconButton(onClick = { searchActive = false; query = "" }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Close search")
+                        }
+                        return@TopAppBar
+                    }
+                    IconButton(onClick = { searchActive = true }) {
+                        Icon(Icons.Filled.Search, contentDescription = "Search")
+                    }
+                    Box {
+                        IconButton(onClick = { sortMenu = true }) {
+                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
+                        }
+                        DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                            RecipeSort.entries.forEach { opt ->
+                                DropdownMenuItem(
+                                    text = { Text(opt.label) },
+                                    leadingIcon = if (opt == sort) {
+                                        { Icon(Icons.Filled.Check, contentDescription = null) }
+                                    } else null,
+                                    onClick = { sort = opt; module.settings.recipeSort = opt.name; sortMenu = false },
+                                )
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text(if (ascending) "Ascending ↑" else "Descending ↓") },
+                                onClick = {
+                                    ascending = !ascending
+                                    module.settings.recipeSortAscending = ascending
+                                    sortMenu = false
+                                },
+                            )
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { overflowMenu = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                        }
+                        DropdownMenu(expanded = overflowMenu, onDismissRequest = { overflowMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Import from Web…") },
+                                onClick = { overflowMenu = false; shell.onImportFromWeb() },
+                            )
+                        }
+                    }
                 },
             )
         },
-    ) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text(filter.title) },
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Filled.Menu, contentDescription = "Open menu")
-                        }
-                    },
-                    actions = {
-                        Box {
-                            IconButton(onClick = { sortMenu = true }) {
-                                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
-                            }
-                            DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
-                                RecipeSort.entries.forEach { opt ->
-                                    DropdownMenuItem(
-                                        text = { Text(opt.label) },
-                                        leadingIcon = if (opt == sort) {
-                                            { Icon(Icons.Filled.Check, contentDescription = null) }
-                                        } else null,
-                                        onClick = { sort = opt; module.settings.recipeSort = opt.name; sortMenu = false },
-                                    )
-                                }
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text(if (ascending) "Ascending ↑" else "Descending ↓") },
-                                    onClick = {
-                                        ascending = !ascending
-                                        module.settings.recipeSortAscending = ascending
-                                        sortMenu = false
-                                    },
-                                )
-                            }
-                        }
-                        IconButton(onClick = onSettings) {
-                            Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                        }
-                    },
-                )
-            },
-            floatingActionButton = {
-                FloatingActionButton(onClick = onNew) {
-                    Icon(Icons.Filled.Add, contentDescription = "New recipe")
-                }
-            },
-        ) { padding ->
-            if (sorted.isEmpty()) {
-                Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                    Text(
-                        if (filter is RecipeFilter.All) "No recipes yet — open Settings to sync, or tap New."
-                        else "No recipes in \"${filter.title}\".",
+        floatingActionButton = {
+            // One FAB, one primary action. "Import from Web…" is a secondary path and lives in the
+            // app bar's overflow instead — a FAB that opens a menu isn't a Material pattern.
+            FloatingActionButton(onClick = { shell.onScreen(Screen.Edit(null)) }) {
+                Icon(Icons.Filled.Add, contentDescription = "New recipe")
+            }
+        },
+    ) { padding ->
+        if (sorted.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                when {
+                    query.isNotBlank() -> EmptyState(
+                        icon = Icons.Filled.Search,
+                        title = "No matches",
+                        body = "Nothing in ${filter.title} matches \"${query.trim()}\". Try a different " +
+                            "term, or search more fields from the filter button.",
+                    )
+                    filter is RecipeFilter.All -> EmptyState(
+                        icon = Icons.Outlined.Restaurant,
+                        title = "No recipes yet",
+                        body = "Add one by hand, import a recipe from the web, or sync with Salty Server.",
+                        actionLabel = "New recipe",
+                        onAction = { shell.onScreen(Screen.Edit(null)) },
+                    )
+                    else -> EmptyState(
+                        icon = Icons.Outlined.Restaurant,
+                        title = "Nothing in ${filter.title}",
+                        body = "Recipes filed under ${filter.title} will appear here.",
                     )
                 }
-            } else {
-                LazyColumn(Modifier.fillMaxSize().padding(padding)) {
-                    items(sorted) { recipe ->
-                        // Prefer the cached thumbnail blob; fall back to the full image for rows synced
-                        // before thumbnail caching (a re-sync backfills the blob).
-                        val thumb = remember(recipe.imageThumbnailData, recipe.imageFilename) {
-                            (recipe.imageThumbnailData
-                                ?: recipe.imageFilename?.let { module.imageFiles.load(it) })
-                                ?.let { decodeImageBitmap(it) }
-                        }
-                        var rowMenu by remember(recipe.id) { mutableStateOf(false) }
-                        // When sorting by "Last Made", surface the date in the row itself — otherwise the
-                        // ordering has no visible explanation.
-                        val lastMade = remember(recipe.lastPrepared) {
-                            PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
-                        }
-                        val subtitle = when {
-                            sort == RecipeSort.LAST_MADE -> lastMade?.let { "Made $it" } ?: "Never made"
-                            else -> recipe.source?.takeIf { it.isNotBlank() }
-                        }
-                        Box {
-                            ListItem(
-                                leadingContent = { RecipeThumbnail(thumb) },
-                                headlineContent = { Text(if (recipe.isFavorite == true) "★ ${recipe.name}" else recipe.name) },
-                                supportingContent = subtitle?.let { { Text(it) } },
-                                modifier = Modifier.combinedClickable(
-                                    onClick = { onOpen(recipe.id) },
-                                    onLongClick = { rowMenu = true },
-                                ),
-                            )
-                            LastMadeMenu(
-                                expanded = rowMenu,
-                                currentLastPrepared = recipe.lastPrepared,
-                                onDismiss = { rowMenu = false },
-                                onSet = { wire -> module.localStore.setRecipePrepared(recipe.id, wire, nowTimestamp()) },
-                            )
-                        }
-                        HorizontalDivider()
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+                items(sorted, key = { it.id }) { recipe ->
+                    // Prefer the cached thumbnail blob; fall back to the full image for rows synced
+                    // before thumbnail caching (a re-sync backfills the blob).
+                    val thumb = remember(recipe.imageThumbnailData, recipe.imageFilename) {
+                        (recipe.imageThumbnailData
+                            ?: recipe.imageFilename?.let { module.imageFiles.load(it) })
+                            ?.let { decodeImageBitmap(it) }
                     }
+                    var rowMenu by remember(recipe.id) { mutableStateOf(false) }
+                    // When sorting by "Last Made", surface the date in the row itself — otherwise the
+                    // ordering has no visible explanation.
+                    val lastMade = remember(recipe.lastPrepared) {
+                        PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
+                    }
+                    val subtitle = when {
+                        sort == RecipeSort.LAST_MADE -> lastMade?.let { "Made $it" } ?: "Never made"
+                        else -> recipe.source?.takeIf { it.isNotBlank() }
+                    }
+                    Box {
+                        ListItem(
+                            leadingContent = { RecipeThumbnail(thumb) },
+                            headlineContent = { Text(if (recipe.isFavorite == true) "★ ${recipe.name}" else recipe.name) },
+                            supportingContent = subtitle?.let { { Text(it) } },
+                            // In a split view the row for the recipe showing on the right is marked, so
+                            // the list always says which one you're reading.
+                            colors = if (recipe.id == selectedId) {
+                                ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                            } else {
+                                ListItemDefaults.colors()
+                            },
+                            modifier = Modifier.combinedClickable(
+                                onClick = { shell.onScreen(Screen.Detail(recipe.id)) },
+                                onLongClick = { rowMenu = true },
+                            ),
+                        )
+                        LastMadeMenu(
+                            expanded = rowMenu,
+                            currentLastPrepared = recipe.lastPrepared,
+                            onDismiss = { rowMenu = false },
+                            onSet = { wire ->
+                                module.localStore.setRecipePrepared(recipe.id, wire, nowTimestamp())
+                                module.onLocalChange()
+                            },
+                        )
+                    }
+                    HorizontalDivider()
                 }
             }
         }
@@ -648,92 +1249,222 @@ private object PastOrPresentDates : SelectableDates {
         year <= PreparedDates.currentLocalYear()
 }
 
+/**
+ * The navigation list itself, with no sheet around it — the caller supplies a [ModalDrawerSheet] on
+ * phone widths or a [PermanentDrawerSheet] on a desktop-sized window, and the same contents serve both.
+ *
+ * [onNavigated] runs after any destination is picked; a modal drawer closes itself there, a permanent
+ * one does nothing.
+ */
 @Composable
-private fun RecipeDrawer(
-    module: AppModule,
-    selected: RecipeFilter,
-    onSelect: (RecipeFilter) -> Unit,
-    onManage: (OrganizerKind) -> Unit,
-) {
+private fun SaltyDrawerContents(shell: AppShell, onNavigated: () -> Unit = {}) {
+    val module = shell.module
     val courses by module.repository.courses().collectAsState(initial = emptyList())
     val categories by module.repository.categories().collectAsState(initial = emptyList())
     val tags by module.repository.tags().collectAsState(initial = emptyList())
+    // Collapsed state is persisted (see SettingsState) — a library with dozens of tags gets collapsed once.
+    var collapsed by remember { mutableStateOf(module.settings.collapsedDrawerSections) }
+    var editLibraryMenu by remember { mutableStateOf(false) }
+    // A filter only counts as "the current destination" while the recipes area is showing; on Settings or
+    // a shopping list, nothing in the recipe half of the sidebar should look active.
+    val selected = shell.filter.takeIf { shell.onRecipes }
 
-    ModalDrawerSheet {
-        Column(Modifier.verticalScroll(rememberScrollState())) {
-            Text(
-                "Salty",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(16.dp),
+    fun toggle(kind: ClassifierKind) {
+        collapsed = if (kind.name in collapsed) collapsed - kind.name else collapsed + kind.name
+        module.settings.collapsedDrawerSections = collapsed
+    }
+
+    fun go(filter: RecipeFilter) {
+        shell.openFilter(filter)
+        onNavigated()
+    }
+
+    Column(Modifier.verticalScroll(rememberScrollState())) {
+        Text(
+            "Salty",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(16.dp),
+        )
+
+        // Fixed destinations first, each with an icon so they're scannable apart from the (unadorned)
+        // classifier entries below.
+        DrawerDestination(
+            icon = Icons.Outlined.Restaurant,
+            label = "All Recipes",
+            selected = selected is RecipeFilter.All,
+            onClick = { go(RecipeFilter.All) },
+        )
+        DrawerDestination(
+            icon = Icons.Filled.Star,
+            label = "Favorites",
+            selected = selected is RecipeFilter.Favorites,
+            onClick = { go(RecipeFilter.Favorites) },
+        )
+        DrawerDestination(
+            icon = Icons.Filled.BookmarkAdded,
+            label = "Want to Make",
+            selected = selected is RecipeFilter.WantToMake,
+            onClick = { go(RecipeFilter.WantToMake) },
+        )
+        DrawerDestination(
+            icon = Icons.AutoMirrored.Filled.ListAlt,
+            label = "Shopping Lists",
+            selected = shell.screen is Screen.ShoppingLists || shell.screen is Screen.ShoppingListDetail,
+            onClick = { shell.onScreen(Screen.ShoppingLists); onNavigated() },
+        )
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+        // Categories/Courses/Tags, each collapsible. Sections render even when empty so the header
+        // still says the section exists.
+        for (kind in listOf(ClassifierKind.Categories, ClassifierKind.Courses, ClassifierKind.Tags)) {
+            val entries: List<Pair<String, String>> = when (kind) {
+                ClassifierKind.Categories -> categories.map { it.id to (it.name ?: "(unnamed)") }
+                ClassifierKind.Courses -> courses.map { it.id to (it.name ?: "(unnamed)") }
+                ClassifierKind.Tags -> tags.map { it.id to (it.name ?: "(unnamed)") }
+            }
+            val isCollapsed = kind.name in collapsed
+            DrawerSectionHeader(
+                title = kind.title,
+                collapsed = isCollapsed,
+                onToggle = { toggle(kind) },
             )
-            NavigationDrawerItem(
-                label = { Text("All Recipes") },
-                selected = selected is RecipeFilter.All,
-                onClick = { onSelect(RecipeFilter.All) },
-                modifier = Modifier.padding(horizontal = 12.dp),
+            if (!isCollapsed) {
+                entries.forEach { (id, name) ->
+                    val filter = when (kind) {
+                        ClassifierKind.Categories -> RecipeFilter.Category(id, name)
+                        ClassifierKind.Courses -> RecipeFilter.Course(id, name)
+                        ClassifierKind.Tags -> RecipeFilter.Tag(id, name)
+                    }
+                    val isSelected = when (kind) {
+                        ClassifierKind.Categories -> (selected as? RecipeFilter.Category)?.id == id
+                        ClassifierKind.Courses -> (selected as? RecipeFilter.Course)?.id == id
+                        ClassifierKind.Tags -> (selected as? RecipeFilter.Tag)?.id == id
+                    }
+                    NavigationDrawerItem(
+                        label = { Text(name) },
+                        selected = isSelected,
+                        onClick = { go(filter) },
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                }
+            }
+        }
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        // Editing the classifiers is rare and app-level, so it sits down here with Settings as one row
+        // that opens a menu — not an "Edit …" row under each of the three sections above.
+        Box {
+            DrawerDestination(
+                icon = Icons.Filled.Edit,
+                label = "Edit Classifiers…",
+                selected = shell.screen is Screen.ManageClassifier,
+                onClick = { editLibraryMenu = true },
             )
-
-            if (categories.isNotEmpty()) {
-                DrawerSectionHeader("Categories")
-                categories.forEach { c ->
-                    val name = c.name ?: "(unnamed)"
-                    NavigationDrawerItem(
-                        label = { Text(name) },
-                        selected = (selected as? RecipeFilter.Category)?.id == c.id,
-                        onClick = { onSelect(RecipeFilter.Category(c.id, name)) },
-                        modifier = Modifier.padding(horizontal = 12.dp),
+            DropdownMenu(expanded = editLibraryMenu, onDismissRequest = { editLibraryMenu = false }) {
+                for (kind in listOf(ClassifierKind.Categories, ClassifierKind.Courses, ClassifierKind.Tags)) {
+                    DropdownMenuItem(
+                        text = { Text(kind.title) },
+                        leadingIcon = if (shell.screen == Screen.ManageClassifier(kind)) {
+                            { Icon(Icons.Filled.Check, contentDescription = null) }
+                        } else null,
+                        onClick = {
+                            editLibraryMenu = false
+                            shell.onScreen(Screen.ManageClassifier(kind))
+                            onNavigated()
+                        },
                     )
                 }
             }
+        }
+        // Settings is app-level and infrequent, so it lives here rather than taking a slot in the
+        // recipe list's app bar (which is for actions on the list itself).
+        DrawerDestination(
+            icon = Icons.Filled.Settings,
+            label = "Settings",
+            selected = shell.screen is Screen.Settings,
+            onClick = { shell.onScreen(Screen.Settings); onNavigated() },
+        )
+        Spacer(Modifier.height(12.dp))
+    }
+}
 
-            if (courses.isNotEmpty()) {
-                DrawerSectionHeader("Courses")
-                courses.forEach { c ->
-                    val name = c.name ?: "(unnamed)"
-                    NavigationDrawerItem(
-                        label = { Text(name) },
-                        selected = (selected as? RecipeFilter.Course)?.id == c.id,
-                        onClick = { onSelect(RecipeFilter.Course(c.id, name)) },
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                    )
-                }
-            }
-
-            if (tags.isNotEmpty()) {
-                DrawerSectionHeader("Tags")
-                tags.forEach { t ->
-                    val name = t.name ?: "(unnamed)"
-                    NavigationDrawerItem(
-                        label = { Text(name) },
-                        selected = (selected as? RecipeFilter.Tag)?.id == t.id,
-                        onClick = { onSelect(RecipeFilter.Tag(t.id, name)) },
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                    )
-                }
-            }
-
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            DrawerSectionHeader("Manage Library")
-            OrganizerKind.entries.forEach { kind ->
-                NavigationDrawerItem(
-                    label = { Text("Edit ${kind.title}") },
-                    selected = false,
-                    onClick = { onManage(kind) },
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                )
-            }
-            Spacer(Modifier.height(12.dp))
+/**
+ * Standard empty state: icon, short headline, a line of guidance, and — where there's an obvious next
+ * step — a button for it. A bare centered sentence leaves the user to work out what to do next.
+ */
+@Composable
+internal fun EmptyState(
+    icon: ImageVector,
+    title: String,
+    body: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Column(
+        Modifier.padding(32.dp).widthIn(max = 320.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(48.dp),
+        )
+        Text(title, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        if (actionLabel != null && onAction != null) {
+            Button(onClick = onAction) { Text(actionLabel) }
         }
     }
 }
 
+/** A top-level drawer destination: icon + label, in the standard drawer inset. */
 @Composable
-private fun DrawerSectionHeader(title: String) {
-    Text(
-        title,
-        style = MaterialTheme.typography.titleSmall,
-        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+private fun DrawerDestination(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    NavigationDrawerItem(
+        icon = { Icon(icon, contentDescription = null) },
+        label = { Text(label) },
+        selected = selected,
+        onClick = onClick,
+        modifier = Modifier.padding(horizontal = 12.dp),
     )
+}
+
+/** Collapsible section header: title, item count, and a chevron. Whole row is the toggle. */
+@Composable
+private fun DrawerSectionHeader(title: String, collapsed: Boolean, onToggle: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(start = 28.dp, end = 16.dp, top = 8.dp, bottom = 8.dp)
+            .heightIn(min = 32.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.weight(1f))
+        Icon(
+            if (collapsed) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp,
+            contentDescription = if (collapsed) "Expand $title" else "Collapse $title",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 /** Small rounded thumbnail for a recipe list row, with a placeholder when there's no image. */
@@ -803,31 +1534,53 @@ private fun AddImageTarget(onClick: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun RecipeDetailScreen(module: AppModule, id: String, onBack: () -> Unit, onEdit: () -> Unit) {
+private fun RecipeDetailScreen(
+    module: AppModule,
+    id: String,
+    /** The app-bar back button; null in a split view, where the list it would return to never left. */
+    onBack: (() -> Unit)?,
+    /** Leave this recipe — used after deleting it, where staying would show a blank screen. */
+    onClose: () -> Unit,
+    onEdit: () -> Unit,
+    onFilter: (RecipeFilter) -> Unit,
+    onDeleted: (message: String, undo: () -> Unit) -> Unit,
+    wide: Boolean = false,
+) {
+    // This screen reads the recipe once rather than collecting a flow; bumping [reload] re-reads it after
+    // an edit made from here (setting "Last Made"), which would otherwise not show until it was reopened.
+    var reload by remember(id) { mutableStateOf(0) }
     // recipeForUpload gives the full ServerRecipe incl. category/tag ids (the db row omits junctions).
-    val recipe = remember(id) { module.localStore.recipeForUpload(id) }
+    val recipe = remember(id, reload) { module.localStore.recipeForUpload(id) }
+    // The DB row carries the image state (thumbnail blob + image timestamp) that the wire shape doesn't,
+    // so keep it for restoring the recipe if the delete is undone.
+    val row = remember(id, reload) { module.repository.recipe(id) }
     val image = remember(recipe?.imageFilename) {
         recipe?.imageFilename?.let { fn -> module.imageFiles.load(fn)?.let { decodeImageBitmap(it) } }
     }
     val courseName = remember(id) {
         recipe?.courseId?.let { cid -> module.localStore.courses().firstOrNull { it.id == cid }?.name?.takeIf { it.isNotBlank() } }
     }
-    val categoryNames = remember(id) {
+    val categoryChips = remember(id) {
         val m = module.localStore.categories().associate { it.id to it.name }
-        recipe?.categoryIds.orEmpty().mapNotNull { m[it]?.takeIf { n -> n.isNotBlank() } }
+        recipe?.categoryIds.orEmpty().mapNotNull { cid -> m[cid]?.takeIf { it.isNotBlank() }?.let { cid to it } }
     }
-    val tagNames = remember(id) {
+    val tagChips = remember(id) {
         val m = module.localStore.tags().associate { it.id to it.name }
-        recipe?.tagIds.orEmpty().mapNotNull { m[it]?.takeIf { n -> n.isNotBlank() } }
+        recipe?.tagIds.orEmpty().mapNotNull { tid -> m[tid]?.takeIf { it.isNotBlank() }?.let { tid to it } }
     }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var overflowMenu by remember { mutableStateOf(false) }
+    var lastMadeMenu by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(recipe?.name ?: "Recipe") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    // No back arrow in a two-pane layout: the list it would return to is still on screen.
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
                     }
                 },
                 actions = {
@@ -835,6 +1588,29 @@ private fun RecipeDetailScreen(module: AppModule, id: String, onBack: () -> Unit
                         IconButton(onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = "Edit") }
                         IconButton(onClick = { showDeleteConfirm = true }) {
                             Icon(Icons.Filled.Delete, contentDescription = "Delete")
+                        }
+                        Box {
+                            IconButton(onClick = { overflowMenu = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                            }
+                            DropdownMenu(expanded = overflowMenu, onDismissRequest = { overflowMenu = false }) {
+                                // The list's long-press is the only other route to this, and a long press
+                                // is not something anyone discovers — so the recipe carries it too.
+                                DropdownMenuItem(
+                                    text = { Text("Last Made…") },
+                                    onClick = { overflowMenu = false; lastMadeMenu = true },
+                                )
+                            }
+                            LastMadeMenu(
+                                expanded = lastMadeMenu,
+                                currentLastPrepared = row?.lastPrepared,
+                                onDismiss = { lastMadeMenu = false },
+                                onSet = { wire ->
+                                    module.localStore.setRecipePrepared(id, wire, nowTimestamp())
+                                    module.onLocalChange()
+                                    reload++
+                                },
+                            )
                         }
                     }
                 },
@@ -845,15 +1621,27 @@ private fun RecipeDetailScreen(module: AppModule, id: String, onBack: () -> Unit
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { Text("Not found") }
             return@Scaffold
         }
+        // A recipe read across a 1600px window is unreadable; cap the measure and centre it. On a phone
+        // the cap is never reached, so nothing changes there.
+        Box(
+            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()),
+            contentAlignment = Alignment.TopCenter,
+        ) {
         Column(
-            Modifier.fillMaxSize().padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),
+            Modifier.fillMaxWidth().widthIn(max = READING_WIDTH).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             image?.let {
                 Image(
                     bitmap = it,
                     contentDescription = recipe.name,
-                    modifier = Modifier.size(140.dp).clip(RoundedCornerShape(8.dp)),
+                    // Wide layouts get a hero across the pane; a phone keeps the compact square, where a
+                    // 240dp-tall image would push everything else below the fold.
+                    modifier = if (wide) {
+                        Modifier.fillMaxWidth().height(240.dp).clip(RoundedCornerShape(12.dp))
+                    } else {
+                        Modifier.size(140.dp).clip(RoundedCornerShape(8.dp))
+                    },
                     contentScale = ContentScale.Crop,
                 )
             }
@@ -869,16 +1657,29 @@ private fun RecipeDetailScreen(module: AppModule, id: String, onBack: () -> Unit
                     ?.let { add("Last Made" to it) }
             }
             val flags = buildList {
-                if (recipe.isFavorite == true) add("★ Favorite")
-                if (recipe.wantToMake == true) add("Want to Make")
+                if (recipe.isFavorite == true) add(Icons.Filled.Star to "Favorite")
+                if (recipe.wantToMake == true) add(Icons.Filled.BookmarkAdded to "Want to Make")
             }
             if (metaItems.isNotEmpty() || flags.isNotEmpty()) {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         metaItems.forEach { (k, v) -> DetailMeta(k, v) }
                         if (flags.isNotEmpty()) {
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                flags.forEach { AssistChip(onClick = {}, label = { Text(it) }) }
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                flags.forEach { (icon, label) ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        Icon(
+                                            icon,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                }
                             }
                         }
                     }
@@ -931,14 +1732,20 @@ private fun RecipeDetailScreen(module: AppModule, id: String, onBack: () -> Unit
                 val rows = nutritionRows(n)
                 if (rows.isNotEmpty()) DetailSection("Nutrition") { rows.forEach { (k, v) -> DetailMeta(k, v) } }
             }
-            if (categoryNames.isNotEmpty()) DetailSection("Categories") {
+            // Chips navigate: tapping one shows the rest of the library filed under it. (They used to be
+            // AssistChips with an empty onClick — tappable-looking and inert.)
+            if (categoryChips.isNotEmpty()) DetailSection("Categories") {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    categoryNames.forEach { AssistChip(onClick = {}, label = { Text(it) }) }
+                    categoryChips.forEach { (cid, name) ->
+                        AssistChip(onClick = { onFilter(RecipeFilter.Category(cid, name)) }, label = { Text(name) })
+                    }
                 }
             }
-            if (tagNames.isNotEmpty()) DetailSection("Tags") {
+            if (tagChips.isNotEmpty()) DetailSection("Tags") {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    tagNames.forEach { AssistChip(onClick = {}, label = { Text(it) }) }
+                    tagChips.forEach { (tid, name) ->
+                        AssistChip(onClick = { onFilter(RecipeFilter.Tag(tid, name)) }, label = { Text(name) })
+                    }
                 }
             }
             if (!recipe.source.isNullOrBlank() || !recipe.sourceDetails.isNullOrBlank()) {
@@ -947,6 +1754,7 @@ private fun RecipeDetailScreen(module: AppModule, id: String, onBack: () -> Unit
                     recipe.sourceDetails?.takeIf { it.isNotBlank() }?.let { Text(it) }
                 }
             }
+        }
         }
     }
 
@@ -957,10 +1765,23 @@ private fun RecipeDetailScreen(module: AppModule, id: String, onBack: () -> Unit
             text = { Text("\"${recipe?.name.orEmpty()}\" will be removed.") },
             confirmButton = {
                 TextButton(onClick = {
+                    val deleted = recipe
                     module.localStore.deleteRecipe(id)
-                    module.autoSync.notifyChange()
+                    module.onLocalChange()
                     showDeleteConfirm = false
-                    onBack()
+                    onClose()
+                    // Deleting propagates to the server and every other device, so offer a way back. Undo
+                    // must also drop the tombstone, or the next sync would delete the restored recipe again.
+                    if (deleted != null) {
+                        onDeleted("Deleted \"${deleted.name}\"") {
+                            module.localStore.upsertRecipe(deleted)
+                            module.localStore.setRecipeImage(
+                                id, row?.imageFilename, row?.imageThumbnailData, row?.lastModifiedImageDate,
+                            )
+                            module.localStore.clearRecipeTombstones(listOf(id))
+                            module.onLocalChange()
+                        }
+                    }
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } },
@@ -1011,13 +1832,28 @@ private fun nutritionRows(n: com.enuvro.saltykmp.db.model.NutritionInformation):
     num(n.cholesterol)?.let { add("Cholesterol" to "${it}mg") }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalComposeUiApi::class)
 @Composable
-private fun RecipeEditScreen(module: AppModule, id: String?, onDone: () -> Unit) {
-    val existing = remember(id) { id?.let { module.localStore.recipeForUpload(it) } }
+private fun RecipeEditScreen(
+    module: AppModule,
+    id: String?,
+    imported: ImportedRecipe? = null,
+    /**
+     * Leaving the editor. The argument is the id of the recipe that was just saved, or null if the edit
+     * was cancelled — so saving a brand-new recipe can land on it instead of dumping the user back at the
+     * top of the library, which is what the Swift app does.
+     */
+    onDone: (savedId: String?) -> Unit,
+) {
+    // A web import seeds the editor exactly like an existing recipe would, so every field, the save path,
+    // and the id all work unchanged — the difference is that nothing is in the DB until the user saves.
+    val existing = remember(id, imported) { id?.let { module.localStore.recipeForUpload(it) } ?: imported?.recipe }
     // The DB row carries the cached thumbnail blob, which we must preserve across edits.
     val existingRow = remember(id) { id?.let { module.repository.recipe(it) } }
     var name by remember { mutableStateOf(existing?.name ?: "") }
+    // A blank name disables Save. Only flag the field red once the user has been in it, so a fresh
+    // "New Recipe" form doesn't open already shouting an error.
+    var nameTouched by remember(id) { mutableStateOf(false) }
     var intro by remember { mutableStateOf(existing?.introduction ?: "") }
     var favorite by remember { mutableStateOf(existing?.isFavorite ?: false) }
     var wantToMake by remember { mutableStateOf(existing?.wantToMake ?: false) }
@@ -1035,7 +1871,7 @@ private fun RecipeEditScreen(module: AppModule, id: String?, onDone: () -> Unit)
         mutableStateListOf<String>().also { it.addAll(existing?.tagIds.orEmpty()) }
     }
     // Image edit state: pickedImage holds freshly chosen bytes; imageRemoved clears an existing image.
-    var pickedImage by remember(id) { mutableStateOf<ByteArray?>(null) }
+    var pickedImage by remember(id) { mutableStateOf<ByteArray?>(imported?.imageBytes) }
     var imageRemoved by remember(id) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -1141,8 +1977,35 @@ private fun RecipeEditScreen(module: AppModule, id: String?, onDone: () -> Unit)
             imageRemoved -> module.localStore.setRecipeImage(recipeId, null, null, nowTimestamp())
             else -> module.localStore.setRecipeImage(recipeId, existingRow?.imageFilename, existingRow?.imageThumbnailData, existingRow?.lastModifiedImageDate)
         }
-        module.autoSync.notifyChange()
-        onDone()
+        module.onLocalChange()
+        onDone(recipeId)
+    }
+
+    // Cancelling throws away everything typed, so compare the form against the state it opened in and
+    // only interrupt with a confirmation when there is actually something to lose. Picked image bytes
+    // are compared as "was the image touched at all" rather than by content.
+    fun formSnapshot(): List<Any?> = listOf(
+        name, intro, favorite, wantToMake, courseId, difficulty, rating, servings, yieldText, source,
+        sourceDetails, selectedCategories.toList(), selectedTags.toList(), ingredients.toList(),
+        directions.toList(), notes.toList(), variations.toList(), prepTimes.toList(), nutrition.toMap(),
+        pickedImage != null, imageRemoved,
+    )
+    val initialForm = remember(id, imported) { formSnapshot() }
+    var confirmDiscard by remember(id) { mutableStateOf(false) }
+    val cancel: () -> Unit = { if (formSnapshot() == initialForm) onDone(id) else confirmDiscard = true }
+
+    // Registered deeper than the app-level handler, so it wins: system/gesture back can't silently
+    // discard an edit in progress.
+    BackHandler(enabled = true) { cancel() }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("Discard changes?") },
+            text = { Text(if (id == null) "This recipe hasn't been saved yet." else "Your edits to this recipe haven't been saved.") },
+            confirmButton = { TextButton(onClick = { confirmDiscard = false; onDone(id) }) { Text("Discard") } },
+            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("Keep Editing") } },
+        )
     }
 
     Scaffold(
@@ -1150,7 +2013,7 @@ private fun RecipeEditScreen(module: AppModule, id: String?, onDone: () -> Unit)
             TopAppBar(
                 title = { Text(if (id == null) "New Recipe" else "Edit Recipe") },
                 navigationIcon = {
-                    IconButton(onClick = onDone) { Icon(Icons.Filled.Close, contentDescription = "Cancel") }
+                    IconButton(onClick = cancel) { Icon(Icons.Filled.Close, contentDescription = "Cancel") }
                 },
                 actions = {
                     IconButton(onClick = save, enabled = name.isNotBlank()) {
@@ -1160,14 +2023,29 @@ private fun RecipeEditScreen(module: AppModule, id: String?, onDone: () -> Unit)
             )
         },
     ) { padding ->
+        // Form fields stretched across a desktop window are hard to scan; cap and centre the column.
+        Box(
+            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()),
+            contentAlignment = Alignment.TopCenter,
+        ) {
         Column(
-            Modifier.fillMaxWidth().padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),
+            Modifier.fillMaxWidth().widthIn(max = FORM_WIDTH).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                name,
+                { name = it; nameTouched = true },
+                label = { Text("Name") },
+                singleLine = true,
+                isError = nameTouched && name.isBlank(),
+                supportingText = if (nameTouched && name.isBlank()) {
+                    { Text("A name is required to save") }
+                } else null,
+                modifier = Modifier.fillMaxWidth(),
+            )
             OutlinedTextField(intro, { intro = it }, label = { Text("Introduction") }, modifier = Modifier.fillMaxWidth())
 
-            Text("Image", style = MaterialTheme.typography.titleMedium)
+            EditSectionHeader("Image")
             if (preview != null) {
                 Image(
                     bitmap = preview,
@@ -1188,14 +2066,19 @@ private fun RecipeEditScreen(module: AppModule, id: String?, onDone: () -> Unit)
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Favorite")
-                Spacer(Modifier.width(12.dp))
-                Switch(checked = favorite, onCheckedChange = { favorite = it })
-                Spacer(Modifier.width(24.dp))
-                Text("Want to Make")
-                Spacer(Modifier.width(12.dp))
-                Switch(checked = wantToMake, onCheckedChange = { wantToMake = it })
+            EditSectionHeader("Details")
+            // FlowRow so the two toggles wrap onto a second line on a narrow phone instead of clipping.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Favorite")
+                    Spacer(Modifier.width(12.dp))
+                    Switch(checked = favorite, onCheckedChange = { favorite = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Want to Make")
+                    Spacer(Modifier.width(12.dp))
+                    Switch(checked = wantToMake, onCheckedChange = { wantToMake = it })
+                }
             }
 
             PickerField(
@@ -1213,14 +2096,7 @@ private fun RecipeEditScreen(module: AppModule, id: String?, onDone: () -> Unit)
                 selected = difficulty,
                 onSelect = { difficulty = it },
             )
-            PickerField(
-                label = "Rating",
-                options = listOf<Pair<String, Int?>>(
-                    "Not set" to null, "★" to 1, "★★" to 2, "★★★" to 3, "★★★★" to 4, "★★★★★" to 5,
-                ),
-                selected = rating,
-                onSelect = { rating = it },
-            )
+            RatingField(rating) { rating = it }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
                     servings, { servings = it.filter(Char::isDigit) },
@@ -1233,10 +2109,10 @@ private fun RecipeEditScreen(module: AppModule, id: String?, onDone: () -> Unit)
             }
 
             if (categories.isNotEmpty()) {
-                MultiSelectChips("Categories", categories.map { (it.name ?: "(unnamed)") to it.id }, selectedCategories)
+                MultiSelectField("Categories", categories.map { (it.name ?: "(unnamed)") to it.id }, selectedCategories)
             }
             if (tags.isNotEmpty()) {
-                MultiSelectChips("Tags", tags.map { (it.name ?: "(unnamed)") to it.id }, selectedTags)
+                MultiSelectField("Tags", tags.map { (it.name ?: "(unnamed)") to it.id }, selectedTags)
             }
 
             OutlinedTextField(source, { source = it }, label = { Text("Source") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -1248,6 +2124,33 @@ private fun RecipeEditScreen(module: AppModule, id: String?, onDone: () -> Unit)
             EditablePairList("Notes", notes, "Title", "Note", "+ Add note")
             EditablePairList("Variations", variations, "Name", "Details", "+ Add variation")
             NutritionSection(nutrition)
+        }
+        }
+    }
+}
+
+/**
+ * Rating as five tappable stars rather than a dropdown listing "★★★". Tapping the star that's already
+ * the rating clears it, which is the only way back to "not set" without a menu entry for it.
+ */
+@Composable
+private fun RatingField(rating: Int?, onRating: (Int?) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Rating", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            (1..5).forEach { star ->
+                val filled = rating != null && star <= rating
+                IconButton(onClick = { onRating(if (rating == star) null else star) }) {
+                    Icon(
+                        if (filled) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                        contentDescription = "$star star${if (star == 1) "" else "s"}",
+                        tint = if (filled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    )
+                }
+            }
+            if (rating != null) {
+                TextButton(onClick = { onRating(null) }) { Text("Clear") }
+            }
         }
     }
 }
@@ -1262,12 +2165,16 @@ private data class DirectionRow(val id: String, val text: String = "", val isHea
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun IngredientEditList(items: SnapshotStateList<IngredientRow>) {
-    Text("Ingredients", style = MaterialTheme.typography.titleMedium)
+    EditSectionHeader("Ingredients")
     items.forEachIndexed { i, item ->
         SectionRow(
             text = item.text,
             isHeading = item.isHeading,
             placeholder = if (item.isHeading) "Section heading" else "Ingredient",
+            canMoveUp = i > 0,
+            canMoveDown = i < items.lastIndex,
+            onMoveUp = { items.swapItems(i, i - 1) },
+            onMoveDown = { items.swapItems(i, i + 1) },
             onTextChange = { items[i] = item.copy(text = it) },
             onRemove = { items.removeAt(i) },
         )
@@ -1281,14 +2188,24 @@ private fun IngredientEditList(items: SnapshotStateList<IngredientRow>) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DirectionEditList(items: SnapshotStateList<DirectionRow>) {
-    Text("Directions", style = MaterialTheme.typography.titleMedium)
+    EditSectionHeader("Directions")
+    // Step numbers count only the non-heading rows, so a "For the sauce" heading doesn't eat a number.
+    val numbers = buildList {
+        var n = 0
+        items.forEach { add(if (it.isHeading) null else { n += 1; "$n." }) }
+    }
     items.forEachIndexed { i, item ->
         SectionRow(
             text = item.text,
             isHeading = item.isHeading,
             placeholder = if (item.isHeading) "Section heading" else "Step",
+            canMoveUp = i > 0,
+            canMoveDown = i < items.lastIndex,
+            onMoveUp = { items.swapItems(i, i - 1) },
+            onMoveDown = { items.swapItems(i, i + 1) },
             onTextChange = { items[i] = item.copy(text = it) },
             onRemove = { items.removeAt(i) },
+            number = numbers[i],
         )
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1297,18 +2214,42 @@ private fun DirectionEditList(items: SnapshotStateList<DirectionRow>) {
     }
 }
 
-/** A single ingredient/direction text field + remove button; heading rows render bold so they read as
- * section titles even though there's no per-row toggle. */
+/** Swap the items at [i] and [j]; ignores indices that fall off either end of the list. */
+private fun <T> SnapshotStateList<T>.swapItems(i: Int, j: Int) {
+    if (i in indices && j in indices) {
+        val held = this[i]
+        this[i] = this[j]
+        this[j] = held
+    }
+}
+
+/** A single ingredient/direction text field + reorder/remove controls; heading rows render bold so they
+ * read as section titles even though there's no per-row toggle. [number] gutters a step number. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SectionRow(
     text: String,
     isHeading: Boolean,
     placeholder: String,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
     onTextChange: (String) -> Unit,
     onRemove: () -> Unit,
+    number: String? = null,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
+        if (number != null) {
+            Text(
+                number,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.End,
+                modifier = Modifier.width(24.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+        }
         OutlinedTextField(
             value = text,
             onValueChange = onTextChange,
@@ -1316,40 +2257,108 @@ private fun SectionRow(
             textStyle = if (isHeading) LocalTextStyle.current.copy(fontWeight = FontWeight.SemiBold) else LocalTextStyle.current,
             modifier = Modifier.weight(1f),
         )
+        // A mistyped order used to mean retyping every row below it; these move the row instead. Half-height
+        // so the pair takes no more width than one icon button.
+        Column {
+            RowMoveButton(Icons.Filled.KeyboardArrowUp, "Move up", canMoveUp, onMoveUp)
+            RowMoveButton(Icons.Filled.KeyboardArrowDown, "Move down", canMoveDown, onMoveDown)
+        }
         IconButton(onClick = onRemove) { Icon(Icons.Filled.Close, contentDescription = "Remove") }
     }
 }
 
-/** A labeled single-choice dropdown; [options] are (display, value) pairs and value may be null ("none"). */
+@Composable
+private fun RowMoveButton(icon: ImageVector, description: String, enabled: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(28.dp)) {
+        Icon(icon, contentDescription = description, modifier = Modifier.size(18.dp))
+    }
+}
+
+/**
+ * A labeled single-choice dropdown; [options] are (display, value) pairs and value may be null ("none").
+ *
+ * Built on [ExposedDropdownMenuBox] with a read-only text field rather than a button, so it matches the
+ * height, floating label, and outline of the real text fields it sits between in the editor — and carries
+ * the dropdown's accessibility semantics, which a plain button doesn't.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun <T> PickerField(label: String, options: List<Pair<String, T?>>, selected: T?, onSelect: (T?) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     val current = options.firstOrNull { it.second == selected }?.first ?: "—"
-    Box {
-        OutlinedButton(onClick = { expanded = true }) { Text("$label: $current") }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+        OutlinedTextField(
+            value = current,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach { (text, value) ->
-                DropdownMenuItem(text = { Text(text) }, onClick = { onSelect(value); expanded = false })
+                DropdownMenuItem(
+                    text = { Text(text) },
+                    leadingIcon = if (value == selected) {
+                        { Icon(Icons.Filled.Check, contentDescription = null) }
+                    } else null,
+                    onClick = { onSelect(value); expanded = false },
+                )
             }
         }
     }
 }
 
-/** Toggleable chips for multi-selecting ids; mutates [selected] in place. */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+/**
+ * Multi-select as a dropdown of checkable rows; mutates [selected] in place.
+ *
+ * A flat list of every category/tag as chips reads as "these are all already applied" — the selected
+ * state is only legible once you compare two chips side by side. Collapsed to a [PickerField]-shaped
+ * field, the closed state shows exactly what is applied (wrapping onto more lines when there are
+ * several) and the menu is unambiguously a place to choose from. The menu stays open while checking
+ * boxes, since picking several at once is the normal case.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MultiSelectChips(title: String, options: List<Pair<String, String>>, selected: SnapshotStateList<String>) {
-    Text(title, style = MaterialTheme.typography.titleMedium)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        options.forEach { (label, value) ->
-            val isSel = selected.contains(value)
-            FilterChip(
-                selected = isSel,
-                onClick = { if (isSel) selected.remove(value) else selected.add(value) },
-                label = { Text(label) },
-            )
+private fun MultiSelectField(label: String, options: List<Pair<String, String>>, selected: SnapshotStateList<String>) {
+    var expanded by remember { mutableStateOf(false) }
+    // Listed in option order rather than the order they were checked, so the summary doesn't reshuffle
+    // itself while the menu is open.
+    val chosen = options.filter { selected.contains(it.second) }.map { it.first }
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+        OutlinedTextField(
+            // "None" rather than an empty field, so this reads identically to the Course picker's
+            // unset state (M3 only shows a placeholder while focused, which would leave it blank).
+            value = chosen.joinToString(", ").ifEmpty { "None" },
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { (text, value) ->
+                val isSel = selected.contains(value)
+                DropdownMenuItem(
+                    text = { Text(text) },
+                    // Decorative: the whole menu row is the toggle, so the checkbox takes no clicks of its own.
+                    leadingIcon = { Checkbox(checked = isSel, onCheckedChange = null) },
+                    onClick = { if (isSel) selected.remove(value) else selected.add(value) },
+                )
+            }
         }
     }
+}
+
+/** A rule and a bold label between blocks of the (long, single-column) recipe form. */
+@Composable
+private fun EditSectionHeader(title: String) {
+    HorizontalDivider(Modifier.padding(top = 8.dp))
+    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 }
 
 /** Editable list of two-field items (id, a, b) — e.g. notes (title/body), variations, prep times. */
@@ -1362,7 +2371,7 @@ private fun EditablePairList(
     labelB: String,
     addLabel: String,
 ) {
-    Text(title, style = MaterialTheme.typography.titleMedium)
+    EditSectionHeader(title)
     items.forEachIndexed { i, item ->
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1415,11 +2424,12 @@ private val NUTRITION_FIELDS = listOf(
 private fun NutritionSection(values: SnapshotStateMap<String, String>) {
     var expanded by remember { mutableStateOf(false) }
     val filled = values.count { it.value.isNotBlank() }
+    HorizontalDivider(Modifier.padding(top = 8.dp))
     Row(
         Modifier.fillMaxWidth().clickable { expanded = !expanded },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("Nutrition", style = MaterialTheme.typography.titleMedium)
+        Text("Nutrition", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         if (!expanded && filled > 0) {
             Spacer(Modifier.width(8.dp))
             Text(
@@ -1484,44 +2494,44 @@ private fun buildNutrition(existingId: String?, m: Map<String, String>): Nutriti
     return if (allEmpty) null else n
 }
 
-private data class OrganizerItem(val id: String, val name: String)
+private data class ClassifierItem(val id: String, val name: String)
 
 /**
- * Add / rename / delete one library vocabulary (courses, categories, or tags) — the KMP equivalent of
+ * Add / rename / delete one library classifier (courses, categories, or tags) — the KMP equivalent of
  * the Swift app's LibraryCoursesEditView / LibraryCategoryEditView / LibraryTagsEditView. Edits are
  * written locally with a fresh lastModifiedDate; the next sync pushes them to the server.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun OrganizerEditScreen(module: AppModule, kind: OrganizerKind, onBack: () -> Unit) {
+private fun ClassifierEditScreen(module: AppModule, kind: ClassifierKind, onBack: () -> Unit) {
     val items by remember(kind) {
         when (kind) {
-            OrganizerKind.Courses -> module.repository.courses().map { l -> l.map { OrganizerItem(it.id, it.name ?: "") } }
-            OrganizerKind.Categories -> module.repository.categories().map { l -> l.map { OrganizerItem(it.id, it.name ?: "") } }
-            OrganizerKind.Tags -> module.repository.tags().map { l -> l.map { OrganizerItem(it.id, it.name ?: "") } }
+            ClassifierKind.Courses -> module.repository.courses().map { l -> l.map { ClassifierItem(it.id, it.name ?: "") } }
+            ClassifierKind.Categories -> module.repository.categories().map { l -> l.map { ClassifierItem(it.id, it.name ?: "") } }
+            ClassifierKind.Tags -> module.repository.tags().map { l -> l.map { ClassifierItem(it.id, it.name ?: "") } }
         }
     }.collectAsState(initial = emptyList())
 
     var adding by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf<OrganizerItem?>(null) }
+    var renaming by remember { mutableStateOf<ClassifierItem?>(null) }
 
     fun save(id: String, name: String) {
         val ts = nowTimestamp()
         when (kind) {
-            OrganizerKind.Courses -> module.localStore.upsertCourse(ServerCourse(id, name, ts))
-            OrganizerKind.Categories -> module.localStore.upsertCategory(ServerCategory(id, name, ts))
-            OrganizerKind.Tags -> module.localStore.upsertTag(ServerTag(id, name, ts))
+            ClassifierKind.Courses -> module.localStore.upsertCourse(ServerCourse(id, name, ts))
+            ClassifierKind.Categories -> module.localStore.upsertCategory(ServerCategory(id, name, ts))
+            ClassifierKind.Tags -> module.localStore.upsertTag(ServerTag(id, name, ts))
         }
-        module.autoSync.notifyChange()
+        module.onLocalChange()
     }
 
     fun delete(id: String) {
         when (kind) {
-            OrganizerKind.Courses -> module.localStore.deleteCourse(id)
-            OrganizerKind.Categories -> module.localStore.deleteCategory(id)
-            OrganizerKind.Tags -> module.localStore.deleteTag(id)
+            ClassifierKind.Courses -> module.localStore.deleteCourse(id)
+            ClassifierKind.Categories -> module.localStore.deleteCategory(id)
+            ClassifierKind.Tags -> module.localStore.deleteTag(id)
         }
-        module.autoSync.notifyChange()
+        module.onLocalChange()
     }
 
     Scaffold(
@@ -1541,28 +2551,31 @@ private fun OrganizerEditScreen(module: AppModule, kind: OrganizerKind, onBack: 
     ) { padding ->
         if (items.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("No ${kind.title.lowercase()} yet — tap New to add one.")
+                Text("No ${kind.title.lowercase()} added")
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+            LazyColumn(
+                Modifier.fillMaxSize().padding(padding),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 items(items, key = { it.id }) { item ->
                     ListItem(
+                        modifier = Modifier.widthIn(max = FORM_WIDTH).clickable { renaming = item },
                         headlineContent = { Text(item.name.ifBlank { "(unnamed)" }) },
                         trailingContent = {
                             IconButton(onClick = { delete(item.id) }) {
                                 Icon(Icons.Filled.Delete, contentDescription = "Delete")
                             }
                         },
-                        modifier = Modifier.clickable { renaming = item },
                     )
-                    HorizontalDivider()
+                    HorizontalDivider(Modifier.widthIn(max = FORM_WIDTH))
                 }
             }
         }
     }
 
     if (adding) {
-        OrganizerNameDialog(
+        ClassifierNameDialog(
             title = "New ${kind.singular}",
             initial = "",
             confirmLabel = "Add",
@@ -1571,7 +2584,7 @@ private fun OrganizerEditScreen(module: AppModule, kind: OrganizerKind, onBack: 
         )
     }
     renaming?.let { target ->
-        OrganizerNameDialog(
+        ClassifierNameDialog(
             title = "Rename ${kind.singular}",
             initial = target.name,
             confirmLabel = "Save",
@@ -1582,7 +2595,7 @@ private fun OrganizerEditScreen(module: AppModule, kind: OrganizerKind, onBack: 
 }
 
 @Composable
-private fun OrganizerNameDialog(
+private fun ClassifierNameDialog(
     title: String,
     initial: String,
     confirmLabel: String,
@@ -1614,15 +2627,27 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
     var url by remember { mutableStateOf(module.settings.serverUrl) }
     var user by remember { mutableStateOf(module.settings.username) }
     var pass by remember { mutableStateOf(module.settings.password) }
+    // In-progress text ("Syncing…") and the long linked-folder error detail stay inline — a snackbar is
+    // the wrong shape for both. Everything else is announced via [notify].
     var status by remember { mutableStateOf("") }
+    val snackbarHost = remember { SnackbarHostState() }
     var busy by remember { mutableStateOf(false) }
     var showResyncConfirm by remember { mutableStateOf(false) }
     var autoSyncEnabled by remember { mutableStateOf(module.settings.autoSyncEnabled) }
     val scope = rememberCoroutineScope()
+
+    /** Announce an outcome. Replaces any showing snackbar so a fast second action isn't queued behind the first. */
+    fun notify(message: String) {
+        scope.launch {
+            snackbarHost.currentSnackbarData?.dismiss()
+            snackbarHost.showSnackbar(message)
+        }
+    }
+
     val libraryPicker = rememberDirectoryPickerLauncher { dir: PlatformFile? ->
         if (dir != null) {
             module.settings.libraryPath = dir.path
-            status = "Library location set. Restart the app to use the new location."
+            notify("Library location set. Restart the app to use the new location.")
         }
     }
     // Linked-folder (copy-based) sync picker — Android/SAF. Links the chosen folder and seeds/reconciles it.
@@ -1638,10 +2663,13 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                 }
                 linkedLabel = module.libraryFolder.linkedLabel()
                 val detail = module.libraryFolder.lastError
-                status = if (result == LibraryFolderSyncResult.ERROR && detail != null) {
-                    "${folderSyncMessage(result)}\n$detail"
+                // A failure keeps its diagnostic detail inline (multi-line, and worth reading at leisure);
+                // a success is a one-liner, which is what a snackbar is for.
+                if (result == LibraryFolderSyncResult.ERROR && detail != null) {
+                    status = "${folderSyncMessage(result)}\n$detail"
                 } else {
-                    folderSyncMessage(result)
+                    status = ""
+                    notify(folderSyncMessage(result))
                 }
                 busy = false
             }
@@ -1659,9 +2687,16 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                 },
             )
         },
+        // Outcomes ("Sync complete", "Folder unlinked") used to be a line of text at the bottom of a long
+        // scroll — off-screen, and easy to miss entirely, right when the user wants confirmation.
+        snackbarHost = { SnackbarHost(snackbarHost) },
     ) { padding: PaddingValues ->
+        Box(
+            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()),
+            contentAlignment = Alignment.TopCenter,
+        ) {
         Column(
-            Modifier.fillMaxWidth().padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),
+            Modifier.fillMaxWidth().widthIn(max = FORM_WIDTH).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             OutlinedTextField(url, { url = it }, label = { Text("Server URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -1677,6 +2712,13 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                 pass, { pass = it }, label = { Text("Password") }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
             )
+            // Named rather than described, so a user who wants to revoke the saved password knows which
+            // OS tool to open (and so "it's in Credential Manager" is verifiable, not a claim).
+            Text(
+                "Password saved in: ${module.settings.passwordStoreName}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Button(
                 enabled = !busy,
                 onClick = {
@@ -1686,13 +2728,15 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                     busy = true
                     status = "Syncing…"
                     scope.launch {
-                        status = try {
+                        val message = try {
                             "Sync complete — " + module.sync().summary()
                         } catch (e: Throwable) {
                             "Sync failed: ${e.message}"
                         } finally {
                             busy = false
                         }
+                        status = ""
+                        notify(message)
                     }
                 },
             ) { Text("Sync now") }
@@ -1738,7 +2782,7 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                     if (module.settings.libraryPath.isNotBlank()) {
                         TextButton(onClick = {
                             module.settings.libraryPath = ""
-                            status = "Reverted to the default location. Restart the app to apply."
+                            notify("Reverted to the default location. Restart the app to apply.")
                         }) { Text("Use default") }
                     }
                 }
@@ -1748,10 +2792,12 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                 )
             } else if (linkedFolderSyncSupported) {
                 Text(
-                    "Link a folder (e.g. inside a personal cloud storage service) to keep a synced copy of your library " +
-                        "there. The app copies your library to and from the folder on open and close or on demand (it does " +
-                        "not work live from the folder). Salty Server is recommended if using multiple devices, otherwise " +
-                        "exercise caution to not open database on new device before syncing when finished on existing device.",
+                    "Salty Server is the recommended way to keep several devices in sync. As an alternative for backup " +
+                        "or one-device-at-a-time use, you can link a folder (e.g. in Nextcloud, OneDrive, or iCloud Drive) " +
+                        "that holds a copy of your library in the same \"$SALTY_LIBRARY_DIR\" format Salty for Mac opens " +
+                        "directly. The app copies your library to the folder when you leave the app and shortly after " +
+                        "edits, and loads a newer copy from the folder when it starts — it does not work live from the " +
+                        "folder, so finish on one device before opening the library on another.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 if (linkedLabel.isNotBlank()) {
@@ -1770,7 +2816,8 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                                 scope.launch {
                                     val r = runCatching { module.pushLibraryFolder() }
                                         .getOrDefault(LibraryFolderSyncResult.ERROR)
-                                    status = folderSyncMessage(r)
+                                    status = ""
+                                    notify(folderSyncMessage(r))
                                     busy = false
                                 }
                             },
@@ -1778,7 +2825,7 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                         TextButton(enabled = !busy, onClick = {
                             module.libraryFolder.unlink()
                             linkedLabel = ""
-                            status = "Folder unlinked. The library stays in app storage."
+                            notify("Folder unlinked. The library stays in app storage.")
                         }) { Text("Unlink") }
                     }
                 }
@@ -1790,6 +2837,7 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
             }
 
             if (status.isNotEmpty()) Text(status)
+        }
         }
     }
 
@@ -1803,13 +2851,15 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
             busy = true
             status = "$label…"
             scope.launch {
-                status = try {
+                val message = try {
                     "$label complete — " + action().summary()
                 } catch (e: Throwable) {
                     "$label failed: ${e.message}"
                 } finally {
                     busy = false
                 }
+                status = ""
+                notify(message)
             }
         }
         AlertDialog(

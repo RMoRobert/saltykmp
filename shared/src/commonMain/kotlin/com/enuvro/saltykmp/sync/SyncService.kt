@@ -5,6 +5,7 @@ import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
+import com.enuvro.saltykmp.db.LibraryDuplicateMerger
 import kotlinx.coroutines.CancellationException
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
@@ -21,6 +22,9 @@ import kotlin.uuid.Uuid
  * @param imageSink optional hook to persist a downloaded recipe image per platform (filesystem etc.).
  *   [imageDate] is the server's lastModifiedImageDate (wire form) to record alongside the saved file.
  * @param imageSource optional hook to provide a recipe image for upload from the platform.
+ * @param imageConverter optional platform codec used to re-encode an image the server can't serve as-is
+ *   (HEIC from a Swift-written bundle, WebP). Without one such an image is skipped rather than uploaded
+ *   under a content type that lies about it — see [SyncImagePreparer].
  */
 class SyncService(
     private val api: SaltyApiClient,
@@ -29,7 +33,19 @@ class SyncService(
     private val deviceName: String,
     private val imageSink: (suspend (recipeId: String, filename: String, bytes: ByteArray, imageDate: String?) -> Unit)? = null,
     private val imageSource: (suspend (recipeId: String, filename: String) -> ByteArray?)? = null,
+    private val imageConverter: ImageToJpegConverter? = null,
 ) {
+    /**
+     * Uploads one image, sniffing its real format first. Returns true when bytes actually went up;
+     * false when there was nothing to send or the format couldn't be made servable here.
+     */
+    private suspend fun pushImage(recipeId: String, filename: String, imageDate: String?): Boolean {
+        val bytes = imageSource?.invoke(recipeId, filename) ?: return false
+        val prepared = SyncImagePreparer.prepare(bytes, imageConverter) ?: return false
+        api.uploadImage(recipeId, "$recipeId.${prepared.extension}", prepared.bytes, prepared.contentType, imageDate)
+        return true
+    }
+
     suspend fun syncNow(): SyncResult {
         val device = api.registerDevice(deviceId, deviceName)
         val isFirstSync = device.isFirstSync
@@ -41,6 +57,10 @@ class SyncService(
             syncShoppingLists(isFirstSync, lastSync)
         val recipes = syncRecipes(isFirstSync, lastSync, device.lastSyncDate)
 
+        // Deliberately AFTER the downloads, as Salty's step 6b is: a recipe arriving in this same sync
+        // still sees both ids and keeps its membership, and the fold then re-points it.
+        val (duplicatesMerged, foldWarning) = consolidateDuplicates()
+
         api.completeSync(deviceId)
         return SyncResult(
             recipesUp = recipes.up, recipesDown = recipes.down,
@@ -49,8 +69,54 @@ class SyncService(
             libraryDeleted = library.deletedLocal + library.deletedServer,
             imagesUp = recipes.imagesUp, imagesDown = recipes.imagesDown,
             conflictsMerged = library.conflictsMerged, conflictCopies = library.conflictCopies,
+            duplicatesMerged = duplicatesMerged,
+            warnings = library.warnings + recipes.warnings + listOfNotNull(foldWarning),
         )
     }
+
+    /**
+     * Folds same-named courses/categories/tags into one row each, at the end of a sync.
+     *
+     * Those three tables are reconciled by id, never by name, so two devices that each created "Vegan"
+     * — or two libraries that each ran the default seed and minted their own ids for "Breads", "Main",
+     * … — would otherwise replicate both rows to each other forever. Salty runs the same pass as its
+     * step 6b; see [LibraryDuplicateMerger] for how a survivor is chosen and why the deletion converges
+     * on the following sync.
+     *
+     * Best-effort: a failure here must not fail an otherwise-good sync, so it is reported as a warning.
+     * The recipes it re-points are stamped now and upload on the next sync.
+     *
+     * @return the number of rows folded away, and the warning to report if the fold itself failed.
+     */
+    private fun consolidateDuplicates(): Pair<Int, String?> =
+        try {
+            local.consolidateDuplicateLibraryItems().removedItems to null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            0 to "Could not merge same-named courses, categories and tags: ${e.message}"
+        }
+
+    /**
+     * Port of Salty's `serverResponseAllowsLocalDeletions`: refuses to apply local deletions inferred
+     * from a server list that came back EMPTY. Returns null when the deletions may proceed, or the
+     * warning to report when they may not.
+     *
+     * "Present here, absent there, unchanged since the last sync" is how deletions are detected, and
+     * that inference is only as trustworthy as the list it runs against. A server restored from an
+     * older backup, a proxy answering `[]`, another device's force-push caught halfway — each produces
+     * an empty list that would otherwise read as "delete everything". Refusing costs nothing when the
+     * server really is empty (the user reaches for the force pull); it saves the library when it isn't.
+     * The X-Total-Count check in [SaltyApiClient] covers the partial-response case.
+     */
+    private fun allowsLocalDeletions(serverItemCount: Int, pendingLocalDeletions: Int, entity: String): String? =
+        if (serverItemCount == 0 && pendingLocalDeletions > 0) {
+            "Kept $pendingLocalDeletions local $entity${if (pendingLocalDeletions == 1) "" else "s"} the server no longer " +
+                "lists, because it returned an empty list; if the server really is empty, use " +
+                "\"Replace this library with the server's\"."
+        } else {
+            null
+        }
 
     /**
      * One-way overwrite: wipe the local library and replace it with the server's current contents.
@@ -85,11 +151,17 @@ class SyncService(
                 }
             }
         }
+        // The server can hold same-named rows of its own, so the restored library gets the same fold an
+        // ordinary sync ends with. Salty tidies after its force restore for the same reason.
+        val (duplicatesMerged, foldWarning) = consolidateDuplicates()
+
         api.completeSync(deviceId)
         return SyncResult(
             recipesDown = recipes.size,
             libraryDown = courses.size + categories.size + tags.size + shoppingLists.size,
             imagesDown = imagesDown,
+            duplicatesMerged = duplicatesMerged,
+            warnings = listOfNotNull(foldWarning),
         )
     }
 
@@ -101,15 +173,18 @@ class SyncService(
     suspend fun pushEverythingToServer(): SyncResult {
         api.registerDevice(deviceId, deviceName) // ensure the device is registered
 
-        // 1. Delete everything currently on the server. Recipe deletions also drop their images server-side.
+        // Upload FIRST, delete orphans LAST. The old order — wipe, then upload — left the server empty
+        // for the whole upload, and a connection dropped in that window left it empty for good: every
+        // OTHER device's next sync then read its own library as "deleted on the server". Uploading over
+        // the existing rows is safe because the server's POST is an unconditional upsert, so nothing is
+        // ever missing from the server mid-push. The Swift app does it in this order too.
         val serverRecipeIds = api.fetchManifest().map { it.id }
-        if (serverRecipeIds.isNotEmpty()) api.deleteRecipesOnServer(deviceId, serverRecipeIds)
-        api.fetchCourses().forEach { api.deleteCourse(it.id) }
-        api.fetchCategories().forEach { api.deleteCategory(it.id) }
-        api.fetchTags().forEach { api.deleteTag(it.id) }
-        api.fetchShoppingLists().forEach { api.deleteShoppingList(it.id) }
+        val serverCourses = api.fetchCourses()
+        val serverCategories = api.fetchCategories()
+        val serverTags = api.fetchTags()
+        val serverLists = api.fetchShoppingLists()
 
-        // 2. Push the entire local library up. Organizers first so recipes can reference them.
+        // 1. Push the entire local library up. Classifiers first so recipes can reference them.
         // `force = true` marks these as deliberate mirror-this-device overwrites (see
         // SaltyApiClient.FORCE_WRITE_HEADER) — inserts today, but it keeps a future server-side
         // stale-write guard from vetoing a racing re-creation.
@@ -119,30 +194,44 @@ class SyncService(
         courses.forEach { api.uploadCourse(it, force = true) }
         categories.forEach { api.uploadCategory(it, force = true) }
         tags.forEach { api.uploadTag(it, force = true) }
+        val serverListsById = serverLists.associateBy { it.id }
         val shoppingLists = local.shoppingLists()
         shoppingLists.forEach { l ->
-            // The server was just wiped, so these are fresh inserts; record each agreement so the
-            // next regular sync starts revision-based instead of legacy-seeding every row.
-            when (val out = api.uploadShoppingList(l)) {
-                is SaltyApiClient.ShoppingListSaveOutcome.Saved -> local.markShoppingListSynced(out.list)
-                is SaltyApiClient.ShoppingListSaveOutcome.Conflict -> {} // unreachable on an empty server
+            // Base the write on whatever revision the server holds right now, so it is accepted over a
+            // newer server row (this device is the truth for a force push) and a genuine race — the row
+            // moving between our GET and this POST — 409s and is retried once against what it reports.
+            val base = serverListsById[l.id]?.revision ?: 0
+            var out = api.uploadShoppingList(l.copy(revision = null, baseRevision = base))
+            if (out is SaltyApiClient.ShoppingListSaveOutcome.Conflict) {
+                out = api.uploadShoppingList(l.copy(revision = null, baseRevision = out.current.revision))
             }
+            if (out is SaltyApiClient.ShoppingListSaveOutcome.Saved) local.markShoppingListSynced(out.list)
         }
 
         var recipesUp = 0
         var imagesUp = 0
+        val localRecipeIds = mutableSetOf<String>()
         for (entry in local.recipeEntries()) {
+            localRecipeIds += entry.id
             val recipe = local.recipeForUpload(entry.id) ?: continue
             api.uploadRecipe(recipe, force = true)
             recipesUp++
             val filename = recipe.imageFilename
-            if (filename != null && imageSource != null) {
-                imageSource.invoke(recipe.id, filename)?.let { bytes ->
-                    api.uploadImage(recipe.id, filename, bytes, recipe.lastModifiedImageDate)
-                    imagesUp++
-                }
-            }
+            if (filename != null && pushImage(recipe.id, filename, recipe.lastModifiedImageDate)) imagesUp++
         }
+
+        // 2. The server now holds everything this device has, so remove what it has EXTRA. Recipe
+        // deletions also drop their images server-side.
+        val orphanRecipes = serverRecipeIds.filter { it !in localRecipeIds }
+        if (orphanRecipes.isNotEmpty()) api.deleteRecipesOnServer(deviceId, orphanRecipes)
+        val localCourseIds = courses.mapTo(mutableSetOf()) { it.id }
+        serverCourses.filter { it.id !in localCourseIds }.forEach { api.deleteCourse(it.id) }
+        val localCategoryIds = categories.mapTo(mutableSetOf()) { it.id }
+        serverCategories.filter { it.id !in localCategoryIds }.forEach { api.deleteCategory(it.id) }
+        val localTagIds = tags.mapTo(mutableSetOf()) { it.id }
+        serverTags.filter { it.id !in localTagIds }.forEach { api.deleteTag(it.id) }
+        val localListIds = shoppingLists.mapTo(mutableSetOf()) { it.id }
+        serverLists.filter { it.id !in localListIds }.forEach { api.deleteShoppingList(it.id) }
 
         // The server now mirrors local exactly — any pending local deletions are moot.
         local.clearRecipeTombstones(local.tombstonedRecipeIds())
@@ -166,7 +255,8 @@ class SyncService(
         }
 
         // Complete manifest drives reconciliation; delta carries only changed bodies.
-        val manifest = api.fetchManifest().filter { it.id !in tombstones }
+        val fullManifest = api.fetchManifest()
+        val manifest = fullManifest.filter { it.id !in tombstones }
         val cutoff = if (isFirstSync) null else lastSyncWire
         val delta = api.fetchRecipeDelta(cutoff)
         val deltaById = delta.associateBy { it.id }
@@ -183,8 +273,19 @@ class SyncService(
             local.upsertRecipe(deltaById[id] ?: api.fetchRecipe(id))
         }
 
-        // Server-driven deletions apply locally without a tombstone (the recipe is already gone server-side).
-        for (id in plan.toDeleteLocally) local.deleteRecipeLocalOnly(id)
+        // Server-driven deletions apply locally without a tombstone (the recipe is already gone
+        // server-side) — but only when the manifest wasn't empty; see allowsLocalDeletions.
+        val warnings = mutableListOf<String>()
+        var deletedLocally = 0
+        val refusal = allowsLocalDeletions(fullManifest.size, plan.toDeleteLocally.size, "recipe")
+        if (refusal != null) {
+            warnings += refusal
+        } else {
+            for (id in plan.toDeleteLocally) {
+                local.deleteRecipeLocalOnly(id)
+                deletedLocally++
+            }
+        }
         if (plan.toDeleteOnServer.isNotEmpty()) api.deleteRecipesOnServer(deviceId, plan.toDeleteOnServer)
 
         val (imagesUp, imagesDown) = syncImages(manifest, tombstones)
@@ -194,8 +295,9 @@ class SyncService(
             // Prepared-date transfers fold into the recipe counts: they move real recipe data, just not a
             // body edit. Keeping them out entirely would report "0 recipes" for a sync that changed rows.
             up = plan.toUpload.size + preparedUp, down = plan.toDownload.size + preparedDown,
-            deletedLocal = plan.toDeleteLocally.size, deletedServer = plan.toDeleteOnServer.size,
+            deletedLocal = deletedLocally, deletedServer = plan.toDeleteOnServer.size,
             imagesUp = imagesUp, imagesDown = imagesDown,
+            warnings = warnings,
         )
     }
 
@@ -268,7 +370,7 @@ class SyncService(
         val serverById = manifest.associateBy { it.id }
         val localById = local.recipeImageEntries().associateBy { it.id }
         suspend fun push(id: String, file: String, date: String?) {
-            imageSource?.invoke(id, file)?.let { bytes -> api.uploadImage(id, file, bytes, date); up++ }
+            if (pushImage(id, file, date)) up++
         }
         suspend fun pull(id: String, file: String, date: String?) {
             api.downloadImage(file)?.let { bytes -> imageSink?.invoke(id, file, bytes, date); down++ }
@@ -334,11 +436,12 @@ class SyncService(
         val localIds = locals.mapTo(mutableSetOf()) { it.list.id }
 
         var counts = Counts()
+        val toDeleteLocally = mutableListOf<String>()
 
         for (l in locals) {
             val s = serverById[l.list.id]
             counts += when {
-                s == null -> shoppingListAbsentOnServer(l, isFirstSync, lastSync)
+                s == null -> shoppingListAbsentOnServer(l, isFirstSync, lastSync, toDeleteLocally)
                 l.syncedRevision == null || l.syncedSnapshot == null -> shoppingListLegacySeed(l, s)
                 else -> {
                     val dirty = l.isDirty
@@ -350,6 +453,18 @@ class SyncService(
                         else -> resolveShoppingListConflict(l, s)
                     }
                 }
+            }
+        }
+
+        // Local deletions are applied together, after the guard — the same protection recipes and
+        // classifiers get against an empty list reading as "everything was deleted".
+        val deletionRefusal = allowsLocalDeletions(server.size, toDeleteLocally.size, "shopping list")
+        if (deletionRefusal != null) {
+            counts += Counts(warnings = listOf(deletionRefusal))
+        } else {
+            for (id in toDeleteLocally) {
+                local.deleteShoppingList(id)
+                counts += Counts(deletedLocal = 1)
             }
         }
 
@@ -371,11 +486,16 @@ class SyncService(
         return counts
     }
 
-    /** Local row the server doesn't have: never-uploaded (push it) or server-deleted (respect it — unless we edited since). */
+    /**
+     * Local row the server doesn't have: never-uploaded (push it) or server-deleted (respect it —
+     * unless we edited since). Deletions are COLLECTED into [toDeleteLocally] rather than applied, so
+     * the empty-response guard in [syncShoppingLists] can veto them as a batch.
+     */
     private suspend fun shoppingListAbsentOnServer(
         l: LocalStore.LocalShoppingList,
         isFirstSync: Boolean,
         lastSync: Instant?,
+        toDeleteLocally: MutableList<String>,
     ): Counts {
         // baseRevision 0 = "I expect NO server row": an insert sails through (the server accepts any
         // save of a row it doesn't have), but if another writer re-created the id between our GET and
@@ -386,16 +506,16 @@ class SyncService(
                 // Deleted on the server but edited here since our last agreement: edit beats delete.
                 uploadShoppingList(l.list, baseRevision = 0, snapshot = null)
             } else {
-                local.deleteShoppingList(l.list.id)
-                Counts(deletedLocal = 1)
+                toDeleteLocally += l.list.id
+                Counts()
             }
         } else {
             // Legacy/never-synced row: the old watermark logic, then the upload seeds the bookkeeping.
             if (isFirstSync || lastSync == null || LocalStore.parseOrPast(l.list.lastModifiedDate) > lastSync) {
                 uploadShoppingList(l.list, baseRevision = 0, snapshot = null)
             } else {
-                local.deleteShoppingList(l.list.id)
-                Counts(deletedLocal = 1)
+                toDeleteLocally += l.list.id
+                Counts()
             }
         }
     }
@@ -496,7 +616,15 @@ class SyncService(
         )
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadCourse(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertCourse(it) } }
-        plan.toDeleteLocally.forEach { local.deleteCourse(it) }
+        // Local deletes only when the server actually listed something; see allowsLocalDeletions.
+        val warnings = mutableListOf<String>()
+        var deletedLocally = 0
+        val refusal = allowsLocalDeletions(server.size, plan.toDeleteLocally.size, "course")
+        if (refusal != null) {
+            warnings += refusal
+        } else {
+            plan.toDeleteLocally.forEach { local.deleteCourse(it); deletedLocally++ }
+        }
         // Server deletes are conditional on the timestamp the decision was based on: a row that
         // changed after our fetch (e.g. a web rename racing this sync) is downloaded, not deleted.
         var deletedOnServer = 0
@@ -510,7 +638,12 @@ class SyncService(
                 }
             }
         }
-        return plan.counts().copy(down = plan.toDownload.size + conflictDownloads, deletedServer = deletedOnServer)
+        return plan.counts().copy(
+            down = plan.toDownload.size + conflictDownloads,
+            deletedLocal = deletedLocally,
+            deletedServer = deletedOnServer,
+            warnings = warnings,
+        )
     }
 
     private suspend fun syncCategories(isFirstSync: Boolean, lastSync: Instant?): Counts {
@@ -524,7 +657,15 @@ class SyncService(
         )
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadCategory(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertCategory(it) } }
-        plan.toDeleteLocally.forEach { local.deleteCategory(it) }
+        // Guarded local deletes — see syncCourses.
+        val warnings = mutableListOf<String>()
+        var deletedLocally = 0
+        val refusal = allowsLocalDeletions(server.size, plan.toDeleteLocally.size, "category")
+        if (refusal != null) {
+            warnings += refusal
+        } else {
+            plan.toDeleteLocally.forEach { local.deleteCategory(it); deletedLocally++ }
+        }
         // Conditional server deletes — see syncCourses.
         var deletedOnServer = 0
         var conflictDownloads = 0
@@ -537,7 +678,12 @@ class SyncService(
                 }
             }
         }
-        return plan.counts().copy(down = plan.toDownload.size + conflictDownloads, deletedServer = deletedOnServer)
+        return plan.counts().copy(
+            down = plan.toDownload.size + conflictDownloads,
+            deletedLocal = deletedLocally,
+            deletedServer = deletedOnServer,
+            warnings = warnings,
+        )
     }
 
     private suspend fun syncTags(isFirstSync: Boolean, lastSync: Instant?): Counts {
@@ -551,7 +697,15 @@ class SyncService(
         )
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadTag(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertTag(it) } }
-        plan.toDeleteLocally.forEach { local.deleteTag(it) }
+        // Guarded local deletes — see syncCourses.
+        val warnings = mutableListOf<String>()
+        var deletedLocally = 0
+        val refusal = allowsLocalDeletions(server.size, plan.toDeleteLocally.size, "tag")
+        if (refusal != null) {
+            warnings += refusal
+        } else {
+            plan.toDeleteLocally.forEach { local.deleteTag(it); deletedLocally++ }
+        }
         // Conditional server deletes — see syncCourses.
         var deletedOnServer = 0
         var conflictDownloads = 0
@@ -564,7 +718,12 @@ class SyncService(
                 }
             }
         }
-        return plan.counts().copy(down = plan.toDownload.size + conflictDownloads, deletedServer = deletedOnServer)
+        return plan.counts().copy(
+            down = plan.toDownload.size + conflictDownloads,
+            deletedLocal = deletedLocally,
+            deletedServer = deletedOnServer,
+            warnings = warnings,
+        )
     }
 
     /** Internal per-step tally; library steps are summed via [plus]. */
@@ -572,11 +731,14 @@ class SyncService(
         val up: Int = 0, val down: Int = 0, val deletedLocal: Int = 0, val deletedServer: Int = 0,
         val imagesUp: Int = 0, val imagesDown: Int = 0,
         val conflictsMerged: Int = 0, val conflictCopies: Int = 0,
+        /** Things this step declined to do — see [allowsLocalDeletions]. */
+        val warnings: List<String> = emptyList(),
     ) {
         operator fun plus(o: Counts) = Counts(
             up + o.up, down + o.down, deletedLocal + o.deletedLocal, deletedServer + o.deletedServer,
             imagesUp + o.imagesUp, imagesDown + o.imagesDown,
             conflictsMerged + o.conflictsMerged, conflictCopies + o.conflictCopies,
+            warnings + o.warnings,
         )
     }
 
@@ -596,13 +758,24 @@ data class SyncResult(
     /** New "(conflicted copy …)" lists created to preserve an unmergeable side — worth surfacing
      *  prominently: the user should know a duplicate now exists and why. */
     val conflictCopies: Int = 0,
+    /** Same-named course/category/tag rows folded into their survivor after the sync. Counted because
+     *  the fold really did change the library — rows went away and recipes were re-filed — and because
+     *  a sync that silently deletes classifier rows would be alarming to notice later. */
+    val duplicatesMerged: Int = 0,
+    /** Things the sync declined to do without failing outright — most importantly local deletions it
+     *  skipped because the server answered with an empty list. A sync with warnings still succeeded. */
+    val warnings: List<String> = emptyList(),
 ) {
     val isNoOp: Boolean
         get() = recipesUp + recipesDown + recipesDeleted + libraryUp + libraryDown + libraryDeleted +
-            imagesUp + imagesDown + conflictsMerged + conflictCopies == 0
+            imagesUp + imagesDown + conflictsMerged + conflictCopies + duplicatesMerged == 0
 
-    /** e.g. "recipes 3↑ 1↓ · images 2↑ · organizers 5↑", or "Already up to date." */
-    fun summary(): String {
+    /** e.g. "recipes 3↑ 1↓ · images 2↑ · classifiers 5↑", or "Already up to date." */
+    fun summary(): String = listOf(countsSummary(), warnings.joinToString(" "))
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+
+    private fun countsSummary(): String {
         if (isNoOp) return "No changes to sync."
         val groups = mutableListOf<String>()
         fun group(label: String, up: Int, down: Int, removed: Int) {
@@ -615,9 +788,10 @@ data class SyncResult(
         }
         group("recipes", recipesUp, recipesDown, recipesDeleted)
         group("images", imagesUp, imagesDown, 0)
-        group("organizers", libraryUp, libraryDown, libraryDeleted)
+        group("classifiers", libraryUp, libraryDown, libraryDeleted)
         if (conflictsMerged > 0) groups += "$conflictsMerged list conflict${if (conflictsMerged == 1) "" else "s"} merged"
         if (conflictCopies > 0) groups += "$conflictCopies conflicted cop${if (conflictCopies == 1) "y" else "ies"} kept"
+        if (duplicatesMerged > 0) groups += "$duplicatesMerged duplicate classifier${if (duplicatesMerged == 1) "" else "s"} merged"
         return groups.joinToString(" · ")
     }
 }

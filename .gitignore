@@ -24,3 +24,8 @@ local.properties
 *-image.tar
 /salty-db
 /salty-images
+
+# Android release signing — the properties file holds the keystore password, and keys never belong in git.
+keystore.properties
+*.jks
+*.keystore

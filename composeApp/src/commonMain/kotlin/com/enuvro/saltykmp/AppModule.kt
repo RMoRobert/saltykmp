@@ -3,11 +3,17 @@ package com.enuvro.saltykmp
 import com.enuvro.saltykmp.db.AppDatabase
 import com.enuvro.saltykmp.di.ImageFiles
 import com.enuvro.saltykmp.di.KeyValueStore
+import com.enuvro.saltykmp.di.SECRET_KEY_PASSWORD
+import com.enuvro.saltykmp.di.SecretStore
+import com.enuvro.saltykmp.di.createSecretStore
 import com.enuvro.saltykmp.di.createDatabase
 import com.enuvro.saltykmp.di.createHttpEngine
 import com.enuvro.saltykmp.di.createImageFiles
 import com.enuvro.saltykmp.di.createKeyValueStore
+import com.enuvro.saltykmp.di.convertImageToJpeg
 import com.enuvro.saltykmp.di.makeThumbnail
+import com.enuvro.saltykmp.importer.RecipeWebImporter
+import com.enuvro.saltykmp.search.RecipeSearchField
 import com.enuvro.saltykmp.sync.InMemoryTokenStore
 import com.enuvro.saltykmp.sync.LocalStore
 import com.enuvro.saltykmp.sync.SaltyApiClient
@@ -19,14 +25,37 @@ import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.seconds
 
 /**
- * Connection settings persisted via [KeyValueStore]. The password is stored obfuscated (see
- * [SimpleEncoderDecoder]) rather than in plaintext; this is not true secure storage (the key is in the app) —
- * a follow-up should move it to Keychain/Keystore, matching the Swift app.
+ * Connection settings persisted via [KeyValueStore], except the password, which goes to [SecretStore] --
+ * the OS credential vault where the platform has one (Windows Credential Manager today), and the legacy
+ * [SimpleEncoderDecoder] obfuscation over [KeyValueStore] everywhere else.
  */
-class SettingsState(private val store: KeyValueStore) {
+class SettingsState(
+    private val store: KeyValueStore,
+    private val secrets: SecretStore = createSecretStore(store),
+) {
+    init {
+        // One-time move of a password written by an older build into the platform vault. Guarded on
+        // isPlatformBacked because the fallback store *is* the legacy location, using the same key and
+        // encoding -- "migrating" there would re-encode the value and then wipe it.
+        if (secrets.isPlatformBacked) {
+            val legacy = store.getString(SECRET_KEY_PASSWORD, "")
+            if (legacy.isNotEmpty() && secrets.get(SECRET_KEY_PASSWORD) == null) {
+                secrets.put(SECRET_KEY_PASSWORD, SimpleEncoderDecoder.decode(legacy), account = username)
+            }
+            // Cleared unconditionally: once the vault is in play, the obfuscated copy is a second place
+            // the password can be read from, so it should not survive even if the write above failed.
+            if (legacy.isNotEmpty()) store.putString(SECRET_KEY_PASSWORD, "")
+        }
+    }
+
     var serverUrl: String
         get() = store.getString("serverUrl", "http://localhost:8080")
         set(value) = store.putString("serverUrl", value)
@@ -34,8 +63,14 @@ class SettingsState(private val store: KeyValueStore) {
         get() = store.getString("username", "")
         set(value) = store.putString("username", value)
     var password: String
-        get() = SimpleEncoderDecoder.decode(store.getString("password", ""))
-        set(value) = store.putString("password", SimpleEncoderDecoder.encode(value))
+        get() = secrets.get(SECRET_KEY_PASSWORD).orEmpty()
+        set(value) {
+            if (value.isEmpty()) secrets.clear(SECRET_KEY_PASSWORD)
+            else secrets.put(SECRET_KEY_PASSWORD, value, account = username)
+        }
+
+    /** Where [password] is kept, for the Settings caption, e.g. "Windows Credential Manager". */
+    val passwordStoreName: String get() = secrets.backendName
 
     /** Recipe-list sort field (a RecipeSort enum name) and direction; persisted across launches. */
     var recipeSort: String
@@ -53,6 +88,27 @@ class SettingsState(private val store: KeyValueStore) {
     var libraryPath: String
         get() = store.getString("libraryPath", "")
         set(value) = store.putString("libraryPath", value)
+
+    /**
+     * Which recipe fields the list search looks at (Swift's "Search Options"). Persisted as a comma-joined
+     * list of [RecipeSearchField] names; unknown names (written by a newer build) are ignored rather than
+     * throwing. An empty stored value means "never set" → the default, not "search nothing".
+     */
+    var searchFields: Set<RecipeSearchField>
+        get() = store.getString("recipeSearchFields", "")
+            .split(',')
+            .mapNotNull { name -> RecipeSearchField.entries.firstOrNull { it.name == name } }
+            .toSet()
+            .ifEmpty { RecipeSearchField.DEFAULTS }
+        set(value) = store.putString("recipeSearchFields", value.joinToString(",") { it.name })
+
+    /**
+     * Drawer sections the user has collapsed, by [com.enuvro.saltykmp.ClassifierKind] name. Persisted because
+     * a library with dozens of tags is collapsed once and should stay that way; default is all expanded.
+     */
+    var collapsedDrawerSections: Set<String>
+        get() = store.getString("collapsedDrawerSections", "").split(',').filter { it.isNotBlank() }.toSet()
+        set(value) = store.putString("collapsedDrawerSections", value.joinToString(","))
 
     /** When enabled, the app syncs automatically a short time after each local change. Off by default. */
     var autoSyncEnabled: Boolean
@@ -78,13 +134,20 @@ class SettingsState(private val store: KeyValueStore) {
 /** Longest-side pixel size for cached recipe thumbnails (matches the Swift app's 300×300). */
 private const val THUMBNAIL_MAX_PX = 300
 
+/** Quiet period after the last edit before the library is copied to the linked folder. */
+private val FOLDER_PUSH_DEBOUNCE = 45.seconds
+
 /** Manual DI container — holds the database, HTTP engine, repositories, and builds a SyncService. */
 class AppModule {
     private val store = createKeyValueStore()
     val settings = SettingsState(store)
 
-    /** Copy-based library sync to a user-linked folder (Android/SAF). See [LibraryFolderLink]. */
-    val libraryFolder = LibraryFolderLink(store)
+    /**
+     * Copy-based library sync to a user-linked folder (Android/SAF, iOS document picker). See [LibraryFolderLink].
+     * The "is this install empty?" hint lets linking a folder on a fresh device adopt the folder's library
+     * instead of prompting; it opens the DB, which is fine because linking happens from Settings.
+     */
+    val libraryFolder = LibraryFolderLink(store, isLocalLibraryEmpty = { repository.debugRecipeCount() == 0 })
 
     // The DB (and anything reading it) is opened lazily so [startup] can reconcile a linked folder —
     // potentially replacing the local DB file via COPY_IN — BEFORE any connection is opened on it.
@@ -93,13 +156,45 @@ class AppModule {
     private val tokenStore = InMemoryTokenStore()
     val localStore: LocalStore by lazy { LocalStore(database) }
     val repository: RecipeRepository by lazy { RecipeRepository(database) }
+    val shoppingLists: ShoppingListStore by lazy { ShoppingListStore(database, localStore) }
     val imageFiles: ImageFiles = createImageFiles()
 
     /** App-lifetime scope for background work (debounced auto-sync). Lives as long as the process. */
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /** Fetches + parses a recipe from a web page's schema.org JSON-LD (Settings-free "Import from Web"). */
+    val webImporter: RecipeWebImporter by lazy { RecipeWebImporter(httpEngine) }
+
     /** Debounced automatic sync after local edits; gated on [SettingsState.autoSyncEnabled] (off by default). */
     val autoSync = AutoSyncManager(settings, appScope, sync = { sync() })
+
+    // Debounced push of the library to the linked folder after edits (a burst of edits → one copy). The push
+    // itself is a no-op when the content hash hasn't moved, so over-triggering is cheap.
+    private val folderPushRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 64)
+
+    init {
+        @OptIn(FlowPreview::class)
+        appScope.launch { folderPushRequests.debounce(FOLDER_PUSH_DEBOUNCE).collect { pushLibraryFolderQuietly() } }
+    }
+
+    /** Call after any local library change (recipe/classifier/image add, edit, delete). Fans out to every syncer. */
+    fun onLocalChange() {
+        autoSync.notifyChange()
+        if (libraryFolder.isLinked()) folderPushRequests.tryEmit(Unit)
+    }
+
+    /**
+     * Call when the app goes to the background (lifecycle ON_STOP): the last chance to get recent edits into
+     * the linked folder before the process may be killed. Runs in the app scope so it outlives the composition.
+     */
+    fun onAppBackground() {
+        if (libraryFolder.isLinked()) appScope.launch { pushLibraryFolderQuietly() }
+    }
+
+    private suspend fun pushLibraryFolderQuietly() {
+        val result = runCatching { libraryFolder.pushOut() }.getOrElse { LibraryFolderSyncResult.ERROR }
+        println("LibraryFolderLink background push: $result")
+    }
 
     /**
      * Run once at app launch BEFORE the UI touches [database]: reconcile the linked folder, which may pull
@@ -153,6 +248,9 @@ class AppModule {
                         localStore.setRecipeImage(recipeId, filename, makeThumbnail(bytes, THUMBNAIL_MAX_PX), imageDate)
                     },
                     imageSource = { _, filename -> imageFiles.load(filename) },
+                    // Lets sync re-encode an image the server can't serve as-is (a HEIC from the Swift app's
+                    // bundle) instead of uploading it labelled as something it isn't.
+                    imageConverter = { bytes -> convertImageToJpeg(bytes) },
                 ),
             )
         } catch (e: CancellationException) {

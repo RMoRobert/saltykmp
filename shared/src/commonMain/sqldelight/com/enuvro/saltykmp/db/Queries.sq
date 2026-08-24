@@ -20,13 +20,43 @@ SELECT *
 FROM recipe
 WHERE id = ?;
 
-upsertRecipe:
-INSERT OR REPLACE INTO recipe(
-    id, name, createdDate, lastModifiedDate, lastPrepared, source, sourceDetails, introduction,
-    difficulty, rating, imageFilename, imageThumbnailData, isFavorite, wantToMake, yield, servings,
-    courseId, directions, ingredients, notes, variations, preparationTimes, nutrition, lastModifiedImageDate,
-    lastModifiedPreparedDate
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+-- UPDATE-then-INSERT-OR-IGNORE, never INSERT OR REPLACE.
+--
+-- REPLACE deletes the existing row before inserting the new one, and with foreign keys enforced (every
+-- Database.*.kt turns them on) that delete CASCADES: the recipeCategory/recipeTag rows for this recipe
+-- go with it. A body update from a peer that doesn't send the arrays would then silently drop all of
+-- its categories and tags, and the next upload would push that loss to the server.
+--
+-- The obvious fix, `ON CONFLICT(id) DO UPDATE`, is NOT usable here: UPSERT needs SQLite 3.24 and this
+-- module targets the sqlite_3_18 dialect with minSdk 24 (Android 7 ships SQLite 3.9), so it would
+-- crash on the oldest supported devices. This pair is the pre-UPSERT idiom and behaves identically:
+-- the UPDATE hits an existing row without deleting it, and the INSERT only fires when there was none.
+-- Grouped into one labeled query so callers still make a single, transactional call.
+upsertRecipe {
+    UPDATE recipe SET
+        name = :name, createdDate = :createdDate, lastModifiedDate = :lastModifiedDate,
+        lastPrepared = :lastPrepared, source = :source, sourceDetails = :sourceDetails,
+        introduction = :introduction, difficulty = :difficulty, rating = :rating,
+        imageFilename = :imageFilename, imageThumbnailData = :imageThumbnailData,
+        isFavorite = :isFavorite, wantToMake = :wantToMake, yield = :yield, servings = :servings,
+        courseId = :courseId, directions = :directions, ingredients = :ingredients, notes = :notes,
+        variations = :variations, preparationTimes = :preparationTimes, nutrition = :nutrition,
+        lastModifiedImageDate = :lastModifiedImageDate,
+        lastModifiedPreparedDate = :lastModifiedPreparedDate
+    WHERE id = :id;
+
+    INSERT OR IGNORE INTO recipe(
+        id, name, createdDate, lastModifiedDate, lastPrepared, source, sourceDetails, introduction,
+        difficulty, rating, imageFilename, imageThumbnailData, isFavorite, wantToMake, yield, servings,
+        courseId, directions, ingredients, notes, variations, preparationTimes, nutrition,
+        lastModifiedImageDate, lastModifiedPreparedDate
+    ) VALUES (
+        :id, :name, :createdDate, :lastModifiedDate, :lastPrepared, :source, :sourceDetails,
+        :introduction, :difficulty, :rating, :imageFilename, :imageThumbnailData, :isFavorite,
+        :wantToMake, :yield, :servings, :courseId, :directions, :ingredients, :notes, :variations,
+        :preparationTimes, :nutrition, :lastModifiedImageDate, :lastModifiedPreparedDate
+    );
+}
 
 -- Targeted image-state update (filename + thumbnail blob + image timestamp), independent of the body.
 updateRecipeImage:
@@ -48,9 +78,13 @@ SELECT *
 FROM course
 ORDER BY name ASC;
 
-upsertCourse:
-INSERT OR REPLACE INTO course(id, name, lastModifiedDate)
-VALUES (?, ?, ?);
+-- UPDATE-then-INSERT-OR-IGNORE; see upsertRecipe for why REPLACE is unsafe. For a course the damage
+-- is `recipe.courseId REFERENCES course(id) ON DELETE SET NULL`: a rename arriving from the server used
+-- to empty the entire course.
+upsertCourse {
+    UPDATE course SET name = :name, lastModifiedDate = :lastModifiedDate WHERE id = :id;
+    INSERT OR IGNORE INTO course(id, name, lastModifiedDate) VALUES (:id, :name, :lastModifiedDate);
+}
 
 deleteCourseById:
 DELETE FROM course
@@ -62,9 +96,11 @@ SELECT *
 FROM category
 ORDER BY name ASC;
 
-upsertCategory:
-INSERT OR REPLACE INTO category(id, name, lastModifiedDate)
-VALUES (?, ?, ?);
+-- See upsertRecipe. REPLACE here cascade-deleted every recipeCategory row pointing at this category.
+upsertCategory {
+    UPDATE category SET name = :name, lastModifiedDate = :lastModifiedDate WHERE id = :id;
+    INSERT OR IGNORE INTO category(id, name, lastModifiedDate) VALUES (:id, :name, :lastModifiedDate);
+}
 
 deleteCategoryById:
 DELETE FROM category
@@ -76,17 +112,21 @@ SELECT *
 FROM tag
 ORDER BY name ASC;
 
-upsertTag:
-INSERT OR REPLACE INTO tag(id, name, lastModifiedDate)
-VALUES (?, ?, ?);
+-- See upsertRecipe. REPLACE here cascade-deleted every recipeTag row pointing at this tag.
+upsertTag {
+    UPDATE tag SET name = :name, lastModifiedDate = :lastModifiedDate WHERE id = :id;
+    INSERT OR IGNORE INTO tag(id, name, lastModifiedDate) VALUES (:id, :name, :lastModifiedDate);
+}
 
 deleteTagById:
 DELETE FROM tag
 WHERE id = ?;
 
 -- Recipe <-> Category / Tag junctions
+-- Nothing references a junction row and its id is deterministic ("<recipeId>|<otherId>"), so re-applying
+-- the same set is a no-op. OR IGNORE says that without a delete.
 upsertRecipeCategory:
-INSERT OR REPLACE INTO recipeCategory(id, recipeId, categoryId)
+INSERT OR IGNORE INTO recipeCategory(id, recipeId, categoryId)
 VALUES (?, ?, ?);
 
 deleteRecipeCategoriesByRecipeId:
@@ -98,8 +138,16 @@ SELECT categoryId
 FROM recipeCategory
 WHERE recipeId = ?;
 
+-- Every (recipe, category name) pair in one query: the recipe list needs names for search and for the
+-- row subtitle, and per-recipe lookups would be one query per row. Joined so a dangling junction row
+-- (category deleted mid-flight) simply drops out.
+selectAllRecipeCategoryNames:
+SELECT recipeCategory.recipeId AS recipeId, category.name AS name
+FROM recipeCategory
+JOIN category ON category.id = recipeCategory.categoryId;
+
 upsertRecipeTag:
-INSERT OR REPLACE INTO recipeTag(id, recipeId, tagId)
+INSERT OR IGNORE INTO recipeTag(id, recipeId, tagId)
 VALUES (?, ?, ?);
 
 deleteRecipeTagsByRecipeId:
@@ -111,21 +159,44 @@ SELECT tagId
 FROM recipeTag
 WHERE recipeId = ?;
 
+-- Every (recipe, tag name) pair in one query; see selectAllRecipeCategoryNames.
+selectAllRecipeTagNames:
+SELECT recipeTag.recipeId AS recipeId, tag.name AS name
+FROM recipeTag
+JOIN tag ON tag.id = recipeTag.tagId;
+
 -- Shopping lists
 selectAllShoppingLists:
 SELECT *
 FROM shoppingList
 ORDER BY name ASC;
 
-upsertShoppingList:
-INSERT OR REPLACE INTO shoppingList(id, name, isFreeform, contentsForList, contentsForFreeform, lastModifiedDate, syncedRevision, syncedSnapshot)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+-- Nothing references a shoppingList row today, so REPLACE is not destructive here -- but the rule is
+-- worth holding uniformly: an upsert that deletes first is one foreign key away from losing data.
+upsertShoppingList {
+    UPDATE shoppingList SET
+        name = :name, isFreeform = :isFreeform, contentsForList = :contentsForList,
+        contentsForFreeform = :contentsForFreeform, lastModifiedDate = :lastModifiedDate,
+        syncedRevision = :syncedRevision, syncedSnapshot = :syncedSnapshot
+    WHERE id = :id;
+    INSERT OR IGNORE INTO shoppingList(id, name, isFreeform, contentsForList, contentsForFreeform, lastModifiedDate, syncedRevision, syncedSnapshot)
+    VALUES (:id, :name, :isFreeform, :contentsForList, :contentsForFreeform, :lastModifiedDate, :syncedRevision, :syncedSnapshot);
+}
 
 -- Record the server agreement for a row WITHOUT touching its contents — used after a successful
 -- upload, when the local row is already right and only the bookkeeping moves.
 markShoppingListSynced:
 UPDATE shoppingList
 SET syncedRevision = ?, syncedSnapshot = ?
+WHERE id = ?;
+
+-- A LOCAL edit: contents + timestamp move, sync bookkeeping does NOT. Overwriting syncedRevision/
+-- syncedSnapshot here would erase the baseline that dirtiness is computed against
+-- (row.lastModifiedDate != snapshot.lastModifiedDate), making an edited row look already-agreed and
+-- silently dropping the edit at the next sync. See SHOPPING_LIST_REVISIONS_PLAN.md.
+updateShoppingListContents:
+UPDATE shoppingList
+SET name = ?, isFreeform = ?, contentsForList = ?, contentsForFreeform = ?, lastModifiedDate = ?
 WHERE id = ?;
 
 deleteShoppingListById:
@@ -190,3 +261,77 @@ FROM recipe
 JOIN recipeTag ON recipe.id = recipeTag.recipeId
 WHERE recipeTag.tagId = ?
 ORDER BY recipe.name COLLATE NOCASE ASC;
+
+-- Duplicate library items (LibraryDuplicateMerger)
+--
+-- The three classifier tables reconcile by ID, never by name, so two devices that each created "Vegan"
+-- -- or two libraries that each ran the default seed and minted their own ids for "Breads", "Main", ...
+-- -- replicate both rows to each other forever. These queries back the post-sync fold.
+--
+-- COUNT(DISTINCT ...) so a junction table that already holds a repeated (recipe, item) pair doesn't
+-- inflate the count and skew which row a count-based survivor rule would keep.
+selectCategoriesWithRecipeCounts:
+SELECT category.id AS id, category.name AS name,
+       (SELECT COUNT(DISTINCT recipeCategory.recipeId) FROM recipeCategory WHERE recipeCategory.categoryId = category.id) AS recipeCount
+FROM category;
+
+selectTagsWithRecipeCounts:
+SELECT tag.id AS id, tag.name AS name,
+       (SELECT COUNT(DISTINCT recipeTag.recipeId) FROM recipeTag WHERE recipeTag.tagId = tag.id) AS recipeCount
+FROM tag;
+
+selectCoursesWithRecipeCounts:
+SELECT course.id AS id, course.name AS name,
+       (SELECT COUNT(*) FROM recipe WHERE recipe.courseId = course.id) AS recipeCount
+FROM course;
+
+selectRecipeIdsForCategory:
+SELECT DISTINCT recipeId
+FROM recipeCategory
+WHERE categoryId = ?;
+
+selectRecipeIdsForTag:
+SELECT DISTINCT recipeId
+FROM recipeTag
+WHERE tagId = ?;
+
+selectRecipeIdsForCourse:
+SELECT id
+FROM recipe
+WHERE courseId = ?;
+
+-- Link a recipe to the surviving category, unless it already has that link. The NOT EXISTS guard is
+-- what OR IGNORE alone cannot do: a junction row written by another client carries a different id
+-- ("<recipeId>_<categoryId>" from Salty's sync, a random UUID from its editor), so the id conflict
+-- these tables are keyed on would not fire and the recipe would end up listed under the category twice.
+insertRecipeCategoryIfAbsent:
+INSERT OR IGNORE INTO recipeCategory(id, recipeId, categoryId)
+SELECT :id, :recipeId, :categoryId
+WHERE NOT EXISTS (SELECT 1 FROM recipeCategory WHERE recipeId = :recipeId AND categoryId = :categoryId);
+
+insertRecipeTagIfAbsent:
+INSERT OR IGNORE INTO recipeTag(id, recipeId, tagId)
+SELECT :id, :recipeId, :tagId
+WHERE NOT EXISTS (SELECT 1 FROM recipeTag WHERE recipeId = :recipeId AND tagId = :tagId);
+
+deleteRecipeCategoriesByCategoryId:
+DELETE FROM recipeCategory
+WHERE categoryId = ?;
+
+deleteRecipeTagsByTagId:
+DELETE FROM recipeTag
+WHERE tagId = ?;
+
+-- Re-point before the course row is deleted: recipe.courseId is ON DELETE SET NULL, so deleting first
+-- would silently clear the course from every recipe that used the duplicate.
+repointRecipeCourse:
+UPDATE recipe
+SET courseId = :survivorId
+WHERE courseId = :duplicateId;
+
+-- Category and tag membership syncs as the categoryIds/tagIds arrays on the recipe payload, and a
+-- course as its courseId, so a re-point that doesn't move the recipe's clock never reaches the server.
+touchRecipeLastModified:
+UPDATE recipe
+SET lastModifiedDate = :lastModifiedDate
+WHERE id = :id;

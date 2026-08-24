@@ -1,0 +1,39 @@
+# Builds the Windows installer. jpackage cannot cross-compile, so this is the only way to produce an
+# MSI without a Windows machine — run it from the Actions tab, or push a v* tag.
+name: Windows installer
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 21 matches gradle/gradle-daemon-jvm.properties. jpackage ships with the JDK, so nothing else
+      # is needed for the app runtime itself.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # The runner image normally ships WiX 3.x, which jpackage shells out to for MSI. If the build
+      # fails with "Can not find WiX tools", uncomment this.
+      # - run: choco install wixtoolset --version 3.14.1 -y
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # composeApp applies the Android application plugin, so configuring it needs the Android SDK.
+      # windows-latest ships one and sets ANDROID_HOME, so no local.properties is required.
+      - name: Package MSI
+        shell: bash
+        run: ./gradlew :composeApp:packageReleaseMsi --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: salty-windows-msi
+          path: composeApp/build/compose/binaries/main-release/msi/*.msi
+          if-no-files-found: error

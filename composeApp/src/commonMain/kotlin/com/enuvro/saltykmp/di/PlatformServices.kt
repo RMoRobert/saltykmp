@@ -42,6 +42,24 @@ expect fun decodeImageBitmap(bytes: ByteArray): ImageBitmap?
 expect fun makeThumbnail(bytes: ByteArray, maxSize: Int): ByteArray?
 
 /**
+ * Longest side used when re-encoding an image the server can't serve as-is (HEIC, WebP) into JPEG for
+ * upload. Generous rather than exact: the server downsizes jpg/png to 1200px on receipt anyway, so this
+ * only exists to keep a conversion from ballooning and to stay well under the server's megapixel guard.
+ */
+const val UPLOAD_JPEG_MAX_PX = 2400
+
+/**
+ * Re-encode an image as JPEG for upload, at up to [UPLOAD_JPEG_MAX_PX] on its longest side.
+ *
+ * Built on [makeThumbnail], whose platform actuals are already "decode, scale to fit, encode JPEG" and
+ * which skip the scaling when the source is smaller than the bound. Returns null when the platform
+ * can't decode the bytes — notably HEIC on desktop and iOS, whose Skia build carries no HEIF decoder;
+ * Android decodes HEIC from API 28. A null means the image is skipped rather than uploaded under a
+ * content type that lies about it: see `SyncImagePreparer`.
+ */
+fun convertImageToJpeg(bytes: ByteArray): ByteArray? = makeThumbnail(bytes, UPLOAD_JPEG_MAX_PX)
+
+/**
  * Remembers a camera-capture launcher, available only on platforms with a camera picker (Android, iOS).
  * Returns a lambda that opens the camera, or null where unsupported (desktop). The captured image's
  * encoded bytes (or null if cancelled/denied) are delivered to [onResult].

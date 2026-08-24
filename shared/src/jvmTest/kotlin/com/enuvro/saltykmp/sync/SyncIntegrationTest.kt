@@ -35,6 +35,9 @@ class SyncIntegrationTest {
     /** Minimal in-memory server keyed on the endpoints syncNow touches. */
     private class FakeServer {
         val recipes = linkedMapOf<String, ServerRecipe>()
+        val courses = linkedMapOf<String, ServerCourse>()
+        val categories = linkedMapOf<String, ServerCategory>()
+        val tags = linkedMapOf<String, ServerTag>()
         val shoppingLists = linkedMapOf<String, ServerShoppingList>()
         val images = mutableMapOf<String, ByteArray>()
         var registered = false
@@ -125,10 +128,35 @@ class SyncIntegrationTest {
                     jsonOk("""{"filename":"uploaded.jpg"}""")
                 }
 
-                // Empty library — no-op sync.
-                path == "/api/courses" && get -> jsonOk(apiJson.encodeToString(emptyList<ServerCourse>()), 0)
-                path == "/api/categories" && get -> jsonOk(apiJson.encodeToString(emptyList<ServerCategory>()), 0)
-                path == "/api/tags" && get -> jsonOk(apiJson.encodeToString(emptyList<ServerTag>()), 0)
+                // Courses / categories / tags: full lists, upsert by id, unconditional delete. Empty
+                // unless a test seeds them, so the "no-op sync" cases behave exactly as before.
+                path == "/api/courses" && get -> jsonOk(apiJson.encodeToString(courses.values.toList()), courses.size)
+                path == "/api/courses" && post -> {
+                    val c = bodyOf<ServerCourse>(request.body).also { courses[it.id] = it }
+                    jsonOk(apiJson.encodeToString(c), status = HttpStatusCode.Created)
+                }
+                path.startsWith("/api/courses/") && request.method == HttpMethod.Delete -> {
+                    courses.remove(path.substringAfterLast("/"))
+                    respond("", HttpStatusCode.NoContent)
+                }
+                path == "/api/categories" && get -> jsonOk(apiJson.encodeToString(categories.values.toList()), categories.size)
+                path == "/api/categories" && post -> {
+                    val c = bodyOf<ServerCategory>(request.body).also { categories[it.id] = it }
+                    jsonOk(apiJson.encodeToString(c), status = HttpStatusCode.Created)
+                }
+                path.startsWith("/api/categories/") && request.method == HttpMethod.Delete -> {
+                    categories.remove(path.substringAfterLast("/"))
+                    respond("", HttpStatusCode.NoContent)
+                }
+                path == "/api/tags" && get -> jsonOk(apiJson.encodeToString(tags.values.toList()), tags.size)
+                path == "/api/tags" && post -> {
+                    val t = bodyOf<ServerTag>(request.body).also { tags[it.id] = it }
+                    jsonOk(apiJson.encodeToString(t), status = HttpStatusCode.Created)
+                }
+                path.startsWith("/api/tags/") && request.method == HttpMethod.Delete -> {
+                    tags.remove(path.substringAfterLast("/"))
+                    respond("", HttpStatusCode.NoContent)
+                }
                 path == "/api/shoppingLists" && get ->
                     // The real DB defaults revision to 1, so seeded rows never serve a null revision.
                     jsonOk(
@@ -217,6 +245,79 @@ class SyncIntegrationTest {
         assertEquals(setOf("localList", "serverList"), server.shoppingLists.keys.toSet())
     }
 
+    // ---- same-named classifiers are folded, not replicated forever ----
+
+    /**
+     * The classifier tables reconcile by id, so a library that minted its own ids for the default
+     * seed ("Breads", "Main", …) and a server whose copies came from another install each download
+     * the other's row. The post-sync fold is what stops that pair from living forever.
+     */
+    @Test
+    fun firstSyncFoldsSameNamedClassifiersAndTheLibrariesConverge() = runTest {
+        val old = "2026-08-01T00:00:00.000Z"
+        val db = freshDb()
+        val local = LocalStore(db)
+        local.upsertCategory(ServerCategory("A-cat", "Breads", old))
+        local.upsertCourse(ServerCourse("A-course", "Main", old))
+        local.upsertRecipe(
+            ServerRecipe(
+                id = "Local loaf", name = "Local loaf", lastModifiedDate = old,
+                categoryIds = listOf("A-cat"), courseId = "A-course",
+            )
+        )
+
+        // The same two classifiers, created independently on the other device: same names, other ids.
+        val server = FakeServer()
+        server.categories["Z-cat"] = ServerCategory("Z-cat", "Breads", old)
+        server.courses["Z-course"] = ServerCourse("Z-course", "Main", old)
+        server.recipes["Sourdough"] = ServerRecipe(
+            id = "Sourdough", name = "Sourdough", lastModifiedDate = old,
+            categoryIds = listOf("Z-cat"), courseId = "Z-course",
+        )
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        fun sync() = SyncService(api, local, deviceId = "test-device", deviceName = "Test")
+
+        val first = sync().syncNow()
+
+        assertEquals(2, first.duplicatesMerged)
+        assertEquals(listOf("Breads"), local.categories().map { it.name })
+        assertEquals(listOf("Main"), local.courses().map { it.name })
+        // The downloaded recipe is filed under the surviving rows, not left unfiled.
+        assertEquals(listOf("A-cat"), db.queriesQueries.selectCategoryIdsForRecipe("Sourdough").executeAsList())
+        assertEquals("A-course", db.queriesQueries.selectRecipeById("Sourdough").executeAsOne().courseId)
+
+        // The fold is local; the NEXT sync carries it to the server — the duplicate rows go (their
+        // server timestamps now predate the watermark) and the re-pointed recipes upload.
+        server.lastSyncDate = "2026-08-10T00:00:00.000Z"
+        val second = sync().syncNow()
+
+        assertEquals(listOf("A-cat"), server.categories.keys.toList())
+        assertEquals(listOf("A-course"), server.courses.keys.toList())
+        assertEquals(listOf("A-cat"), server.recipes["Sourdough"]?.categoryIds)
+        assertEquals("A-course", server.recipes["Sourdough"]?.courseId)
+        assertEquals(0, second.duplicatesMerged)
+
+        // And it settles: no ping-pong between the two devices' choices.
+        assertTrue(sync().syncNow().isNoOp, "the fold must converge, not repeat every sync")
+    }
+
+    /** The survivor is the older id, never "whichever side it came from". */
+    @Test
+    fun theOlderIdSurvivesEvenWhenItIsTheServersRow() = runTest {
+        val old = "2026-08-01T00:00:00.000Z"
+        val db = freshDb()
+        val local = LocalStore(db)
+        local.upsertCategory(ServerCategory("Z-cat", "Breads", old))
+        val server = FakeServer()
+        server.categories["A-cat"] = ServerCategory("A-cat", "breads", old)
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        assertEquals(listOf("A-cat"), local.categories().map { it.id })
+    }
+
     @Test
     fun storesGrdbCompatibleRowFormat() {
         val db = freshDb()
@@ -255,11 +356,17 @@ class SyncIntegrationTest {
      *  exactly what the apps' edit paths do (they never touch syncedRevision/syncedSnapshot). */
     private fun editLocally(db: AppDatabase, local: LocalStore, edited: ServerShoppingList) {
         val state = local.shoppingListsWithSyncState().first { it.list.id == edited.id }
+        // Named arguments: upsertShoppingList is a grouped statement (UPDATE + INSERT OR IGNORE), so
+        // SQLDelight orders its parameters by first appearance in the SQL rather than by column list.
         db.queriesQueries.upsertShoppingList(
-            edited.id, edited.name, edited.isFreeform, edited.contentsForList ?: emptyList(),
-            edited.contentsForFreeform, LocalStore.wireToDbDate(edited.lastModifiedDate),
-            state.syncedRevision,
-            state.syncedSnapshot?.let { apiJson.encodeToString(ServerShoppingList.serializer(), it) },
+            name = edited.name,
+            isFreeform = edited.isFreeform,
+            contentsForList = edited.contentsForList ?: emptyList(),
+            contentsForFreeform = edited.contentsForFreeform,
+            lastModifiedDate = LocalStore.wireToDbDate(edited.lastModifiedDate),
+            syncedRevision = state.syncedRevision,
+            syncedSnapshot = state.syncedSnapshot?.let { apiJson.encodeToString(ServerShoppingList.serializer(), it) },
+            id = edited.id,
         )
     }
 

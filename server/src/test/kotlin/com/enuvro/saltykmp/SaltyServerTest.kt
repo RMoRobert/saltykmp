@@ -27,6 +27,7 @@ import com.enuvro.saltykmp.db.Tags
 import com.enuvro.saltykmp.db.UserRepository
 import com.enuvro.saltykmp.db.Users
 import com.enuvro.saltykmp.image.ImageStore
+import com.enuvro.saltykmp.util.WireDate
 import com.enuvro.saltykmp.util.appJson
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -490,7 +491,7 @@ class SaltyServerTest {
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
 
-        // Browse indexes list the vocabulary with a recipe count.
+        // Browse indexes list the classifiers with a recipe count.
         val courses = web.get("/courses").bodyAsText()
         assertTrue(courses.contains("Desserts"), "course index lists the course")
 
@@ -947,7 +948,7 @@ class SaltyServerTest {
             val token = login(client)
             // Image endpoints are owner-scoped, so attach the stored image to a recipe owned by "tester".
             val uid = UserRepository.findByUsername("tester")!!.id
-            val filename = imageStore.store("thumbtest", renderPng(1000, 800), "png")
+            val filename = imageStore.store("thumbtest", renderPng(1000, 800))
             RecipeRepository.upsert(uid, recipe("thumbtest", "Thumb", "2026-06-01T00:00:00.000Z"))
             RecipeRepository.setImageFilename(uid, "thumbtest", filename, null)
 
@@ -976,7 +977,7 @@ class SaltyServerTest {
             // Image existence (client uses HEAD to avoid re-uploading an image already on the server).
             // Owner-scoped, so bind the stored image to a recipe owned by "tester".
             val uid = UserRepository.findByUsername("tester")!!.id
-            val filename = imageStore.store("headtest", renderPng(40, 40), "png")
+            val filename = imageStore.store("headtest", renderPng(40, 40))
             RecipeRepository.upsert(uid, recipe("headtest", "Head", "2026-06-01T00:00:00.000Z"))
             RecipeRepository.setImageFilename(uid, "headtest", filename, null)
             assertEquals(HttpStatusCode.OK, client.head("/api/recipes/images/$filename") { bearerAuth(token) }.status)
@@ -988,13 +989,101 @@ class SaltyServerTest {
     }
 
     @Test
+    fun aBodyUploadNamingAnImageTheServerDoesNotHaveLeavesTheRealOneAlone() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            val uid = UserRepository.findByUsername("tester")!!.id
+
+            // The server holds "<id>.png" — the state after any client that converts on upload, which
+            // every client now does for a format the server can't serve.
+            post(client, token, recipe("conv", "Converted", "2026-06-01T00:00:00.000Z"))
+            val stored = imageStore.store("conv", renderPng(40, 40))
+            RecipeRepository.setImageFilename(uid, "conv", stored, WireDate.parse("2026-06-02T00:00:00.000Z"))
+
+            // A later body edit from that client still carries ITS local name, with a newer image stamp.
+            // Honouring it used to point the row at a file that doesn't exist AND delete the real one.
+            post(
+                client, token,
+                recipe("conv", "Converted, edited", "2026-06-03T00:00:00.000Z")
+                    .copy(imageFilename = "conv.heic", lastModifiedImageDate = "2026-06-03T00:00:00.000Z"),
+            )
+
+            assertEquals(stored, RecipeRepository.imageFilename(uid, "conv"), "the stored name must survive")
+            assertTrue(imageStore.exists(stored), "the real image file must not be deleted")
+            assertEquals(HttpStatusCode.OK, client.get("/api/recipes/images/$stored") { bearerAuth(token) }.status)
+        }
+    }
+
+    @Test
+    fun aBodyUploadCanStillClearAnImage() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            val uid = UserRepository.findByUsername("tester")!!.id
+
+            post(client, token, recipe("clr", "Clearable", "2026-06-01T00:00:00.000Z"))
+            val stored = imageStore.store("clr", renderPng(40, 40))
+            RecipeRepository.setImageFilename(uid, "clr", stored, WireDate.parse("2026-06-02T00:00:00.000Z"))
+
+            // A null filename with a newer stamp is how an image REMOVAL rides a body upload; ignoring
+            // unknown names must not have broken that.
+            post(
+                client, token,
+                recipe("clr", "Clearable", "2026-06-03T00:00:00.000Z")
+                    .copy(imageFilename = null, lastModifiedImageDate = "2026-06-03T00:00:00.000Z"),
+            )
+
+            assertEquals(null, RecipeRepository.imageFilename(uid, "clr"), "an explicit removal still applies")
+        }
+    }
+
+    @Test
+    fun anImageUploadIsStoredByItsRealFormatAndUnservableOnesAreRefused() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val token = login(client)
+            val uid = UserRepository.findByUsername("tester")!!.id
+            post(client, token, recipe("fmt", "Format", "2026-06-01T00:00:00.000Z"))
+
+            // Both uploads announce themselves as JPEG: the label is what the server used to trust, and
+            // is exactly what it must now ignore in favour of the bytes.
+            suspend fun upload(bytes: ByteArray) = client.submitFormWithBinaryData(
+                url = "/api/recipes/fmt/image",
+                formData = formData {
+                    append("file", bytes, Headers.build {
+                        append(HttpHeaders.ContentType, "image/jpeg")
+                        append(HttpHeaders.ContentDisposition, "filename=\"fmt.jpg\"")
+                    })
+                },
+            ) { bearerAuth(token) }
+
+            // PNG bytes announced as JPEG: the server used to believe the label and write "<id>.jpg".
+            assertEquals(HttpStatusCode.OK, upload(renderPng(40, 40)).status)
+            assertEquals("fmt.png", RecipeRepository.imageFilename(uid, "fmt"), "the bytes decide the extension")
+
+            // A format the server can't serve is refused outright rather than stored unreadably.
+            val heic = byteArrayOf(0, 0, 0, 0x18) + "ftypheic".toByteArray() + ByteArray(16)
+            assertEquals(HttpStatusCode.UnsupportedMediaType, upload(heic).status)
+            assertEquals(
+                "fmt.png",
+                RecipeRepository.imageFilename(uid, "fmt"),
+                "a refused upload must not disturb the image already stored",
+            )
+        }
+    }
+
+    @Test
     fun cannotReadAnotherUsersImage() = testApplication {
         application { installSalty(jwt, imageStore) }
         val client = jsonClient()
         runBlocking {
             // "tester" owns a recipe with an image.
             val tester = UserRepository.findByUsername("tester")!!.id
-            val filename = imageStore.store("victim", renderPng(60, 60), "png")
+            val filename = imageStore.store("victim", renderPng(60, 60))
             RecipeRepository.upsert(tester, recipe("victim", "Secret", "2026-06-01T00:00:00.000Z"))
             RecipeRepository.setImageFilename(tester, "victim", filename, null)
 

@@ -194,19 +194,25 @@ class SaltyApiClient(
 
     /** Uploads image bytes. [imageDate] (client-authoritative lastModifiedImageDate, wire form) is stored
      * verbatim server-side so this device won't later see the server image as "newer" and re-download it. */
-    suspend fun uploadImage(recipeId: String, filename: String, bytes: ByteArray, imageDate: String? = null): String {
-        val extension = filename.substringAfterLast('.', "jpg")
-        val contentType = when (extension.lowercase()) {
-            "png" -> ContentType.Image.PNG
-            "gif" -> ContentType.Image.GIF
-            else -> ContentType.Image.JPEG
-        }
+    /**
+     * @param contentType MUST describe the bytes actually being sent, not the filename's extension: the
+     *   server files the image under an extension derived from this part's Content-Type, so a wrong one
+     *   writes (say) HEIC content to `<id>.jpg` and nothing downstream can read it. Callers get it from
+     *   [SyncImagePreparer], which sniffs the bytes.
+     */
+    suspend fun uploadImage(
+        recipeId: String,
+        filename: String,
+        bytes: ByteArray,
+        contentType: String,
+        imageDate: String? = null,
+    ): String {
         val resp = client.post("$baseUrl/api/recipes/${seg(recipeId)}/image") {
             auth()
             setBody(io.ktor.client.request.forms.MultiPartFormDataContent(
                 io.ktor.client.request.forms.formData {
                     append("file", bytes, io.ktor.http.Headers.build {
-                        append(io.ktor.http.HttpHeaders.ContentType, contentType.toString())
+                        append(io.ktor.http.HttpHeaders.ContentType, contentType)
                         append(io.ktor.http.HttpHeaders.ContentDisposition, "filename=\"$filename\"")
                     })
                     if (imageDate != null) append("lastModifiedImageDate", imageDate)
@@ -253,9 +259,26 @@ class SaltyApiClient(
 
     // ---- Library (small full-list tables) ----
 
-    suspend fun fetchCourses(): List<ServerCourse> = client.get("$baseUrl/api/courses") { auth() }.ensureOk().body()
-    suspend fun fetchCategories(): List<ServerCategory> = client.get("$baseUrl/api/categories") { auth() }.ensureOk().body()
-    suspend fun fetchTags(): List<ServerTag> = client.get("$baseUrl/api/tags") { auth() }.ensureOk().body()
+    /**
+     * Fetches one of the full-list collections, verifying completeness against X-Total-Count.
+     *
+     * Like the manifest, a SHORT read is an error rather than data: every caller infers deletions from
+     * absence, so a truncated list would read as a mass deletion. The server sends the header on all of
+     * these (LibraryRoutes.kt, ShoppingListRoutes.kt), and the Swift app checks it too.
+     */
+    private suspend inline fun <reified T> fetchList(path: String, entity: String): List<T> {
+        val resp = client.get("$baseUrl$path") { auth() }.ensureOk()
+        val items: List<T> = resp.body()
+        val total = resp.headers["X-Total-Count"]?.toIntOrNull()
+        if (total != null && total != items.size) {
+            throw SyncException("Incomplete $entity list from the server (${items.size}/$total). Nothing was changed; try again.")
+        }
+        return items
+    }
+
+    suspend fun fetchCourses(): List<ServerCourse> = fetchList("/api/courses", "courses")
+    suspend fun fetchCategories(): List<ServerCategory> = fetchList("/api/categories", "categories")
+    suspend fun fetchTags(): List<ServerTag> = fetchList("/api/tags", "tags")
 
     suspend fun uploadCourse(c: ServerCourse, force: Boolean = false): ServerCourse =
         client.post("$baseUrl/api/courses") {
@@ -311,7 +334,7 @@ class SaltyApiClient(
         return LibraryDeleteOutcome.Deleted
     }
 
-    // Shopping lists. Same full-list shape as the vocab tables above — the GET must return every list,
+    // Shopping lists. Same full-list shape as the classifier tables above — the GET must return every list,
     // since deletions are detected by absence from it. Writes are optimistic-concurrency-aware:
     // a 409 is a first-class outcome carrying the CURRENT server row (the merge input), never an error.
 
@@ -326,7 +349,7 @@ class SaltyApiClient(
     }
 
     suspend fun fetchShoppingLists(): List<ServerShoppingList> =
-        client.get("$baseUrl/api/shoppingLists") { auth() }.ensureOk().body()
+        fetchList("/api/shoppingLists", "shopping list")
 
     suspend fun uploadShoppingList(l: ServerShoppingList): ShoppingListSaveOutcome {
         val resp = client.post("$baseUrl/api/shoppingLists") {
