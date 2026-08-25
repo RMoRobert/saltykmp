@@ -22,9 +22,11 @@ class SimpleEncoderDecoderTest {
         assertEquals("", SimpleEncoderDecoder.decode(""))
     }
 
+    /** Unmarked input is not a credential this ever wrote, so it decodes to "nothing", not to itself. */
     @Test
-    fun legacyPlaintextPassesThrough() {
-        assertEquals("plain-old-password", SimpleEncoderDecoder.decode("plain-old-password"))
+    fun unmarkedInputDecodesToEmpty() {
+        assertEquals("", SimpleEncoderDecoder.decode("plain-old-password"))
+        assertEquals("", SimpleEncoderDecoder.decode("aesgcm1:c29tZS1vdGhlci1iYWNrZW5k"))
     }
 
     @Test

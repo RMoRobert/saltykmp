@@ -222,44 +222,48 @@ fun ShoppingListsScreen(
                 }
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(padding)) {
-                items(shown, key = { it.id }) { list ->
-                    var rowMenu by remember(list.id) { mutableStateOf(false) }
-                    Box {
-                        ListItem(
-                            headlineContent = { Text(list.name.orEmpty().ifBlank { "(untitled)" }) },
-                            colors = if (list.id == selectedId) {
-                                ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-                            } else {
-                                ListItemDefaults.colors()
-                            },
-                            supportingContent = {
-                                Text(
-                                    ShoppingListText.contentsSummary(
-                                        isFreeform = list.isFreeform == true,
-                                        items = list.contentsForList.orEmpty(),
-                                        freeformText = list.contentsForFreeform,
-                                    ),
+            val listState = rememberLazyListState()
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                LazyColumn(Modifier.fillMaxSize(), state = listState) {
+                    items(shown, key = { it.id }) { list ->
+                        var rowMenu by remember(list.id) { mutableStateOf(false) }
+                        Box {
+                            ListItem(
+                                headlineContent = { Text(list.name.orEmpty().ifBlank { "(untitled)" }) },
+                                colors = if (list.id == selectedId) {
+                                    ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                                } else {
+                                    ListItemDefaults.colors()
+                                },
+                                supportingContent = {
+                                    Text(
+                                        ShoppingListText.contentsSummary(
+                                            isFreeform = list.isFreeform == true,
+                                            items = list.contentsForList.orEmpty(),
+                                            freeformText = list.contentsForFreeform,
+                                        ),
+                                    )
+                                },
+                                modifier = Modifier.combinedClickable(
+                                    onClick = { onOpen(list.id) },
+                                    onLongClick = { rowMenu = true },
+                                ),
+                            )
+                            DropdownMenu(expanded = rowMenu, onDismissRequest = { rowMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Rename…") },
+                                    onClick = { rowMenu = false; renaming = list },
                                 )
-                            },
-                            modifier = Modifier.combinedClickable(
-                                onClick = { onOpen(list.id) },
-                                onLongClick = { rowMenu = true },
-                            ),
-                        )
-                        DropdownMenu(expanded = rowMenu, onDismissRequest = { rowMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Rename…") },
-                                onClick = { rowMenu = false; renaming = list },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete…") },
-                                onClick = { rowMenu = false; deleting = list },
-                            )
+                                DropdownMenuItem(
+                                    text = { Text("Delete…") },
+                                    onClick = { rowMenu = false; deleting = list },
+                                )
+                            }
                         }
+                        HorizontalDivider()
                     }
-                    HorizontalDivider()
                 }
+                EdgeScrollbar(listState)
             }
         }
     }
@@ -562,36 +566,39 @@ fun ShoppingListDetailScreen(
                     }
                 }
             } else {
-                LazyColumn(Modifier.fillMaxSize().padding(padding), state = listState) {
-                    items(visible, key = { it.id }) { item ->
-                        ShoppingListItemRow(
-                            item = item,
-                            requestFocus = focusItemId == item.id,
-                            onFocused = { focusItemId = null },
-                            onToggle = {
-                                val i = items.indexOfFirst { it.id == item.id }
-                                if (i >= 0) {
-                                    items[i] = items[i].copy(isCompleted = items[i].isCompleted != true)
-                                    persistItems()
-                                }
-                            },
-                            onText = { text ->
-                                val i = items.indexOfFirst { it.id == item.id }
-                                if (i >= 0) {
-                                    items[i] = items[i].copy(text = text)
-                                    schedulePersist { module.shoppingLists.setItems(list, items.toList()) }
-                                }
-                            },
-                            onSubmit = { addRow(isHeading = item.isHeading == true, afterId = item.id) },
-                            onDelete = {
-                                val before = items.toList()
-                                replaceItems(items.filterNot { it.id == item.id })
-                                val label = item.text.ifBlank { "item" }
-                                onUndoable("Deleted \"$label\"") { replaceItems(before) }
-                            },
-                        )
-                        HorizontalDivider()
+                Box(Modifier.fillMaxSize().padding(padding)) {
+                    LazyColumn(Modifier.fillMaxSize(), state = listState) {
+                        items(visible, key = { it.id }) { item ->
+                            ShoppingListItemRow(
+                                item = item,
+                                requestFocus = focusItemId == item.id,
+                                onFocused = { focusItemId = null },
+                                onToggle = {
+                                    val i = items.indexOfFirst { it.id == item.id }
+                                    if (i >= 0) {
+                                        items[i] = items[i].copy(isCompleted = items[i].isCompleted != true)
+                                        persistItems()
+                                    }
+                                },
+                                onText = { text ->
+                                    val i = items.indexOfFirst { it.id == item.id }
+                                    if (i >= 0) {
+                                        items[i] = items[i].copy(text = text)
+                                        schedulePersist { module.shoppingLists.setItems(list, items.toList()) }
+                                    }
+                                },
+                                onSubmit = { addRow(isHeading = item.isHeading == true, afterId = item.id) },
+                                onDelete = {
+                                    val before = items.toList()
+                                    replaceItems(items.filterNot { it.id == item.id })
+                                    val label = item.text.ifBlank { "item" }
+                                    onUndoable("Deleted \"$label\"") { replaceItems(before) }
+                                },
+                            )
+                            HorizontalDivider()
+                        }
                     }
+                    EdgeScrollbar(listState)
                 }
             }
         }

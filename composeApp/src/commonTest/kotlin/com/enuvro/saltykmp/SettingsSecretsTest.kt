@@ -4,9 +4,12 @@ import com.enuvro.saltykmp.di.KeyValueStore
 import com.enuvro.saltykmp.di.ObfuscatedSecretStore
 import com.enuvro.saltykmp.di.SECRET_KEY_PASSWORD
 import com.enuvro.saltykmp.di.SecretStore
+import com.enuvro.saltykmp.di.verifiedOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 private class FakeStore(initial: Map<String, String> = emptyMap()) : KeyValueStore {
@@ -59,48 +62,73 @@ class SettingsSecretsTest {
     }
 
     @Test
-    fun legacy_obfuscated_password_migrates_into_the_vault() {
-        val store = FakeStore(
-            mapOf(
-                "username" to "rob",
-                SECRET_KEY_PASSWORD to SimpleEncoderDecoder.encode("old-password"),
-            ),
-        )
-        val vault = FakeVault()
-        val settings = SettingsState(store, vault)
-
-        assertEquals("old-password", settings.password)
-        assertEquals("old-password", vault.entries[SECRET_KEY_PASSWORD])
-        assertEquals("rob", vault.accounts[SECRET_KEY_PASSWORD])
-        assertEquals("", store.values[SECRET_KEY_PASSWORD], "the obfuscated copy must not survive migration")
-    }
-
-    @Test
-    fun migration_does_not_clobber_a_password_already_in_the_vault() {
-        val store = FakeStore(mapOf(SECRET_KEY_PASSWORD to SimpleEncoderDecoder.encode("stale")))
-        val vault = FakeVault().apply { put(SECRET_KEY_PASSWORD, "current") }
-        val settings = SettingsState(store, vault)
-
-        assertEquals("current", settings.password)
-        assertEquals("", store.values[SECRET_KEY_PASSWORD])
-    }
-
-    @Test
-    fun fallback_store_keeps_working_and_skips_migration() {
-        // The fallback *is* the legacy location, so a "migration" there would wipe the password.
-        val store = FakeStore(mapOf(SECRET_KEY_PASSWORD to SimpleEncoderDecoder.encode("old-password")))
+    fun fallback_store_round_trips_and_stays_obfuscated_at_rest() {
+        val store = FakeStore()
         val settings = SettingsState(store, ObfuscatedSecretStore(store))
 
-        assertEquals("old-password", settings.password)
         settings.password = "new-password"
         assertEquals("new-password", settings.password)
-        // Still obfuscated at rest, not plaintext.
-        assertTrue(store.values.getValue(SECRET_KEY_PASSWORD).startsWith("enc1:"))
+        // Obfuscated at rest, never plaintext.
+        val atRest = store.values.getValue(SECRET_KEY_PASSWORD)
+        assertTrue(atRest.startsWith("enc1:"))
+        assertFalse(atRest.contains("new-password"))
+    }
+
+    /**
+     * A pref that some other backend wrote (or that got corrupted) must read as "no password", not as the
+     * raw characters. Without this the fallback would hand the sync server a base64 blob to log in with.
+     */
+    @Test
+    fun fallback_store_ignores_a_value_it_did_not_write() {
+        val store = FakeStore(mapOf(SECRET_KEY_PASSWORD to "aesgcm1:bm90LWEtcGFzc3dvcmQ="))
+
+        assertEquals("", SettingsState(store, ObfuscatedSecretStore(store)).password)
     }
 
     @Test
     fun unset_password_reads_as_empty() {
         assertEquals("", SettingsState(FakeStore(), FakeVault()).password)
         assertNull(FakeVault().get(SECRET_KEY_PASSWORD))
+    }
+}
+
+/**
+ * [verifiedOrNull] is the guard added after the Windows binding shipped a vault that reported itself
+ * available and then silently discarded every write. These pin the three behaviours that matter.
+ */
+class SecretStoreVerificationTest {
+
+    /** The exact failure that shipped: writes vanish, reads return null, nothing throws. */
+    private class SilentlyBrokenVault : SecretStore {
+        override fun get(key: String): String? = null
+        override fun put(key: String, value: String, account: String?) = Unit
+        override fun clear(key: String) = Unit
+        override val isPlatformBacked = true
+        override val backendName = "Broken Vault"
+    }
+
+    private class ThrowingVault : SecretStore {
+        override fun get(key: String): String? = error("vault unreachable")
+        override fun put(key: String, value: String, account: String?) = error("vault unreachable")
+        override fun clear(key: String) = Unit
+        override val isPlatformBacked = true
+        override val backendName = "Throwing Vault"
+    }
+
+    @Test
+    fun a_working_vault_verifies_and_leaves_no_probe_behind() {
+        val vault = FakeVault()
+        assertSame(vault, vault.verifiedOrNull())
+        assertTrue(vault.entries.isEmpty(), "the probe entry must be removed after the check")
+    }
+
+    @Test
+    fun a_vault_that_silently_drops_writes_is_rejected() {
+        assertNull(SilentlyBrokenVault().verifiedOrNull())
+    }
+
+    @Test
+    fun a_vault_that_throws_is_rejected_rather_than_propagating() {
+        assertNull(ThrowingVault().verifiedOrNull())
     }
 }

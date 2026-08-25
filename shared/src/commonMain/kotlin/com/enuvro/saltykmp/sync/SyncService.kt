@@ -7,6 +7,8 @@ import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.db.LibraryDuplicateMerger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
@@ -34,7 +36,24 @@ class SyncService(
     private val imageSink: (suspend (recipeId: String, filename: String, bytes: ByteArray, imageDate: String?) -> Unit)? = null,
     private val imageSource: (suspend (recipeId: String, filename: String) -> ByteArray?)? = null,
     private val imageConverter: ImageToJpegConverter? = null,
+    private val onProgress: ((SyncProgress) -> Unit)? = null,
 ) {
+    /**
+     * Publish what we are about to do, and — because a progress point is also a point where stopping is
+     * safe — check for cancellation while we are here.
+     *
+     * The cancellation check is not redundant with the suspending network calls around it: a delta that
+     * carried every recipe body downloads nothing, so [syncRecipes]'s download loop would run to the end
+     * without ever yielding, leaving "Stop" dead for its duration.
+     *
+     * Pass [stoppable] = false for a stretch that must NOT be interrupted — see [pullEverythingFromServer],
+     * which has already wiped the local library by the time it reports anything.
+     */
+    private suspend fun report(phase: SyncPhase, done: Int = 0, total: Int = 0, stoppable: Boolean = true) {
+        if (stoppable) currentCoroutineContext().ensureActive()
+        onProgress?.invoke(SyncProgress(phase, done, total))
+    }
+
     /**
      * Uploads one image, sniffing its real format first. Returns true when bytes actually went up;
      * false when there was nothing to send or the format couldn't be made servable here.
@@ -46,19 +65,29 @@ class SyncService(
         return true
     }
 
+    /**
+     * Stopping this partway through is safe by construction: [SaltyApiClient.completeSync] is the LAST call,
+     * so the server's lastSyncDate does not advance and the next run re-plans from the same cutoff and
+     * redoes whatever is still outstanding. Work already applied stays applied — stopping halts the sync,
+     * it does not roll it back.
+     */
     suspend fun syncNow(): SyncResult {
+        report(SyncPhase.CONNECTING)
         val device = api.registerDevice(deviceId, deviceName)
         val isFirstSync = device.isFirstSync
         val lastSync = LocalStore.parseOrNull(device.lastSyncDate)
 
-        val library = syncCourses(isFirstSync, lastSync) +
+        report(SyncPhase.LIBRARY)
+        val classifiers = syncCourses(isFirstSync, lastSync) +
             syncCategories(isFirstSync, lastSync) +
-            syncTags(isFirstSync, lastSync) +
-            syncShoppingLists(isFirstSync, lastSync)
+            syncTags(isFirstSync, lastSync)
+        report(SyncPhase.SHOPPING_LISTS)
+        val library = classifiers + syncShoppingLists(isFirstSync, lastSync)
         val recipes = syncRecipes(isFirstSync, lastSync, device.lastSyncDate)
 
         // Deliberately AFTER the downloads, as Salty's step 6b is: a recipe arriving in this same sync
         // still sees both ids and keeps its membership, and the fold then re-points it.
+        report(SyncPhase.FINISHING)
         val (duplicatesMerged, foldWarning) = consolidateDuplicates()
 
         api.completeSync(deviceId)
@@ -123,20 +152,28 @@ class SyncService(
      * Performs NO uploads and NO server deletions — a safe "force full re-sync" / recovery path.
      */
     suspend fun pullEverythingFromServer(): SyncResult {
+        report(SyncPhase.CONNECTING)
         api.registerDevice(deviceId, deviceName) // ensure the device is registered
+        report(SyncPhase.PLANNING)
         val courses = api.fetchCourses()
         val categories = api.fetchCategories()
         val tags = api.fetchTags()
         val shoppingLists = api.fetchShoppingLists()
         val recipes = api.fetchRecipeDelta(modifiedSince = null) // all bodies
 
+        // Everything from here to completeSync reports with stoppable = false. The local library has just
+        // been wiped, and unlike an ordinary sync there is no cutoff to resume from — stopping mid-restore
+        // would strand a truncated library with nothing to reconcile it against. The UI does not offer
+        // "Stop" for this path either; the flag keeps that promise if some other caller cancels us.
         local.clearAll()
+        report(SyncPhase.LIBRARY, stoppable = false)
         courses.forEach { local.upsertCourse(it) }
         categories.forEach { local.upsertCategory(it) }
         tags.forEach { local.upsertTag(it) }
         shoppingLists.forEach { local.upsertShoppingList(it) }
         var imagesDown = 0
-        for (recipe in recipes) {
+        for ((i, recipe) in recipes.withIndex()) {
+            report(SyncPhase.DOWNLOADING_RECIPES, i + 1, recipes.size, stoppable = false)
             local.upsertRecipe(recipe)
             val filename = recipe.imageFilename
             if (filename != null && imageSink != null) {
@@ -153,6 +190,7 @@ class SyncService(
         }
         // The server can hold same-named rows of its own, so the restored library gets the same fold an
         // ordinary sync ends with. Salty tidies after its force restore for the same reason.
+        report(SyncPhase.FINISHING, stoppable = false)
         val (duplicatesMerged, foldWarning) = consolidateDuplicates()
 
         api.completeSync(deviceId)
@@ -171,6 +209,7 @@ class SyncService(
      * the source of truth (the inverse of [pullEverythingFromServer]).
      */
     suspend fun pushEverythingToServer(): SyncResult {
+        report(SyncPhase.CONNECTING)
         api.registerDevice(deviceId, deviceName) // ensure the device is registered
 
         // Upload FIRST, delete orphans LAST. The old order — wipe, then upload — left the server empty
@@ -178,6 +217,7 @@ class SyncService(
         // OTHER device's next sync then read its own library as "deleted on the server". Uploading over
         // the existing rows is safe because the server's POST is an unconditional upsert, so nothing is
         // ever missing from the server mid-push. The Swift app does it in this order too.
+        report(SyncPhase.PLANNING)
         val serverRecipeIds = api.fetchManifest().map { it.id }
         val serverCourses = api.fetchCourses()
         val serverCategories = api.fetchCategories()
@@ -188,12 +228,14 @@ class SyncService(
         // `force = true` marks these as deliberate mirror-this-device overwrites (see
         // SaltyApiClient.FORCE_WRITE_HEADER) — inserts today, but it keeps a future server-side
         // stale-write guard from vetoing a racing re-creation.
+        report(SyncPhase.LIBRARY)
         val courses = local.courses()
         val categories = local.categories()
         val tags = local.tags()
         courses.forEach { api.uploadCourse(it, force = true) }
         categories.forEach { api.uploadCategory(it, force = true) }
         tags.forEach { api.uploadTag(it, force = true) }
+        report(SyncPhase.SHOPPING_LISTS)
         val serverListsById = serverLists.associateBy { it.id }
         val shoppingLists = local.shoppingLists()
         shoppingLists.forEach { l ->
@@ -211,7 +253,9 @@ class SyncService(
         var recipesUp = 0
         var imagesUp = 0
         val localRecipeIds = mutableSetOf<String>()
-        for (entry in local.recipeEntries()) {
+        val outgoing = local.recipeEntries()
+        for ((i, entry) in outgoing.withIndex()) {
+            report(SyncPhase.UPLOADING_RECIPES, i + 1, outgoing.size)
             localRecipeIds += entry.id
             val recipe = local.recipeForUpload(entry.id) ?: continue
             api.uploadRecipe(recipe, force = true)
@@ -222,6 +266,7 @@ class SyncService(
 
         // 2. The server now holds everything this device has, so remove what it has EXTRA. Recipe
         // deletions also drop their images server-side.
+        report(SyncPhase.APPLYING_DELETIONS)
         val orphanRecipes = serverRecipeIds.filter { it !in localRecipeIds }
         if (orphanRecipes.isNotEmpty()) api.deleteRecipesOnServer(deviceId, orphanRecipes)
         val localCourseIds = courses.mapTo(mutableSetOf()) { it.id }
@@ -250,10 +295,12 @@ class SyncService(
         // whose server copy changed since our last sync).
         val tombstones = local.tombstonedRecipeIds().toSet()
         if (tombstones.isNotEmpty()) {
+            report(SyncPhase.APPLYING_DELETIONS)
             api.deleteRecipesOnServer(deviceId, tombstones.toList())
             local.clearRecipeTombstones(tombstones)
         }
 
+        report(SyncPhase.PLANNING)
         // Complete manifest drives reconciliation; delta carries only changed bodies.
         val fullManifest = api.fetchManifest()
         val manifest = fullManifest.filter { it.id !in tombstones }
@@ -266,10 +313,12 @@ class SyncService(
 
         // Bodies only — image bytes are reconciled separately below, keyed on lastModifiedImageDate, so a
         // text-only change never moves an image and an image-only change never re-sends the body.
-        for (id in plan.toUpload) {
+        for ((i, id) in plan.toUpload.withIndex()) {
+            report(SyncPhase.UPLOADING_RECIPES, i + 1, plan.toUpload.size)
             local.recipeForUpload(id)?.let { recipe -> api.uploadRecipe(recipe) }
         }
-        for (id in plan.toDownload) {
+        for ((i, id) in plan.toDownload.withIndex()) {
+            report(SyncPhase.DOWNLOADING_RECIPES, i + 1, plan.toDownload.size)
             local.upsertRecipe(deltaById[id] ?: api.fetchRecipe(id))
         }
 
@@ -281,7 +330,8 @@ class SyncService(
         if (refusal != null) {
             warnings += refusal
         } else {
-            for (id in plan.toDeleteLocally) {
+            for ((i, id) in plan.toDeleteLocally.withIndex()) {
+                report(SyncPhase.APPLYING_DELETIONS, i + 1, plan.toDeleteLocally.size)
                 local.deleteRecipeLocalOnly(id)
                 deletedLocally++
             }
@@ -376,7 +426,9 @@ class SyncService(
             api.downloadImage(file)?.let { bytes -> imageSink?.invoke(id, file, bytes, date); down++ }
         }
         val failed = mutableListOf<String>()
-        for (id in (serverById.keys + localById.keys) - tombstones) {
+        val work = (serverById.keys + localById.keys) - tombstones
+        for ((i, id) in work.withIndex()) {
+            report(SyncPhase.IMAGES, i + 1, work.size)
             val s = serverById[id]
             val l = localById[id]
             val serverDate = LocalStore.parseOrPast(s?.lastModifiedImageDate)

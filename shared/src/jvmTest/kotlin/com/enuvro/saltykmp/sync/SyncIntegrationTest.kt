@@ -20,9 +20,12 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -813,5 +816,79 @@ class SyncIntegrationTest {
         assertTrue(local.recipeEntries().none { it.id == "r1" }, "deleted recipe must not be resurrected")
         assertTrue(!server.recipes.containsKey("r1"), "deletion must propagate to the server")
         assertTrue(local.tombstonedRecipeIds().isEmpty(), "tombstone cleared after a successful sync")
+    }
+
+    // ---- progress reporting and stopping ----
+
+    /**
+     * Progress carries the reconciler's real counts, not a guess: two local-only recipes to push and three
+     * server-only ones to pull are reported as exactly that, and each phase counts up to its own total.
+     */
+    @Test
+    fun progressReportsTheRealPlanCounts() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        local.upsertRecipe(ServerRecipe(id = "up1", name = "Chili", lastModifiedDate = "2026-06-01T00:00:00.000Z"))
+        local.upsertRecipe(ServerRecipe(id = "up2", name = "Stew", lastModifiedDate = "2026-06-01T00:00:00.000Z"))
+
+        val server = FakeServer()
+        for (id in listOf("down1", "down2", "down3")) {
+            server.recipes[id] = ServerRecipe(id = id, name = id, lastModifiedDate = "2026-06-02T00:00:00.000Z")
+        }
+
+        val seen = mutableListOf<SyncProgress>()
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(
+            api, local, deviceId = "d", deviceName = "Test",
+            onProgress = { seen += it },
+        ).syncNow()
+
+        fun countsFor(phase: SyncPhase) = seen.filter { it.phase == phase }
+        assertEquals(listOf(1 to 2, 2 to 2), countsFor(SyncPhase.UPLOADING_RECIPES).map { it.done to it.total })
+        assertEquals(listOf(1 to 3, 2 to 3, 3 to 3), countsFor(SyncPhase.DOWNLOADING_RECIPES).map { it.done to it.total })
+
+        // The bookend phases always report, so the UI is never left on a stale label.
+        val phases = seen.map { it.phase }
+        assertEquals(SyncPhase.CONNECTING, phases.first())
+        assertTrue(SyncPhase.PLANNING in phases)
+        assertTrue(SyncPhase.FINISHING in phases)
+
+        // A single-request phase has nothing to count and must render as a bare label, not "0 of 0".
+        val library = seen.first { it.phase == SyncPhase.LIBRARY }
+        assertEquals(0, library.total)
+        assertEquals(null, library.fraction())
+        assertEquals("Syncing courses, categories and tags", library.describe())
+        assertEquals("Downloading recipes (2 of 3)", SyncProgress(SyncPhase.DOWNLOADING_RECIPES, 2, 3).describe())
+    }
+
+    /**
+     * Stopping mid-sync is safe because completeSync is the LAST call: the server's cutoff never moves, so
+     * the next run re-plans the same work. Also proves the cancellation check in `report` actually bites —
+     * a first sync's delta carries every body, so the download loop makes no network calls at all and would
+     * otherwise run to completion with nothing to interrupt it.
+     */
+    @Test
+    fun stoppingMidSyncLeavesTheServerCutoffUnmoved() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        for (id in listOf("r1", "r2", "r3", "r4")) {
+            server.recipes[id] = ServerRecipe(id = id, name = id, lastModifiedDate = "2026-06-02T00:00:00.000Z")
+        }
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        var job: Job? = null
+        val service = SyncService(
+            api, local, deviceId = "d", deviceName = "Test",
+            // Stop the way the Settings button does, once two recipes have been applied.
+            onProgress = { if (it.phase == SyncPhase.DOWNLOADING_RECIPES && it.done == 2) job?.cancel() },
+        )
+        job = launch { service.syncNow() }
+        job.join()
+
+        assertTrue(job.isCancelled, "the sync job must actually cancel")
+        assertFalse(server.completed, "completeSync must NOT run, so the next sync re-plans from the same cutoff")
+        // Stopping halts the sync, it does not roll it back: what already landed stays landed.
+        assertEquals(2, local.recipeEntries().size, "recipes applied before the stop are kept")
     }
 }

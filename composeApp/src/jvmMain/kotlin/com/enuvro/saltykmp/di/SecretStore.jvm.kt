@@ -7,15 +7,26 @@ import com.sun.jna.Structure
 import com.sun.jna.WString
 import com.sun.jna.ptr.PointerByReference
 import com.sun.jna.win32.StdCallLibrary
+import java.util.concurrent.TimeUnit
 
 /**
- * Desktop secret storage: Windows Credential Manager where available, obfuscated prefs elsewhere.
+ * Desktop secret storage: Windows Credential Manager, macOS Keychain, or Linux libsecret — whichever the
+ * host offers and can actually round-trip a value through — and obfuscated prefs otherwise.
  *
- * macOS and Linux stay on the fallback for now — Keychain (`security` CLI) and libsecret
- * (`secret-tool`) are the obvious follow-ups and need no new dependency.
+ * Every candidate goes through [verifiedOrNull], so a vault that is present but non-functional (no keyring
+ * daemon on a headless Linux box; the JNA fault that once made the Windows one silently discard writes)
+ * demotes itself to the fallback instead of pretending to store anything.
  */
-actual fun createSecretStore(fallback: KeyValueStore): SecretStore =
-    WindowsCredentialStore.createOrNull() ?: ObfuscatedSecretStore(fallback)
+actual fun createSecretStore(fallback: KeyValueStore): SecretStore {
+    val os = System.getProperty("os.name").orEmpty()
+    val platform = when {
+        os.startsWith("Windows", ignoreCase = true) -> WindowsCredentialStore.createOrNull()
+        os.startsWith("Mac", ignoreCase = true) -> MacKeychainStore()
+        os.startsWith("Linux", ignoreCase = true) -> LinuxSecretToolStore()
+        else -> null
+    }
+    return platform?.verifiedOrNull() ?: ObfuscatedSecretStore(fallback)
+}
 
 /**
  * Generic credentials in the Windows Credential Manager, one entry per key, named "Salty:<key>".
@@ -98,6 +109,111 @@ private class WindowsCredentialStore private constructor(private val lib: Advapi
 }
 
 /**
+ * macOS Keychain, via the `security` CLI — one generic password per key, service "Salty:<key>", visible
+ * and deletable in Keychain Access just as the Windows entries are in Credential Manager.
+ *
+ * KNOWN WEAKNESS: `add-generic-password -w <secret>` puts the password in the process argument list, where
+ * any other process running as this user can see it in `ps` for the lifetime of the call. That is strictly
+ * better than the obfuscated fallback (which leaves it readable at rest, forever) and strictly worse than
+ * the Windows and iOS stores, which never expose it. Removing it means binding Security.framework's
+ * SecItemAdd through JNA — the same shape as [WindowsCredentialStore], and the natural next step here.
+ */
+private class MacKeychainStore : SecretStore {
+
+    override val isPlatformBacked: Boolean = true
+    override val backendName: String = "macOS Keychain"
+
+    override fun get(key: String): String? =
+        runTool("/usr/bin/security", "find-generic-password", "-s", service(key), "-w")
+            ?.removeSuffix("\n")?.takeIf { it.isNotEmpty() }
+
+    override fun put(key: String, value: String, account: String?) {
+        if (value.isEmpty()) {
+            clear(key)
+            return
+        }
+        runTool(
+            "/usr/bin/security", "add-generic-password",
+            "-s", service(key),
+            // Display-only, exactly as on Windows: lookups key off the service alone, so changing the sync
+            // username later can never orphan the entry.
+            "-a", account?.takeIf { it.isNotBlank() } ?: "Salty",
+            "-w", value,
+            "-U", // update in place instead of failing when the item already exists
+        )
+    }
+
+    override fun clear(key: String) {
+        runTool("/usr/bin/security", "delete-generic-password", "-s", service(key))
+    }
+
+    private fun service(key: String) = "Salty:$key"
+}
+
+/**
+ * Linux keyring through libsecret's `secret-tool`, which talks to whatever Secret Service provider is
+ * running (GNOME Keyring, KWallet).
+ *
+ * Two things have to be true, and neither is guaranteed: `secret-tool` installed (`libsecret-tools`), and a
+ * provider actually running — a headless box or a bare window manager has neither. Both failures look the
+ * same from here, and both are caught by the [verifiedOrNull] round trip, which demotes this to the
+ * obfuscated fallback rather than dropping secrets on the floor.
+ *
+ * Unlike the macOS tool, `secret-tool store` reads the secret from STDIN, so it never reaches argv.
+ */
+private class LinuxSecretToolStore : SecretStore {
+
+    override val isPlatformBacked: Boolean = true
+    override val backendName: String = "Linux keyring (libsecret)"
+
+    override fun get(key: String): String? =
+        runTool("secret-tool", "lookup", ATTR_APP, APP, ATTR_KEY, key)
+            ?.removeSuffix("\n")?.takeIf { it.isNotEmpty() }
+
+    override fun put(key: String, value: String, account: String?) {
+        if (value.isEmpty()) {
+            clear(key)
+            return
+        }
+        runTool("secret-tool", "store", "--label=$APP", ATTR_APP, APP, ATTR_KEY, key, stdin = value)
+    }
+
+    override fun clear(key: String) {
+        runTool("secret-tool", "clear", ATTR_APP, APP, ATTR_KEY, key)
+    }
+
+    private companion object {
+        const val APP = "Salty"
+        const val ATTR_APP = "application"
+        const val ATTR_KEY = "key"
+    }
+}
+
+/** How long a keyring helper gets before it is assumed stuck and killed. */
+private const val TOOL_TIMEOUT_SECONDS = 10L
+
+/**
+ * Run a keyring helper, optionally feeding it [stdin], and return its stdout — or null for any failure at
+ * all, including the binary not existing.
+ *
+ * stderr is discarded rather than merged, so a tool that warns on the way to succeeding cannot corrupt a
+ * returned secret.
+ */
+private fun runTool(vararg command: String, stdin: String? = null): String? = runCatching {
+    val process = ProcessBuilder(*command).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+    process.outputStream.use { out -> stdin?.let { out.write(it.toByteArray(Charsets.UTF_8)) } }
+    // Wait BEFORE reading: every output here is one short line, far inside the pipe buffer, so the child can
+    // exit without us draining it. Reading first would instead hang forever on a tool that stops to prompt
+    // — a keychain unlock dialog, or a Secret Service that never answers — and this is called from the UI.
+    if (!process.waitFor(TOOL_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+        process.destroyForcibly()
+        return null
+    }
+    if (process.exitValue() != 0) return null // includes "no such item", which is a normal miss
+    process.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8)
+}.getOrNull()
+
+/**
  * Minimal hand-rolled binding for the four wincred.h entry points we need, so the desktop app pulls in
  * JNA core only (jna-platform would add ~1.5 MB of Win32 wrappers for these same four calls).
  */
@@ -112,13 +228,19 @@ private interface Advapi32Cred : StdCallLibrary {
  * wincred.h `CREDENTIALW`. Field order and types must match the C struct exactly — JNA computes the
  * offsets from them. `FILETIME LastWritten` is modelled as its two DWORDs, which lays out identically
  * and saves a nested Structure class.
+ *
+ * `internal`, NOT `private`: a private top-level class is package-private in the bytecode, and JNA only
+ * calls setAccessible() on fields it sees as non-public. These fields *are* public, so it reads them
+ * directly — and the JVM refuses, because the declaring class is not. That threw inside Structure's
+ * constructor, so every CredWriteW/CredReadW died before reaching the native call and the runCatching
+ * in [WindowsCredentialStore] swallowed it: nothing written, no error, an empty password sent to sync.
  */
 @Structure.FieldOrder(
     "flags", "type", "targetName", "comment", "lastWrittenLow", "lastWrittenHigh",
     "credentialBlobSize", "credentialBlob", "persist", "attributeCount", "attributes",
     "targetAlias", "userName",
 )
-private class CREDENTIALW : Structure {
+internal class CREDENTIALW : Structure {
     @JvmField var flags: Int = 0
     @JvmField var type: Int = 0
     @JvmField var targetName: WString? = null

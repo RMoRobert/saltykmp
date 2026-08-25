@@ -72,6 +72,13 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }
+        // On-device tests: the AndroidKeyStore has no JVM equivalent, so the crypto in
+        // SecretStore.android.kt can only be exercised on an emulator or handset.
+        androidInstrumentedTest.dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.androidx.testExt.junit)
+            implementation(libs.androidx.test.runner)
+        }
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutinesSwing)
@@ -115,6 +122,7 @@ android {
         versionCode = appVersion.split(".").map { it.toInt() }
             .let { (major, minor, patch) -> major * 10_000_000 + minor * 100_000 + patch }
         versionName = appVersion
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     packaging {
         resources {

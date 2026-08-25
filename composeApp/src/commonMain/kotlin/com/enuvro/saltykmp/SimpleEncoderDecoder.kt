@@ -5,10 +5,10 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.random.Random
 
 /**
- * Reversible obfuscation for the stored password, in lieu of platform secure storage.
- *
- * TODO: Move this to (platform-specific?) secure storage in future, like Keychain, Keystore, etc.
- * For now, using simple obfuscation to avoid plain text, at least.
+ * Reversible obfuscation for the stored password: the fallback used only where no OS vault is reachable
+ * (see `SecretStore` — Windows Credential Manager, iOS Keychain, Android Keystore, macOS Keychain and the
+ * Linux keyring all take precedence). Not encryption; the key ships in the app. It only keeps the password
+ * from sitting in the prefs file as plaintext.
  *
  * Format: "enc1:" + base64( 8-byte random nonce || (plaintext XOR keystream) ), where the keystream
  * is a deterministic kotlin.random sequence seeded from the embedded key XOR the nonce. The nonce makes
@@ -31,7 +31,10 @@ object SimpleEncoderDecoder {
     }
 
     fun decode(stored: String): String {
-        if (!stored.startsWith(MARKER)) return stored // legacy plaintext / empty → passthrough
+        // Anything without the marker was not written by [encode]. Treat it as absent rather than handing
+        // the raw characters back as if they were a password — the only thing that can produce this now is
+        // a corrupted pref or another backend's output, and neither is a credential.
+        if (!stored.startsWith(MARKER)) return ""
         return runCatching {
             val payload = Base64.decode(stored.substring(MARKER.length))
             val nonce = bytesToLong(payload)

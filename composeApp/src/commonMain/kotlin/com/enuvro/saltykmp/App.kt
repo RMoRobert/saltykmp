@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -68,6 +69,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.darkColorScheme
@@ -170,6 +172,8 @@ import io.github.vinceglb.filekit.dialogs.FileKitType
 import io.github.vinceglb.filekit.dialogs.compose.rememberDirectoryPickerLauncher
 import io.github.vinceglb.filekit.dialogs.compose.rememberFilePickerLauncher
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
@@ -195,7 +199,7 @@ private sealed interface Screen {
 }
 
 // Material 3 scheme built from the brand azure (#0291FA). Roles are assigned by tonal value off three
-// harmonized palettes — primary (azure), secondary (muted blue-gray), tertiary (sea-teal accent) — over
+// harmonized palettes: primary (azure), secondary (muted blue-gray), tertiary (sea-teal accent) — over
 // cool neutrals, so secondary/tertiary/containers all relate to the chosen blue instead of clashing.
 private val SaltyLightColors = lightColorScheme(
     primary = Color(0xFF0291FA),            // the selected brand blue, kept as-is
@@ -281,8 +285,12 @@ private val SaltyDarkColors = darkColorScheme(
 private fun SaltyTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = if (isSystemInDarkTheme()) SaltyDarkColors else SaltyLightColors,
-        content = content,
-    )
+    ) {
+        // Most screens sit on a Scaffold, which paints its own background — but the empty-pane
+        // placeholders and the startup spinner don't, and on desktop the bare window behind them is
+        // white whatever the theme says. One Surface under everything keeps dark mode dark.
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { content() }
+    }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -1123,54 +1131,58 @@ private fun RecipeListPane(
                 }
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(padding)) {
-                items(sorted, key = { it.id }) { recipe ->
-                    // Prefer the cached thumbnail blob; fall back to the full image for rows synced
-                    // before thumbnail caching (a re-sync backfills the blob).
-                    val thumb = remember(recipe.imageThumbnailData, recipe.imageFilename) {
-                        (recipe.imageThumbnailData
-                            ?: recipe.imageFilename?.let { module.imageFiles.load(it) })
-                            ?.let { decodeImageBitmap(it) }
+            val listState = rememberLazyListState()
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                LazyColumn(Modifier.fillMaxSize(), state = listState) {
+                    items(sorted, key = { it.id }) { recipe ->
+                        // Prefer the cached thumbnail blob; fall back to the full image for rows synced
+                        // before thumbnail caching (a re-sync backfills the blob).
+                        val thumb = remember(recipe.imageThumbnailData, recipe.imageFilename) {
+                            (recipe.imageThumbnailData
+                                ?: recipe.imageFilename?.let { module.imageFiles.load(it) })
+                                ?.let { decodeImageBitmap(it) }
+                        }
+                        var rowMenu by remember(recipe.id) { mutableStateOf(false) }
+                        // When sorting by "Last Made", surface the date in the row itself — otherwise the
+                        // ordering has no visible explanation.
+                        val lastMade = remember(recipe.lastPrepared) {
+                            PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
+                        }
+                        val subtitle = when {
+                            sort == RecipeSort.LAST_MADE -> lastMade?.let { "Made $it" } ?: "Never made"
+                            else -> recipe.source?.takeIf { it.isNotBlank() }
+                        }
+                        Box {
+                            ListItem(
+                                leadingContent = { RecipeThumbnail(thumb) },
+                                headlineContent = { Text(if (recipe.isFavorite == true) "★ ${recipe.name}" else recipe.name) },
+                                supportingContent = subtitle?.let { { Text(it) } },
+                                // In a split view the row for the recipe showing on the right is marked, so
+                                // the list always says which one you're reading.
+                                colors = if (recipe.id == selectedId) {
+                                    ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                                } else {
+                                    ListItemDefaults.colors()
+                                },
+                                modifier = Modifier.combinedClickable(
+                                    onClick = { shell.onScreen(Screen.Detail(recipe.id)) },
+                                    onLongClick = { rowMenu = true },
+                                ),
+                            )
+                            LastMadeMenu(
+                                expanded = rowMenu,
+                                currentLastPrepared = recipe.lastPrepared,
+                                onDismiss = { rowMenu = false },
+                                onSet = { wire ->
+                                    module.localStore.setRecipePrepared(recipe.id, wire, nowTimestamp())
+                                    module.onLocalChange()
+                                },
+                            )
+                        }
+                        HorizontalDivider()
                     }
-                    var rowMenu by remember(recipe.id) { mutableStateOf(false) }
-                    // When sorting by "Last Made", surface the date in the row itself — otherwise the
-                    // ordering has no visible explanation.
-                    val lastMade = remember(recipe.lastPrepared) {
-                        PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
-                    }
-                    val subtitle = when {
-                        sort == RecipeSort.LAST_MADE -> lastMade?.let { "Made $it" } ?: "Never made"
-                        else -> recipe.source?.takeIf { it.isNotBlank() }
-                    }
-                    Box {
-                        ListItem(
-                            leadingContent = { RecipeThumbnail(thumb) },
-                            headlineContent = { Text(if (recipe.isFavorite == true) "★ ${recipe.name}" else recipe.name) },
-                            supportingContent = subtitle?.let { { Text(it) } },
-                            // In a split view the row for the recipe showing on the right is marked, so
-                            // the list always says which one you're reading.
-                            colors = if (recipe.id == selectedId) {
-                                ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-                            } else {
-                                ListItemDefaults.colors()
-                            },
-                            modifier = Modifier.combinedClickable(
-                                onClick = { shell.onScreen(Screen.Detail(recipe.id)) },
-                                onLongClick = { rowMenu = true },
-                            ),
-                        )
-                        LastMadeMenu(
-                            expanded = rowMenu,
-                            currentLastPrepared = recipe.lastPrepared,
-                            onDismiss = { rowMenu = false },
-                            onSet = { wire ->
-                                module.localStore.setRecipePrepared(recipe.id, wire, nowTimestamp())
-                                module.onLocalChange()
-                            },
-                        )
-                    }
-                    HorizontalDivider()
                 }
+                EdgeScrollbar(listState)
             }
         }
     }
@@ -1623,138 +1635,142 @@ private fun RecipeDetailScreen(
         }
         // A recipe read across a 1600px window is unreadable; cap the measure and centre it. On a phone
         // the cap is never reached, so nothing changes there.
-        Box(
-            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()),
-            contentAlignment = Alignment.TopCenter,
-        ) {
-        Column(
-            Modifier.fillMaxWidth().widthIn(max = READING_WIDTH).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            image?.let {
-                Image(
-                    bitmap = it,
-                    contentDescription = recipe.name,
-                    // Wide layouts get a hero across the pane; a phone keeps the compact square, where a
-                    // 240dp-tall image would push everything else below the fold.
-                    modifier = if (wide) {
-                        Modifier.fillMaxWidth().height(240.dp).clip(RoundedCornerShape(12.dp))
-                    } else {
-                        Modifier.size(140.dp).clip(RoundedCornerShape(8.dp))
-                    },
-                    contentScale = ContentScale.Crop,
-                )
-            }
+        val scroll = rememberScrollState()
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            Box(
+                Modifier.fillMaxSize().verticalScroll(scroll),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().widthIn(max = READING_WIDTH).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    image?.let {
+                        Image(
+                            bitmap = it,
+                            contentDescription = recipe.name,
+                            // Wide layouts get a hero across the pane; a phone keeps the compact square, where a
+                            // 240dp-tall image would push everything else below the fold.
+                            modifier = if (wide) {
+                                Modifier.fillMaxWidth().height(240.dp).clip(RoundedCornerShape(12.dp))
+                            } else {
+                                Modifier.size(140.dp).clip(RoundedCornerShape(8.dp))
+                            },
+                            contentScale = ContentScale.Crop,
+                        )
+                    }
 
-            // Metadata card
-            val metaItems = buildList {
-                courseName?.let { add("Course" to it) }
-                difficultyName(recipe.difficulty)?.let { add("Difficulty" to it) }
-                ratingStars(recipe.rating)?.let { add("Rating" to it) }
-                recipe.servings?.let { add("Servings" to it.toString()) }
-                recipe.yield?.takeIf { it.isNotBlank() }?.let { add("Yield" to it) }
-                PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
-                    ?.let { add("Last Made" to it) }
-            }
-            val flags = buildList {
-                if (recipe.isFavorite == true) add(Icons.Filled.Star to "Favorite")
-                if (recipe.wantToMake == true) add(Icons.Filled.BookmarkAdded to "Want to Make")
-            }
-            if (metaItems.isNotEmpty() || flags.isNotEmpty()) {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        metaItems.forEach { (k, v) -> DetailMeta(k, v) }
-                        if (flags.isNotEmpty()) {
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                flags.forEach { (icon, label) ->
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    ) {
-                                        Icon(
-                                            icon,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(18.dp),
-                                        )
-                                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    // Metadata card
+                    val metaItems = buildList {
+                        courseName?.let { add("Course" to it) }
+                        difficultyName(recipe.difficulty)?.let { add("Difficulty" to it) }
+                        ratingStars(recipe.rating)?.let { add("Rating" to it) }
+                        recipe.servings?.let { add("Servings" to it.toString()) }
+                        recipe.yield?.takeIf { it.isNotBlank() }?.let { add("Yield" to it) }
+                        PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
+                            ?.let { add("Last Made" to it) }
+                    }
+                    val flags = buildList {
+                        if (recipe.isFavorite == true) add(Icons.Filled.Star to "Favorite")
+                        if (recipe.wantToMake == true) add(Icons.Filled.BookmarkAdded to "Want to Make")
+                    }
+                    if (metaItems.isNotEmpty() || flags.isNotEmpty()) {
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                metaItems.forEach { (k, v) -> DetailMeta(k, v) }
+                                if (flags.isNotEmpty()) {
+                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                        flags.forEach { (icon, label) ->
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            ) {
+                                                Icon(
+                                                    icon,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                                Text(label, style = MaterialTheme.typography.bodyMedium)
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-            }
 
-            recipe.introduction?.takeIf { it.isNotBlank() }?.let { DetailSection("Introduction") { Text(it) } }
+                    recipe.introduction?.takeIf { it.isNotBlank() }?.let { DetailSection("Introduction") { Text(it) } }
 
-            recipe.preparationTimes?.takeIf { it.isNotEmpty() }?.let { list ->
-                DetailSection("Preparation Times") {
-                    list.forEach { DetailMeta(it.type, it.timeString) }
-                }
-            }
-            recipe.ingredients?.takeIf { it.isNotEmpty() }?.let { list ->
-                DetailSection("Ingredients") {
-                    list.forEach {
-                        if (it.isHeading) Text(it.text, fontWeight = FontWeight.Medium)
-                        else Text("• ${it.text}")
+                    recipe.preparationTimes?.takeIf { it.isNotEmpty() }?.let { list ->
+                        DetailSection("Preparation Times") {
+                            list.forEach { DetailMeta(it.type, it.timeString) }
+                        }
+                    }
+                    recipe.ingredients?.takeIf { it.isNotEmpty() }?.let { list ->
+                        DetailSection("Ingredients") {
+                            list.forEach {
+                                if (it.isHeading) Text(it.text, fontWeight = FontWeight.Medium)
+                                else Text("• ${it.text}")
+                            }
+                        }
+                    }
+                    recipe.directions?.takeIf { it.isNotEmpty() }?.let { list ->
+                        DetailSection("Directions") {
+                            var step = 0
+                            list.forEach { d ->
+                                // Headings (e.g. "Prepare filling") are medium-weight (below the section title)
+                                // and not numbered/counted.
+                                if (d.isHeading == true) Text(d.text, fontWeight = FontWeight.Medium)
+                                else { step++; Text("$step. ${d.text}") }
+                            }
+                        }
+                    }
+                    recipe.notes?.takeIf { it.isNotEmpty() }?.let { list ->
+                        DetailSection("Notes") {
+                            list.forEach { n ->
+                                if (n.title.isNotBlank()) Text(n.title, style = MaterialTheme.typography.titleSmall)
+                                Text(n.content)
+                            }
+                        }
+                    }
+                    recipe.variations?.takeIf { it.isNotEmpty() }?.let { list ->
+                        DetailSection("Variations") {
+                            list.forEach { v ->
+                                if (v.variationName.isNotBlank()) Text(v.variationName, style = MaterialTheme.typography.titleSmall)
+                                Text(v.text)
+                            }
+                        }
+                    }
+                    recipe.nutrition?.let { n ->
+                        val rows = nutritionRows(n)
+                        if (rows.isNotEmpty()) DetailSection("Nutrition") { rows.forEach { (k, v) -> DetailMeta(k, v) } }
+                    }
+                    // Chips navigate: tapping one shows the rest of the library filed under it. (They used to be
+                    // AssistChips with an empty onClick — tappable-looking and inert.)
+                    if (categoryChips.isNotEmpty()) DetailSection("Categories") {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            categoryChips.forEach { (cid, name) ->
+                                AssistChip(onClick = { onFilter(RecipeFilter.Category(cid, name)) }, label = { Text(name) })
+                            }
+                        }
+                    }
+                    if (tagChips.isNotEmpty()) DetailSection("Tags") {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            tagChips.forEach { (tid, name) ->
+                                AssistChip(onClick = { onFilter(RecipeFilter.Tag(tid, name)) }, label = { Text(name) })
+                            }
+                        }
+                    }
+                    if (!recipe.source.isNullOrBlank() || !recipe.sourceDetails.isNullOrBlank()) {
+                        DetailSection("Source") {
+                            recipe.source?.takeIf { it.isNotBlank() }?.let { Text(it) }
+                            recipe.sourceDetails?.takeIf { it.isNotBlank() }?.let { Text(it) }
+                        }
                     }
                 }
             }
-            recipe.directions?.takeIf { it.isNotEmpty() }?.let { list ->
-                DetailSection("Directions") {
-                    var step = 0
-                    list.forEach { d ->
-                        // Headings (e.g. "Prepare filling") are medium-weight (below the section title)
-                        // and not numbered/counted.
-                        if (d.isHeading == true) Text(d.text, fontWeight = FontWeight.Medium)
-                        else { step++; Text("$step. ${d.text}") }
-                    }
-                }
-            }
-            recipe.notes?.takeIf { it.isNotEmpty() }?.let { list ->
-                DetailSection("Notes") {
-                    list.forEach { n ->
-                        if (n.title.isNotBlank()) Text(n.title, style = MaterialTheme.typography.titleSmall)
-                        Text(n.content)
-                    }
-                }
-            }
-            recipe.variations?.takeIf { it.isNotEmpty() }?.let { list ->
-                DetailSection("Variations") {
-                    list.forEach { v ->
-                        if (v.variationName.isNotBlank()) Text(v.variationName, style = MaterialTheme.typography.titleSmall)
-                        Text(v.text)
-                    }
-                }
-            }
-            recipe.nutrition?.let { n ->
-                val rows = nutritionRows(n)
-                if (rows.isNotEmpty()) DetailSection("Nutrition") { rows.forEach { (k, v) -> DetailMeta(k, v) } }
-            }
-            // Chips navigate: tapping one shows the rest of the library filed under it. (They used to be
-            // AssistChips with an empty onClick — tappable-looking and inert.)
-            if (categoryChips.isNotEmpty()) DetailSection("Categories") {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    categoryChips.forEach { (cid, name) ->
-                        AssistChip(onClick = { onFilter(RecipeFilter.Category(cid, name)) }, label = { Text(name) })
-                    }
-                }
-            }
-            if (tagChips.isNotEmpty()) DetailSection("Tags") {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    tagChips.forEach { (tid, name) ->
-                        AssistChip(onClick = { onFilter(RecipeFilter.Tag(tid, name)) }, label = { Text(name) })
-                    }
-                }
-            }
-            if (!recipe.source.isNullOrBlank() || !recipe.sourceDetails.isNullOrBlank()) {
-                DetailSection("Source") {
-                    recipe.source?.takeIf { it.isNotBlank() }?.let { Text(it) }
-                    recipe.sourceDetails?.takeIf { it.isNotBlank() }?.let { Text(it) }
-                }
-            }
-        }
+            EdgeScrollbar(scroll)
         }
     }
 
@@ -2024,107 +2040,111 @@ private fun RecipeEditScreen(
         },
     ) { padding ->
         // Form fields stretched across a desktop window are hard to scan; cap and centre the column.
-        Box(
-            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()),
-            contentAlignment = Alignment.TopCenter,
-        ) {
-        Column(
-            Modifier.fillMaxWidth().widthIn(max = FORM_WIDTH).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            OutlinedTextField(
-                name,
-                { name = it; nameTouched = true },
-                label = { Text("Name") },
-                singleLine = true,
-                isError = nameTouched && name.isBlank(),
-                supportingText = if (nameTouched && name.isBlank()) {
-                    { Text("A name is required to save") }
-                } else null,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(intro, { intro = it }, label = { Text("Introduction") }, modifier = Modifier.fillMaxWidth())
+        val scroll = rememberScrollState()
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            Box(
+                Modifier.fillMaxSize().verticalScroll(scroll),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().widthIn(max = FORM_WIDTH).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OutlinedTextField(
+                        name,
+                        { name = it; nameTouched = true },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        isError = nameTouched && name.isBlank(),
+                        supportingText = if (nameTouched && name.isBlank()) {
+                            { Text("A name is required to save") }
+                        } else null,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(intro, { intro = it }, label = { Text("Introduction") }, modifier = Modifier.fillMaxWidth())
 
-            EditSectionHeader("Image")
-            if (preview != null) {
-                Image(
-                    bitmap = preview,
-                    contentDescription = name,
-                    modifier = Modifier.size(140.dp).clip(RoundedCornerShape(8.dp)),
-                    contentScale = ContentScale.Crop,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { galleryLauncher.launch() }) { Text("Change") }
-                    if (takePhoto != null) OutlinedButton(onClick = takePhoto) { Text("Take Photo") }
-                    TextButton(onClick = { pickedImage = null; imageRemoved = true }) { Text("Remove") }
+                    EditSectionHeader("Image")
+                    if (preview != null) {
+                        Image(
+                            bitmap = preview,
+                            contentDescription = name,
+                            modifier = Modifier.size(140.dp).clip(RoundedCornerShape(8.dp)),
+                            contentScale = ContentScale.Crop,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { galleryLauncher.launch() }) { Text("Change") }
+                            if (takePhoto != null) OutlinedButton(onClick = takePhoto) { Text("Take Photo") }
+                            TextButton(onClick = { pickedImage = null; imageRemoved = true }) { Text("Remove") }
+                        }
+                    } else {
+                        // Empty state: a dashed "drop target" that reads as an add-image slot, not a thumbnail.
+                        AddImageTarget(onClick = { galleryLauncher.launch() })
+                        if (takePhoto != null) {
+                            TextButton(onClick = takePhoto) { Text("Take Photo") }
+                        }
+                    }
+
+                    EditSectionHeader("Details")
+                    // FlowRow so the two toggles wrap onto a second line on a narrow phone instead of clipping.
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Favorite")
+                            Spacer(Modifier.width(12.dp))
+                            Switch(checked = favorite, onCheckedChange = { favorite = it })
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Want to Make")
+                            Spacer(Modifier.width(12.dp))
+                            Switch(checked = wantToMake, onCheckedChange = { wantToMake = it })
+                        }
+                    }
+
+                    PickerField(
+                        label = "Course",
+                        options = listOf("None" to null) + courses.map { (it.name ?: "(unnamed)") to it.id },
+                        selected = courseId,
+                        onSelect = { courseId = it },
+                    )
+                    PickerField(
+                        label = "Difficulty",
+                        options = listOf<Pair<String, Int?>>(
+                            "Not set" to null, "Easy" to 1, "Somewhat Easy" to 2, "Medium" to 3,
+                            "Slightly Difficult" to 4, "Difficult" to 5,
+                        ),
+                        selected = difficulty,
+                        onSelect = { difficulty = it },
+                    )
+                    RatingField(rating) { rating = it }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(
+                            servings, { servings = it.filter(Char::isDigit) },
+                            label = { Text("Servings") }, singleLine = true, modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            yieldText, { yieldText = it },
+                            label = { Text("Yield") }, singleLine = true, modifier = Modifier.weight(1f),
+                        )
+                    }
+
+                    if (categories.isNotEmpty()) {
+                        MultiSelectField("Categories", categories.map { (it.name ?: "(unnamed)") to it.id }, selectedCategories)
+                    }
+                    if (tags.isNotEmpty()) {
+                        MultiSelectField("Tags", tags.map { (it.name ?: "(unnamed)") to it.id }, selectedTags)
+                    }
+
+                    OutlinedTextField(source, { source = it }, label = { Text("Source") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(sourceDetails, { sourceDetails = it }, label = { Text("Source details") }, modifier = Modifier.fillMaxWidth())
+
+                    IngredientEditList(ingredients)
+                    DirectionEditList(directions)
+                    EditablePairList("Preparation Times", prepTimes, "Type (e.g. Prep)", "Time (e.g. 20 min)", "+ Add time")
+                    EditablePairList("Notes", notes, "Title", "Note", "+ Add note")
+                    EditablePairList("Variations", variations, "Name", "Details", "+ Add variation")
+                    NutritionSection(nutrition)
                 }
-            } else {
-                // Empty state: a dashed "drop target" that reads as an add-image slot, not a thumbnail.
-                AddImageTarget(onClick = { galleryLauncher.launch() })
-                if (takePhoto != null) {
-                    TextButton(onClick = takePhoto) { Text("Take Photo") }
-                }
             }
-
-            EditSectionHeader("Details")
-            // FlowRow so the two toggles wrap onto a second line on a narrow phone instead of clipping.
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Favorite")
-                    Spacer(Modifier.width(12.dp))
-                    Switch(checked = favorite, onCheckedChange = { favorite = it })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Want to Make")
-                    Spacer(Modifier.width(12.dp))
-                    Switch(checked = wantToMake, onCheckedChange = { wantToMake = it })
-                }
-            }
-
-            PickerField(
-                label = "Course",
-                options = listOf("None" to null) + courses.map { (it.name ?: "(unnamed)") to it.id },
-                selected = courseId,
-                onSelect = { courseId = it },
-            )
-            PickerField(
-                label = "Difficulty",
-                options = listOf<Pair<String, Int?>>(
-                    "Not set" to null, "Easy" to 1, "Somewhat Easy" to 2, "Medium" to 3,
-                    "Slightly Difficult" to 4, "Difficult" to 5,
-                ),
-                selected = difficulty,
-                onSelect = { difficulty = it },
-            )
-            RatingField(rating) { rating = it }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    servings, { servings = it.filter(Char::isDigit) },
-                    label = { Text("Servings") }, singleLine = true, modifier = Modifier.weight(1f),
-                )
-                OutlinedTextField(
-                    yieldText, { yieldText = it },
-                    label = { Text("Yield") }, singleLine = true, modifier = Modifier.weight(1f),
-                )
-            }
-
-            if (categories.isNotEmpty()) {
-                MultiSelectField("Categories", categories.map { (it.name ?: "(unnamed)") to it.id }, selectedCategories)
-            }
-            if (tags.isNotEmpty()) {
-                MultiSelectField("Tags", tags.map { (it.name ?: "(unnamed)") to it.id }, selectedTags)
-            }
-
-            OutlinedTextField(source, { source = it }, label = { Text("Source") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(sourceDetails, { sourceDetails = it }, label = { Text("Source details") }, modifier = Modifier.fillMaxWidth())
-
-            IngredientEditList(ingredients)
-            DirectionEditList(directions)
-            EditablePairList("Preparation Times", prepTimes, "Type (e.g. Prep)", "Time (e.g. 20 min)", "+ Add time")
-            EditablePairList("Notes", notes, "Title", "Note", "+ Add note")
-            EditablePairList("Variations", variations, "Name", "Details", "+ Add variation")
-            NutritionSection(nutrition)
-        }
+            EdgeScrollbar(scroll)
         }
     }
 }
@@ -2554,22 +2574,27 @@ private fun ClassifierEditScreen(module: AppModule, kind: ClassifierKind, onBack
                 Text("No ${kind.title.lowercase()} added")
             }
         } else {
-            LazyColumn(
-                Modifier.fillMaxSize().padding(padding),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                items(items, key = { it.id }) { item ->
-                    ListItem(
-                        modifier = Modifier.widthIn(max = FORM_WIDTH).clickable { renaming = item },
-                        headlineContent = { Text(item.name.ifBlank { "(unnamed)" }) },
-                        trailingContent = {
-                            IconButton(onClick = { delete(item.id) }) {
-                                Icon(Icons.Filled.Delete, contentDescription = "Delete")
-                            }
-                        },
-                    )
-                    HorizontalDivider(Modifier.widthIn(max = FORM_WIDTH))
+            val listState = rememberLazyListState()
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    state = listState,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    items(items, key = { it.id }) { item ->
+                        ListItem(
+                            modifier = Modifier.widthIn(max = FORM_WIDTH).clickable { renaming = item },
+                            headlineContent = { Text(item.name.ifBlank { "(unnamed)" }) },
+                            trailingContent = {
+                                IconButton(onClick = { delete(item.id) }) {
+                                    Icon(Icons.Filled.Delete, contentDescription = "Delete")
+                                }
+                            },
+                        )
+                        HorizontalDivider(Modifier.widthIn(max = FORM_WIDTH))
+                    }
                 }
+                EdgeScrollbar(listState)
             }
         }
     }
@@ -2635,6 +2660,10 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
     var showResyncConfirm by remember { mutableStateOf(false) }
     var autoSyncEnabled by remember { mutableStateOf(module.settings.autoSyncEnabled) }
     val scope = rememberCoroutineScope()
+    val syncProgress by module.syncProgress.collectAsState()
+    // Non-null only while an ORDINARY sync is running, which is exactly when "Stop" may be offered. The
+    // force re-syncs deliberately leave it null: see the comment on the Stop button.
+    var stoppableSync by remember { mutableStateOf<Job?>(null) }
 
     /** Announce an outcome. Replaces any showing snackbar so a fast second action isn't queued behind the first. */
     fun notify(message: String) {
@@ -2691,153 +2720,192 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
         // scroll — off-screen, and easy to miss entirely, right when the user wants confirmation.
         snackbarHost = { SnackbarHost(snackbarHost) },
     ) { padding: PaddingValues ->
-        Box(
-            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()),
-            contentAlignment = Alignment.TopCenter,
-        ) {
-        Column(
-            Modifier.fillMaxWidth().widthIn(max = FORM_WIDTH).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            OutlinedTextField(url, { url = it }, label = { Text("Server URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            if (url.startsWith("http://")) {
-                Text(
-                    "Using plain HTTP — HTTPS is recommended for security. Plain HTTP only works in debug builds on Android.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            OutlinedTextField(user, { user = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(
-                pass, { pass = it }, label = { Text("Password") }, singleLine = true,
-                visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
-            )
-            // Named rather than described, so a user who wants to revoke the saved password knows which
-            // OS tool to open (and so "it's in Credential Manager" is verifiable, not a claim).
-            Text(
-                "Password saved in: ${module.settings.passwordStoreName}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Button(
-                enabled = !busy,
-                onClick = {
-                    module.settings.serverUrl = url
-                    module.settings.username = user
-                    module.settings.password = pass
-                    busy = true
-                    status = "Syncing…"
-                    scope.launch {
-                        val message = try {
-                            "Sync complete — " + module.sync().summary()
-                        } catch (e: Throwable) {
-                            "Sync failed: ${e.message}"
-                        } finally {
-                            busy = false
-                        }
-                        status = ""
-                        notify(message)
-                    }
-                },
-            ) { Text("Sync now") }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth(),
+        val scroll = rememberScrollState()
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            Box(
+                Modifier.fillMaxSize().verticalScroll(scroll),
+                contentAlignment = Alignment.TopCenter,
             ) {
-                Text("Automatic sync", style = MaterialTheme.typography.titleSmall)
-                Switch(
-                    checked = autoSyncEnabled,
-                    onCheckedChange = {
-                        autoSyncEnabled = it
-                        module.settings.autoSyncEnabled = it
-                        if (!it) module.autoSync.dismissBanner() // clearing the toggle also clears any failure banner
-                    },
-                )
-            }
-            Text(
-                "Syncs automatically a minute or two after you make changes. Occasional server failures are " +
-                    "ignored; if several in a row fail, a banner lets you close it or pause syncing for a day.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-
-            OutlinedButton(
-                enabled = !busy,
-                onClick = { showResyncConfirm = true },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Force full re-sync") }
-            Text(
-                "Deletes everything from one side and force re-syncs from the other — either wiping the local " +
-                    "library and pulling from the server, or wiping the server and pushing from this device.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-
-            HorizontalDivider()
-            Text("Library location", style = MaterialTheme.typography.titleMedium)
-            Text(currentLibraryDir(), style = MaterialTheme.typography.bodySmall)
-            if (customLibraryLocationSupported) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { libraryPicker.launch() }) { Text("Choose folder…") }
-                    if (module.settings.libraryPath.isNotBlank()) {
-                        TextButton(onClick = {
-                            module.settings.libraryPath = ""
-                            notify("Reverted to the default location. Restart the app to apply.")
-                        }) { Text("Use default") }
+                Column(
+                    Modifier.fillMaxWidth().widthIn(max = FORM_WIDTH).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OutlinedTextField(url, { url = it }, label = { Text("Server URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    if (url.startsWith("http://")) {
+                        Text(
+                            "Using plain HTTP — HTTPS is recommended for security. Plain HTTP only works in debug builds on Android.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
                     }
-                }
-                Text(
-                    "Recipes and images live in a \"$SALTY_LIBRARY_DIR\" folder in the above location. Must restart app after changing to take effect.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } else if (linkedFolderSyncSupported) {
-                Text(
-                    "Salty Server is the recommended way to keep several devices in sync. As an alternative for backup " +
-                        "or one-device-at-a-time use, you can link a folder (e.g. in Nextcloud, OneDrive, or iCloud Drive) " +
-                        "that holds a copy of your library in the same \"$SALTY_LIBRARY_DIR\" format Salty for Mac opens " +
-                        "directly. The app copies your library to the folder when you leave the app and shortly after " +
-                        "edits, and loads a newer copy from the folder when it starts — it does not work live from the " +
-                        "folder, so finish on one device before opening the library on another.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (linkedLabel.isNotBlank()) {
-                    Text("Linked folder: $linkedLabel", style = MaterialTheme.typography.bodySmall)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(enabled = !busy, onClick = { linkFolderPicker.launch() }) {
-                        Text(if (linkedLabel.isBlank()) "Link folder…" else "Change folder…")
-                    }
-                    if (linkedLabel.isNotBlank()) {
-                        OutlinedButton(
+                    OutlinedTextField(user, { user = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(
+                        pass, { pass = it }, label = { Text("Password") }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+                    )
+                    // Named rather than described, so a user who wants to revoke the saved password knows which
+                    // OS tool to open (and so "it's in Credential Manager" is verifiable, not a claim).
+                    Text(
+                        "Password saved in: ${module.settings.passwordStoreName}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
                             enabled = !busy,
                             onClick = {
+                                module.settings.serverUrl = url
+                                module.settings.username = user
+                                module.settings.password = pass
                                 busy = true
-                                status = "Syncing to folder…"
-                                scope.launch {
-                                    val r = runCatching { module.pushLibraryFolder() }
-                                        .getOrDefault(LibraryFolderSyncResult.ERROR)
+                                status = "Syncing…"
+                                stoppableSync = scope.launch {
+                                    val message = try {
+                                        "Sync complete — " + module.sync().summary()
+                                    } catch (e: CancellationException) {
+                                        // Swallowed on purpose, at the outermost frame of a job WE cancelled: there is
+                                        // nothing left to unwind, and the user has to be told what Stop left behind.
+                                        // (notify() launches on the surrounding scope, which is still active.)
+                                        "Sync stopped. Changes already made were kept — the next sync resumes from here."
+                                    } catch (e: Throwable) {
+                                        "Sync failed: ${e.message}"
+                                    } finally {
+                                        busy = false
+                                        stoppableSync = null
+                                    }
                                     status = ""
-                                    notify(folderSyncMessage(r))
-                                    busy = false
+                                    notify(message)
                                 }
                             },
-                        ) { Text("Sync to folder now") }
-                        TextButton(enabled = !busy, onClick = {
-                            module.libraryFolder.unlink()
-                            linkedLabel = ""
-                            notify("Folder unlinked. The library stays in app storage.")
-                        }) { Text("Unlink") }
+                        ) { Text("Sync now") }
+                        // Offered only for an ordinary sync, which is resumable: the server's lastSyncDate is not
+                        // advanced until the very end, so stopping costs at most the work still outstanding. The two
+                        // force re-syncs below are one-way overwrites with no such cutoff and stay uninterruptible.
+                        // "Stop", not "Cancel" — nothing is rolled back, the sync just stops making changes.
+                        if (stoppableSync != null) {
+                            OutlinedButton(onClick = { stoppableSync?.cancel() }) { Text("Stop") }
+                        }
                     }
-                }
-            } else {
-                Text(
-                    "Custom library locations are available on desktop. This device uses its app storage.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
+                    if (busy) {
+                        val p = syncProgress
+                        val fraction = p?.fraction()
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                            Text(p?.describe() ?: status, style = MaterialTheme.typography.bodySmall)
+                            // Determinate only where the count is real (recipe bodies, images); the single-request
+                            // phases get the indeterminate bar rather than a made-up percentage.
+                            if (fraction != null) {
+                                LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                            } else {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                    }
 
-            if (status.isNotEmpty()) Text(status)
-        }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Automatic sync", style = MaterialTheme.typography.titleSmall)
+                        Switch(
+                            checked = autoSyncEnabled,
+                            onCheckedChange = {
+                                autoSyncEnabled = it
+                                module.settings.autoSyncEnabled = it
+                                if (!it) module.autoSync.dismissBanner() // clearing the toggle also clears any failure banner
+                            },
+                        )
+                    }
+                    Text(
+                        "Syncs automatically a minute or two after you make changes. Occasional server failures are " +
+                            "ignored; if several in a row fail, a banner lets you close it or pause syncing for a day.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+
+                    OutlinedButton(
+                        enabled = !busy,
+                        onClick = { showResyncConfirm = true },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Force full re-sync") }
+                    Text(
+                        "Deletes everything from one side and force re-syncs from the other — either wiping the local " +
+                            "library and pulling from the server, or wiping the server and pushing from this device.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+
+                    HorizontalDivider()
+                    Text("Library location", style = MaterialTheme.typography.titleMedium)
+                    Text(currentLibraryDir(), style = MaterialTheme.typography.bodySmall)
+                    if (customLibraryLocationSupported) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { libraryPicker.launch() }) { Text("Choose folder…") }
+                            if (module.settings.libraryPath.isNotBlank()) {
+                                TextButton(onClick = {
+                                    module.settings.libraryPath = ""
+                                    notify("Reverted to the default location. Restart the app to apply.")
+                                }) { Text("Use default") }
+                            }
+                        }
+                        Text(
+                            "Recipes and images live in a \"$SALTY_LIBRARY_DIR\" folder in the above location. Must restart app after changing to take effect.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else if (linkedFolderSyncSupported) {
+                        Text(
+                            "Salty Server is the recommended way to keep several devices in sync. As an alternative for backup " +
+                                "or one-device-at-a-time use, you can link a folder (e.g. in Nextcloud, OneDrive, or iCloud Drive) " +
+                                "that holds a copy of your library in the same \"$SALTY_LIBRARY_DIR\" format Salty for Mac opens " +
+                                "directly. The app copies your library to the folder when you leave the app and shortly after " +
+                                "edits, and loads a newer copy from the folder when it starts — it does not work live from the " +
+                                "folder, so finish on one device before opening the library on another.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (linkedLabel.isNotBlank()) {
+                            Text("Linked folder: $linkedLabel", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(enabled = !busy, onClick = { linkFolderPicker.launch() }) {
+                                Text(if (linkedLabel.isBlank()) "Link folder…" else "Change folder…")
+                            }
+                            if (linkedLabel.isNotBlank()) {
+                                OutlinedButton(
+                                    enabled = !busy,
+                                    onClick = {
+                                        busy = true
+                                        status = "Syncing to folder…"
+                                        scope.launch {
+                                            val r = runCatching { module.pushLibraryFolder() }
+                                                .getOrDefault(LibraryFolderSyncResult.ERROR)
+                                            status = ""
+                                            notify(folderSyncMessage(r))
+                                            busy = false
+                                        }
+                                    },
+                                ) { Text("Sync to folder now") }
+                                TextButton(enabled = !busy, onClick = {
+                                    module.libraryFolder.unlink()
+                                    linkedLabel = ""
+                                    notify("Folder unlinked. The library stays in app storage.")
+                                }) { Text("Unlink") }
+                            }
+                        }
+                    } else {
+                        Text(
+                            "Custom library locations are available on desktop. This device uses its app storage.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+
+                    // Only when idle: while busy, the progress block above already renders `status` (plus a bar),
+                    // so this would double it. Its other job — the multi-line linked-folder error — is set with
+                    // busy already false, so it still shows.
+                    if (!busy && status.isNotEmpty()) Text(status)
+                }
+            }
+            EdgeScrollbar(scroll)
         }
     }
 

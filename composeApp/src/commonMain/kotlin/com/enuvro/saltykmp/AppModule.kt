@@ -18,6 +18,7 @@ import com.enuvro.saltykmp.sync.InMemoryTokenStore
 import com.enuvro.saltykmp.sync.LocalStore
 import com.enuvro.saltykmp.sync.SaltyApiClient
 import com.enuvro.saltykmp.sync.SyncException
+import com.enuvro.saltykmp.sync.SyncProgress
 import com.enuvro.saltykmp.sync.SyncResult
 import com.enuvro.saltykmp.sync.SyncService
 import com.enuvro.saltykmp.sync.friendlyNetworkMessage
@@ -28,34 +29,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.seconds
 
 /**
  * Connection settings persisted via [KeyValueStore], except the password, which goes to [SecretStore] --
- * the OS credential vault where the platform has one (Windows Credential Manager today), and the legacy
- * [SimpleEncoderDecoder] obfuscation over [KeyValueStore] everywhere else.
+ * the OS credential vault wherever the platform has one that works, and obfuscated prefs otherwise.
  */
 class SettingsState(
     private val store: KeyValueStore,
     private val secrets: SecretStore = createSecretStore(store),
 ) {
-    init {
-        // One-time move of a password written by an older build into the platform vault. Guarded on
-        // isPlatformBacked because the fallback store *is* the legacy location, using the same key and
-        // encoding -- "migrating" there would re-encode the value and then wipe it.
-        if (secrets.isPlatformBacked) {
-            val legacy = store.getString(SECRET_KEY_PASSWORD, "")
-            if (legacy.isNotEmpty() && secrets.get(SECRET_KEY_PASSWORD) == null) {
-                secrets.put(SECRET_KEY_PASSWORD, SimpleEncoderDecoder.decode(legacy), account = username)
-            }
-            // Cleared unconditionally: once the vault is in play, the obfuscated copy is a second place
-            // the password can be read from, so it should not survive even if the write above failed.
-            if (legacy.isNotEmpty()) store.putString(SECRET_KEY_PASSWORD, "")
-        }
-    }
-
     var serverUrl: String
         get() = store.getString("serverUrl", "http://localhost:8080")
         set(value) = store.putString("serverUrl", value)
@@ -162,6 +150,18 @@ class AppModule {
     /** App-lifetime scope for background work (debounced auto-sync). Lives as long as the process. */
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    private val _syncProgress = MutableStateFlow<SyncProgress?>(null)
+
+    /**
+     * What the running sync is doing, or null while idle. Set from whichever coroutine is syncing — a
+     * MutableStateFlow is safe to write from any thread, and Compose collects it on the main one.
+     *
+     * Shared by manual and automatic syncs. Nothing serialises those two, so if they ever overlap this
+     * shows whichever phase reported last — cosmetic, and strictly less of a problem than the overlap
+     * itself, which predates this flow.
+     */
+    val syncProgress: StateFlow<SyncProgress?> = _syncProgress.asStateFlow()
+
     /** Fetches + parses a recipe from a web page's schema.org JSON-LD (Settings-free "Import from Web"). */
     val webImporter: RecipeWebImporter by lazy { RecipeWebImporter(httpEngine) }
 
@@ -251,6 +251,7 @@ class AppModule {
                     // Lets sync re-encode an image the server can't serve as-is (a HEIC from the Swift app's
                     // bundle) instead of uploading it labelled as something it isn't.
                     imageConverter = { bytes -> convertImageToJpeg(bytes) },
+                    onProgress = { _syncProgress.value = it },
                 ),
             )
         } catch (e: CancellationException) {
@@ -261,6 +262,9 @@ class AppModule {
             // Server offline / unreachable / unreadable response → friendly message instead of a raw stack/HTML.
             throw SyncException(friendlyNetworkMessage(e))
         } finally {
+            // In `finally` so a failed, stopped, or cancelled sync clears the progress line too — otherwise
+            // the UI would keep showing whichever phase it died in.
+            _syncProgress.value = null
             api.close()
         }
     }

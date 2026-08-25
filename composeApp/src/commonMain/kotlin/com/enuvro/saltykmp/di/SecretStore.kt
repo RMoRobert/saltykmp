@@ -26,9 +26,9 @@ interface SecretStore {
     fun clear(key: String)
 
     /**
-     * True when an OS-provided vault is doing the work. Drives the one-time migration off the legacy
-     * obfuscated pref (see SettingsState) and the backend name shown in Settings — on a fallback store
-     * there is nothing to migrate and nothing worth claiming in the UI.
+     * True when an OS-provided vault is doing the work, rather than the obfuscated fallback. Only ever set
+     * on a store that has passed [verifiedOrNull], so it means "really storing secrets", not "was
+     * available at startup".
      */
     val isPlatformBacked: Boolean
 
@@ -36,14 +36,13 @@ interface SecretStore {
     val backendName: String
 }
 
-/** Key under which the sync-server password is stored. Also the legacy [KeyValueStore] pref name. */
+/** Key under which the sync-server password is stored. */
 const val SECRET_KEY_PASSWORD = "password"
 
 /**
- * The pre-existing behaviour, kept as the fallback: XOR obfuscation in the ordinary settings store.
- * Not real protection (the key ships in the app) — it only keeps the password from sitting in the
- * prefs file as plaintext. Deliberately uses the same keys and encoding as before, so on platforms
- * that land here nothing needs migrating.
+ * The fallback for platforms with no reachable OS vault: XOR obfuscation in the ordinary settings store.
+ * Not real protection (the key ships in the app) — it only keeps the password from sitting in the prefs
+ * file as plaintext.
  */
 class ObfuscatedSecretStore(private val store: KeyValueStore) : SecretStore {
     override fun get(key: String): String? =
@@ -60,6 +59,31 @@ class ObfuscatedSecretStore(private val store: KeyValueStore) : SecretStore {
     override val isPlatformBacked: Boolean = false
     override val backendName: String = "app settings (obfuscated)"
 }
+
+/** Key used only by [verifiedOrNull]. Never holds a real secret, and is removed as soon as it is read. */
+private const val PROBE_KEY = "self-test"
+private const val PROBE_VALUE = "salty-secret-store-probe"
+
+/**
+ * Return this store only if it demonstrably works — write a probe secret, read it back, remove it.
+ *
+ * Reachable is not the same as working, and the difference is not theoretical: the Windows binding once
+ * loaded cleanly, reported itself platform-backed, and then silently discarded every write, because a JNA
+ * field-visibility fault was swallowed by `runCatching` (see SecretStore.jvm.kt). Settings claimed
+ * "Windows Credential Manager" while sync sent an empty password. The CLI-backed vaults fail the same
+ * shape when the tool is installed but no keyring daemon is running.
+ *
+ * A round trip is the only claim worth making. It costs one write/read/delete at startup, and it is what
+ * makes [SecretStore.isPlatformBacked], and the backend name Settings shows the user, trustworthy.
+ */
+internal fun SecretStore.verifiedOrNull(): SecretStore? = runCatching {
+    try {
+        put(PROBE_KEY, PROBE_VALUE)
+        takeIf { get(PROBE_KEY) == PROBE_VALUE }
+    } finally {
+        clear(PROBE_KEY)
+    }
+}.getOrNull()
 
 /**
  * Build the best secret store this platform offers, falling back to [ObfuscatedSecretStore] over
