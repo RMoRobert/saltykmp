@@ -3,6 +3,7 @@ package com.enuvro.saltykmp.importer
 import com.enuvro.saltykmp.db.model.Direction
 import com.enuvro.saltykmp.db.model.Ingredient
 import com.enuvro.saltykmp.db.model.PreparationTime
+import com.enuvro.saltykmp.util.newId
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -12,8 +13,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlin.uuid.ExperimentalUuidApi
-import kotlin.uuid.Uuid
 
 /** A recipe parsed out of a page's schema.org JSON-LD, plus page metadata that isn't part of the recipe. */
 data class ParsedRecipe(
@@ -236,7 +235,4 @@ object SchemaOrgRecipeParser {
             .replace("&amp;", "&")
         return if (decoded.length > Limits.MAX_FIELD_LENGTH) decoded.take(Limits.MAX_FIELD_LENGTH) else decoded
     }
-
-    @OptIn(ExperimentalUuidApi::class)
-    private fun newId(): String = Uuid.random().toString().uppercase()
 }

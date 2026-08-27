@@ -93,3 +93,7 @@ actual fun rememberCameraCapture(onResult: (ByteArray?) -> Unit): (() -> Unit)? 
     }
     return { launcher.launch() }
 }
+
+// Unreachable: customLibraryLocationSupported is false, so Settings never offers the picker.
+actual fun prepareLibraryLocation(path: String): LibraryLocationOutcome =
+    LibraryLocationOutcome.Unusable

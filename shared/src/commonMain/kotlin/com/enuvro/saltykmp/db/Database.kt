@@ -320,11 +320,28 @@ private fun coalesceNullRecipeColumns(driver: SqlDriver) {
     statements.forEach { driver.execute(null, it, 0) }
 }
 
+/**
+ * The junction-table indexes GRDB's migration 0001 creates via `.indexed()` — same names
+ * ("<table>_on_<column>"), so the two apps' files converge on one schema. Schema.sq creates them on
+ * fresh KMP DBs; this pass retrofits KMP DBs created before the indexes existed. `IF NOT EXISTS`
+ * makes it a cheap no-op everywhere else (including Swift-created DBs, which already have them), so
+ * it runs on every open rather than through the shared ledger.
+ */
+private fun ensureJunctionIndexes(driver: SqlDriver) {
+    listOf(
+        """CREATE INDEX IF NOT EXISTS "recipeCategory_on_recipeId" ON "recipeCategory"("recipeId")""",
+        """CREATE INDEX IF NOT EXISTS "recipeCategory_on_categoryId" ON "recipeCategory"("categoryId")""",
+        """CREATE INDEX IF NOT EXISTS "recipeTag_on_recipeId" ON "recipeTag"("recipeId")""",
+        """CREATE INDEX IF NOT EXISTS "recipeTag_on_tagId" ON "recipeTag"("tagId")""",
+    ).forEach { driver.execute(null, it, 0) }
+}
+
 fun createAppDatabase(driver: SqlDriver): AppDatabase {
     activeDriver = driver
     // Runs on every open (after the native schema setup), so shared migrations land regardless of which
     // platform created the DB or whether they were added after the DB already existed.
     applySharedMigrations(driver)
+    ensureJunctionIndexes(driver)
     coalesceNullRecipeColumns(driver)
     return AppDatabase(
         driver = driver,

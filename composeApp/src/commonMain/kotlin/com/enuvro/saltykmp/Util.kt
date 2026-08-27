@@ -3,8 +3,6 @@ package com.enuvro.saltykmp
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
-import kotlin.uuid.ExperimentalUuidApi
-import kotlin.uuid.Uuid
 
 /**
  * Wire timestamp for client-written edits (ISO-8601; the server and Swift app both parse it). Stamped at
@@ -16,5 +14,5 @@ import kotlin.uuid.Uuid
 fun nowTimestamp(): String =
     Clock.System.now().let { Instant.fromEpochMilliseconds(it.toEpochMilliseconds()) }.toString()
 
-@OptIn(ExperimentalUuidApi::class)
-fun newId(): String = Uuid.random().toString()
+/** Uppercase UUIDv7, matching the Swift app's `UUIDV7().uuidString`; see the shared [com.enuvro.saltykmp.util.newId]. */
+fun newId(): String = com.enuvro.saltykmp.util.newId()

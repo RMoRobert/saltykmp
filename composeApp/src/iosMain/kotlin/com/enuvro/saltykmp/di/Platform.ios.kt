@@ -134,3 +134,7 @@ private fun NSData.toByteArray(): ByteArray {
     out.usePinned { memcpy(it.addressOf(0), bytes, length) }
     return out
 }
+
+// Unreachable: customLibraryLocationSupported is false, so Settings never offers the picker.
+actual fun prepareLibraryLocation(path: String): LibraryLocationOutcome =
+    LibraryLocationOutcome.Unusable

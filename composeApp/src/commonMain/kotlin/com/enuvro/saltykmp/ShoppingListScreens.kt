@@ -17,15 +17,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ListAlt
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ListAlt
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -165,18 +166,18 @@ fun ShoppingListsScreen(
                 navigationIcon = {
                     if (onBack != null) {
                         IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
                         }
                     }
                 },
                 actions = {
                     if (searchActive) {
                         IconButton(onClick = { searchActive = false; query = "" }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Close search")
+                            Icon(Icons.Outlined.Close, contentDescription = "Close search")
                         }
                     } else {
                         IconButton(onClick = { searchActive = true }) {
-                            Icon(Icons.Filled.Search, contentDescription = "Search")
+                            Icon(Icons.Outlined.Search, contentDescription = "Search")
                         }
                     }
                 },
@@ -185,7 +186,7 @@ fun ShoppingListsScreen(
         floatingActionButton = {
             Box {
                 FloatingActionButton(onClick = { addMenu = true }) {
-                    Icon(Icons.Filled.Add, contentDescription = "New shopping list")
+                    Icon(Icons.Outlined.Add, contentDescription = "New shopping list")
                 }
                 DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
                     DropdownMenuItem(
@@ -206,13 +207,13 @@ fun ShoppingListsScreen(
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 if (query.isNotBlank()) {
                     EmptyState(
-                        icon = Icons.Filled.Search,
+                        icon = Icons.Outlined.Search,
                         title = "No matches",
                         body = "No list's name or contents matches \"${query.trim()}\".",
                     )
                 } else {
                     EmptyState(
-                        icon = Icons.AutoMirrored.Filled.ListAlt,
+                        icon = Icons.AutoMirrored.Outlined.ListAlt,
                         title = "No shopping lists",
                         body = "A checklist gives you tappable items and headings. A freeform list is a " +
                             "plain Markdown text box.",
@@ -453,7 +454,7 @@ fun ShoppingListDetailScreen(
      */
     fun addRow(isHeading: Boolean, afterId: String? = null) {
         val row = ShoppingListListContents(
-            id = newId().uppercase(),
+            id = newId(),
             isCompleted = if (isHeading) null else false,
             isHeading = isHeading,
             text = "",
@@ -476,14 +477,14 @@ fun ShoppingListDetailScreen(
                 navigationIcon = {
                     if (onBack != null) {
                         IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
                         }
                     }
                 },
                 actions = {
                     Box {
                         IconButton(onClick = { overflow = true }) {
-                            Icon(Icons.Filled.MoreVert, contentDescription = "List options")
+                            Icon(Icons.Outlined.MoreVert, contentDescription = "List options")
                         }
                         DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
                             if (isFreeform) {
@@ -527,7 +528,7 @@ fun ShoppingListDetailScreen(
         floatingActionButton = {
             if (!isFreeform) {
                 FloatingActionButton(onClick = { addRow(isHeading = false) }, modifier = Modifier.imePadding()) {
-                    Icon(Icons.Filled.Add, contentDescription = "New item")
+                    Icon(Icons.Outlined.Add, contentDescription = "New item")
                 }
             }
         },
@@ -550,7 +551,7 @@ fun ShoppingListDetailScreen(
                 Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                     if (items.isEmpty()) {
                         EmptyState(
-                            icon = Icons.AutoMirrored.Filled.ListAlt,
+                            icon = Icons.AutoMirrored.Outlined.ListAlt,
                             title = "No items yet",
                             body = "Add items one at a time — press Return to start the next one. Swipe an " +
                                 "item away to delete it.",
@@ -559,7 +560,7 @@ fun ShoppingListDetailScreen(
                         )
                     } else {
                         EmptyState(
-                            icon = Icons.Filled.CheckCircle,
+                            icon = Icons.Outlined.CheckCircle,
                             title = "All done",
                             body = "Every item is completed. Show them again from the menu, or clear them out.",
                         )
@@ -687,7 +688,7 @@ private fun ShoppingListItemRow(
                 contentAlignment = alignment,
             ) {
                 Icon(
-                    Icons.Filled.Delete,
+                    Icons.Outlined.Delete,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onErrorContainer,
                 )

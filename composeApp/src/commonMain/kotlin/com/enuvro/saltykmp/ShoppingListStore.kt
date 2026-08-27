@@ -31,7 +31,7 @@ class ShoppingListStore(db: AppDatabase, private val local: LocalStore) {
 
     /** Create an empty list of the chosen kind and return its id. */
     fun create(name: String, isFreeform: Boolean): String {
-        val id = newListId()
+        val id = newId()
         local.insertLocalShoppingList(
             ServerShoppingList(
                 id = id,
@@ -90,6 +90,3 @@ class ShoppingListStore(db: AppDatabase, private val local: LocalStore) {
         lastModifiedDate = LocalStore.dbToWireDate(lastModifiedDate),
     )
 }
-
-/** New shopping-list ids match the sync layer's shape (uppercase UUID), as the Swift app writes them. */
-private fun newListId(): String = newId().uppercase()

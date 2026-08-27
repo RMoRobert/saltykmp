@@ -1,6 +1,8 @@
 package com.enuvro.saltykmp
 
 import com.enuvro.saltykmp.db.AppDatabase
+import com.enuvro.saltykmp.db.LibraryClassifierEditor
+import com.enuvro.saltykmp.db.LibraryDuplicateMerger
 import com.enuvro.saltykmp.di.ImageFiles
 import com.enuvro.saltykmp.di.KeyValueStore
 import com.enuvro.saltykmp.di.SECRET_KEY_PASSWORD
@@ -103,6 +105,19 @@ class SettingsState(
         get() = store.getString("autoSyncEnabled", "false").toBoolean()
         set(value) = store.putString("autoSyncEnabled", value.toString())
 
+    /**
+     * How tightly the UI packs itself; see [UiDensity].
+     *
+     * Stored as the enum name, with an unrecognised or absent value falling back to
+     * [platformDefaultDensity] — so a fresh install follows its platform, and a build that later changes
+     * its platform default moves anyone who never made a choice along with it.
+     */
+    internal var uiDensity: UiDensity
+        get() = store.getString("uiDensity", "")
+            .let { stored -> UiDensity.entries.firstOrNull { it.name == stored } }
+            ?: platformDefaultDensity
+        set(value) = store.putString("uiDensity", value.name)
+
     /** Epoch millis until which auto-sync is paused (0 = not paused); set by the failure banner's "pause" action. */
     var autoSyncPausedUntil: Long
         get() = store.getString("autoSyncPausedUntil", "0").toLongOrNull() ?: 0L
@@ -130,6 +145,20 @@ class AppModule {
     private val store = createKeyValueStore()
     val settings = SettingsState(store)
 
+    private val _uiDensity = MutableStateFlow(settings.uiDensity)
+
+    /**
+     * The active [UiDensity]. A flow rather than a plain read of [SettingsState.uiDensity] because the
+     * toggle lives in Settings but the value is consumed at the very top of the tree, by [SaltyTheme] —
+     * flipping it has to repaint the whole app, not just the screen the switch is on.
+     */
+    internal val uiDensity: StateFlow<UiDensity> = _uiDensity.asStateFlow()
+
+    internal fun setUiDensity(density: UiDensity) {
+        settings.uiDensity = density
+        _uiDensity.value = density
+    }
+
     /**
      * Copy-based library sync to a user-linked folder (Android/SAF, iOS document picker). See [LibraryFolderLink].
      * The "is this install empty?" hint lets linking a folder on a fresh device adopt the folder's library
@@ -145,6 +174,12 @@ class AppModule {
     val localStore: LocalStore by lazy { LocalStore(database) }
     val repository: RecipeRepository by lazy { RecipeRepository(database) }
     val shoppingLists: ShoppingListStore by lazy { ShoppingListStore(database, localStore) }
+
+    // The classifier editor's two bulk actions. Both are user-initiated, so both move the affected
+    // recipes' clocks — unlike [localStore]'s single-row deletes, which exist to apply what a sync
+    // already decided. Call [onLocalChange] after either, as with every other local edit.
+    val classifierEditor: LibraryClassifierEditor by lazy { LibraryClassifierEditor(database) }
+    val classifierMerger: LibraryDuplicateMerger by lazy { LibraryDuplicateMerger(database) }
     val imageFiles: ImageFiles = createImageFiles()
 
     /** App-lifetime scope for background work (debounced auto-sync). Lives as long as the process. */

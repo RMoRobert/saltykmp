@@ -73,6 +73,28 @@ expect val customLibraryLocationSupported: Boolean
 /** Absolute path of the active library bundle (DB + images), for display in Settings. */
 expect fun currentLibraryDir(): String
 
+/** What a folder the user picked as a library location turned out to be. */
+enum class LibraryLocationOutcome {
+    /** It already holds a library bundle, which is what the next launch will open. */
+    ExistingLibrary,
+
+    /** It was empty and usable, so an empty bundle was created in it. Recipes are NOT moved there. */
+    NewLibrary,
+
+    /** Nothing could be created in it — read-only, or gone since the picker listed it. */
+    Unusable,
+}
+
+/**
+ * Ready a user-picked library folder and report what it was, so Settings can say whether the choice
+ * adopts an existing library or starts an empty one — and can refuse a folder it cannot write to,
+ * rather than storing a path that only fails at the next launch.
+ *
+ * Creates the bundle directory when the folder is empty; the DB and image directory inside it are
+ * created on first use. Desktop only — mobile never offers this ([customLibraryLocationSupported]).
+ */
+expect fun prepareLibraryLocation(path: String): LibraryLocationOutcome
+
 /**
  * True where copy-based "linked folder" library sync is offered (Android: SAF folder ↔ app storage).
  * Desktop uses a live custom location instead ([customLibraryLocationSupported]); iOS is a follow-up.
@@ -84,3 +106,31 @@ expect fun localLibraryDbPath(): String?
 
 /** Absolute path of the live recipe-images directory, or null if unknown. */
 expect fun localLibraryImagesDir(): String?
+
+/**
+ * What became of a file the app handed to the user, so the caller can confirm it (or not) without
+ * knowing which of the two delivery models the platform uses.
+ */
+sealed interface ExportOutcome {
+    /** Written where the user chose. [location] is a path or filename, for the confirmation message. */
+    data class Saved(val location: String) : ExportOutcome
+
+    /** Passed to the system share sheet. Where it goes next — and whether the user backs out — is not
+     *  something the sheet reports, so this is as much as we can say. */
+    data object Shared : ExportOutcome
+
+    /** The user dismissed the save dialog. */
+    data object Cancelled : ExportOutcome
+
+    data class Failed(val message: String?) : ExportOutcome
+}
+
+/**
+ * Hand a generated file to the user, by whichever route the platform makes idiomatic: a save dialog on
+ * desktop, the system share sheet on Android and iOS — matching what the Swift app does on macOS
+ * (an export panel) versus iOS (a `ShareLink`).
+ *
+ * [stem] is a filename WITHOUT its extension (see `RecipeExport.filenameStem`); [extension] carries no
+ * leading dot. Never throws: a failure comes back as [ExportOutcome.Failed].
+ */
+expect suspend fun deliverExportedFile(stem: String, extension: String, bytes: ByteArray): ExportOutcome

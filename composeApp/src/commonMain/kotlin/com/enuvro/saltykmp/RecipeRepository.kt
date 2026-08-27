@@ -5,6 +5,8 @@ import app.cash.sqldelight.coroutines.mapToList
 import com.enuvro.saltykmp.db.AppDatabase
 import com.enuvro.saltykmp.db.Category
 import com.enuvro.saltykmp.db.Course
+import com.enuvro.saltykmp.db.LibraryClassifier
+import com.enuvro.saltykmp.db.LibraryClassifierItem
 import com.enuvro.saltykmp.db.Recipe
 import com.enuvro.saltykmp.db.Tag
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +45,25 @@ class RecipeRepository(db: AppDatabase) {
         q.selectAllTags().asFlow().mapToList(Dispatchers.Default)
 
     /**
+     * Every row of one classifier with the number of recipes using it — what the classifier editor
+     * lists, and the count its merge and delete confirmations are written around.
+     *
+     * The count is part of the projection rather than a second query, so filing a recipe under a
+     * category (or unfiling it) re-emits here: SQLDelight notifies on every table the statement
+     * touches, junction tables included.
+     */
+    fun classifierItems(kind: LibraryClassifier): Flow<List<LibraryClassifierItem>> {
+        val query = when (kind) {
+            LibraryClassifier.CATEGORY -> q.selectCategoriesWithRecipeCounts(::classifierItem)
+            LibraryClassifier.COURSE -> q.selectCoursesWithRecipeCounts(::classifierItem)
+            LibraryClassifier.TAG -> q.selectTagsWithRecipeCounts(::classifierItem)
+        }
+        // Sorted here rather than in the SQL: the counting statements are shared with the post-sync
+        // duplicate fold, which doesn't care about order, and SQLite's NOCASE is ASCII-only anyway.
+        return query.asFlow().mapToList(Dispatchers.Default).map { it.sortedWith(BY_NAME) }
+    }
+
+    /**
      * recipeId → category names, for search and list subtitles. One query for the whole library rather
      * than a lookup per row; the map re-emits whenever a recipe/category/junction row changes.
      */
@@ -57,3 +78,9 @@ class RecipeRepository(db: AppDatabase) {
             rows.groupBy({ it.recipeId }, { it.name.orEmpty() })
         }
 }
+
+private fun classifierItem(id: String, name: String?, recipeCount: Long) =
+    LibraryClassifierItem(id, name.orEmpty(), recipeCount.toInt())
+
+/** Case-insensitive by name, then by name and id so equal-but-for-case rows keep a stable order. */
+private val BY_NAME = compareBy<LibraryClassifierItem>({ it.name.lowercase() }, { it.name }, { it.id })

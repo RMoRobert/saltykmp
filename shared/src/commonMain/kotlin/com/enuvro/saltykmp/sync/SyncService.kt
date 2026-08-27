@@ -6,14 +6,13 @@ import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.db.LibraryDuplicateMerger
+import com.enuvro.saltykmp.util.newId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
-import kotlin.uuid.ExperimentalUuidApi
-import kotlin.uuid.Uuid
 
 /**
  * Orchestrates a full bidirectional sync — the Kotlin counterpart of the Swift `SaltySyncService`.
@@ -616,7 +615,7 @@ class SyncService(
             base = l.syncedSnapshot,
             local = l.list,
             server = s,
-            conflictCopyId = newListId(),
+            conflictCopyId = newId(),
             conflictCopyLabel = "conflicted copy from $deviceName ${nowDayStamp()}",
         )
         var counts = Counts(conflictsMerged = 1)
@@ -650,9 +649,6 @@ class SyncService(
         }
         return counts
     }
-
-    @OptIn(ExperimentalUuidApi::class)
-    private fun newListId(): String = Uuid.random().toString().uppercase()
 
     @OptIn(ExperimentalTime::class)
     private fun nowDayStamp(): String = Clock.System.now().toString().take(10)

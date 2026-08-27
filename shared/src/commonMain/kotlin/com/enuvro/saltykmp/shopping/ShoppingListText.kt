@@ -1,8 +1,7 @@
 package com.enuvro.saltykmp.shopping
 
 import com.enuvro.saltykmp.db.model.ShoppingListListContents
-import kotlin.uuid.ExperimentalUuidApi
-import kotlin.uuid.Uuid
+import com.enuvro.saltykmp.util.newId
 
 /**
  * Translates between a shopping list's two representations — a structured checklist and freeform
@@ -89,6 +88,6 @@ object ShoppingListText {
 
     private val BULLETS = charArrayOf('*', '-', '+', '•')
 
-    @OptIn(ExperimentalUuidApi::class)
-    private fun newItemId(): String = Uuid.random().toString().uppercase()
+    /** Default id source — a distinct name because [toItems]'s `newId` parameter shadows the import. */
+    private fun newItemId(): String = newId()
 }

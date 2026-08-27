@@ -19,11 +19,13 @@ import java.util.prefs.Preferences
 
 // The DB and images live together in a SaltyRecipeLibrary.saltyRecipeLibrary bundle, mirroring the
 // Swift app's library folder so a desktop user can point both apps at the same directory. The parent
-// is the user-chosen "library location" (Settings) if set, else the default app data dir.
+// is the user-chosen "library location" (Settings) if set, else the platform's own place for it --
+// Documents on macOS/Windows, ~/.local/share on Linux, ~/.salty for an install that already has one
+// there. See LibraryLocation.jvm.kt.
 private fun saltyLibraryDir(): File {
     val custom = createKeyValueStore().getString("libraryPath", "")
-    val parent = if (custom.isNotBlank()) File(custom) else File(System.getProperty("user.home"), ".salty")
-    return File(parent, SALTY_LIBRARY_DIR).apply { mkdirs() }
+    val parent = if (custom.isNotBlank()) File(custom) else defaultLibraryParent
+    return libraryDirIn(parent)
 }
 
 actual fun createDatabase(): AppDatabase =

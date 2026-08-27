@@ -75,9 +75,13 @@ CREATE TABLE "recipeCategory" (
     "categoryId" TEXT NOT NULL REFERENCES category(id) ON DELETE CASCADE
   );
 
--- CREATE INDEX "recipeCategory_on_recipeId" ON "recipeCategory"("recipeId")
-
--- CREATE INDEX "recipeCategory_on_categoryId" ON "recipeCategory"("categoryId")
+-- Index names match what GRDB's `.indexed()` generates ("<table>_on_<column>") in the Swift app's
+-- migration 0001, so a KMP-created and a Swift-created DB converge on the same schema. Existing KMP
+-- DBs (created before these were added) get them from ensureJunctionIndexes (Database.kt), which is
+-- also why re-creating here is safe: CREATE INDEX only runs on fresh files. recipe.courseId is
+-- deliberately NOT indexed — the Swift app doesn't index it either, and parity wins.
+CREATE INDEX recipeCategory_on_recipeId ON recipeCategory(recipeId);
+CREATE INDEX recipeCategory_on_categoryId ON recipeCategory(categoryId);
 
 CREATE TABLE "tag" (
     "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
@@ -91,8 +95,9 @@ CREATE TABLE "recipeTag" (
     "tagId" TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE
 );
 
--- CREATE INDEX "recipeTag_on_recipeId" ON "recipeTag"("recipeId")
--- CREATE INDEX "recipeTag_on_tagId" ON "recipeTag"("tagId")
+-- See the recipeCategory indexes above for naming and the existing-DB retrofit.
+CREATE INDEX recipeTag_on_recipeId ON recipeTag(recipeId);
+CREATE INDEX recipeTag_on_tagId ON recipeTag(tagId);
 
 -- Column order matches what the Swift app's shared-migration ALTERs produce on a DB that predates
 -- them (the other platform's SELECT * reads positionally): lastModifiedDate from SHARED-V0002, then
@@ -180,12 +185,6 @@ CREATE TABLE "deletedRecipe" (
 -- 0.000s PRAGMA foreign_key_check
 -- 0.000s COMMIT TRANSACTION
 -- 0.000s PRAGMA foreign_keys = ON
-
--- CREATE INDEX recipe_course_id_idx ON recipe(courseId);
--- CREATE INDEX recipeCategory_on_recipeId ON recipeCategory(recipeId);
--- CREATE INDEX recipeCategory_on_categoryId ON recipeCategory(categoryId);
--- CREATE INDEX recipeTag_on_recipeId ON recipeTag(recipeId);
--- CREATE INDEX recipeTag_on_tagId ON recipeTag(tagId);
 
 -- selectAllRecipes:
 -- SELECT *
