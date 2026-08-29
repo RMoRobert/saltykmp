@@ -166,8 +166,6 @@ function saltyEditor() {
 
     // computed
     get scaleLabel() { return `${SCALES[this.scaleIdx]}×`; },
-    get ingCount() { return this.ingredients.filter(r => !r.isHeading).length; },
-    get dirCount() { return this.directions.filter(r => !r.isHeading).length; },
     get libraryGroups() {
       return [
         // `singular` is explicit rather than derived: stripping a trailing "s" turns Categories
@@ -183,13 +181,7 @@ function saltyEditor() {
 
     /** The middle pane: library filter first, then the search box on top of it. */
     get visibleRecipes() {
-      let rows = this.list;
-      const f = this.filter;
-      if (f.kind === "favorites") rows = rows.filter(r => r.isFavorite);
-      else if (f.kind === "wantToMake") rows = rows.filter(r => r.wantToMake);
-      else if (f.kind === "course") rows = rows.filter(r => r.courseId === f.id);
-      else if (f.kind === "category") rows = rows.filter(r => (r.categoryIds || []).includes(f.id));
-      else if (f.kind === "tag") rows = rows.filter(r => (r.tagIds || []).includes(f.id));
+      let rows = this.list.filter(r => this.matchesFilter(r));
       const q = this.query.trim().toLowerCase();
       if (q) rows = rows.filter(r => (r.name || "").toLowerCase().includes(q));
       return rows;
@@ -348,9 +340,30 @@ function saltyEditor() {
       }
     },
 
+    /**
+     * Whether a recipe belongs to the current library filter, ignoring the search box. Shared by
+     * the list and by [setFilter]'s check that the open recipe still belongs to what's listed.
+     */
+    matchesFilter(r, f = this.filter) {
+      if (f.kind === "favorites") return !!r.isFavorite;
+      if (f.kind === "wantToMake") return !!r.wantToMake;
+      if (f.kind === "course") return r.courseId === f.id;
+      if (f.kind === "category") return (r.categoryIds || []).includes(f.id);
+      if (f.kind === "tag") return (r.tagIds || []).includes(f.id);
+      return true;
+    },
+
     setFilter(kind, id, label) {
       this.filter = { kind, id, label: label || "All Recipes" };
       this.pane = "list";
+      // The detail column follows the list, as it does in the Swift client where detail is driven by
+      // selection *within* the current list. Without this the right-hand pane goes on showing a
+      // recipe the middle column no longer lists, and the two columns quietly disagree about where
+      // you are. Editing can't reach here -- the editor is modal -- so there is nothing to discard.
+      if (this.current && !this.matchesFilter(this.current)) {
+        this.current = null;
+        this.selectedId = null;
+      }
     },
 
     /** "1 recipe" / "2 recipes" — the count row read wrong at exactly one. */
@@ -386,6 +399,7 @@ function saltyEditor() {
 
     backToList() {
       if (this.mode === "edit" && this.dirty && !window.confirm("Discard unsaved changes?")) return;
+      if (this.dirty) this.revert();
       this.pane = "list";
       this.mode = "read";
     },
@@ -522,8 +536,24 @@ function saltyEditor() {
 
     closeRecipe() {
       if (this.dirty && !window.confirm("Discard unsaved changes?")) return;
+      this.dirty = false;
       this.current = null;
       this.selectedId = null;
+    },
+
+    /**
+     * Escape and the dialog's close button both arrive here. `wa-hide` is cancelable, so an edit
+     * with unsaved work can refuse to close. Saying yes has to actually discard: clearing the flag
+     * alone would leave the edited values sitting in `current`, and the read view behind would then
+     * render text that was never saved.
+     */
+    onEditDialogHide(event) {
+      if (this.mode !== "edit") return;
+      if (this.dirty) {
+        if (!window.confirm("Discard unsaved changes?")) { event.preventDefault(); return; }
+        this.revert();
+      }
+      this.mode = "read";
     },
 
     async save() {

@@ -412,4 +412,145 @@ class EditorUiTest {
         assertEquals("Renamed In Browser", stored?.name, "the browser edit should have reached the API")
         page.close()
     }
+
+    /**
+     * Editing is modal, as it is in the Swift client. Before this, the rail stayed live behind an
+     * open editor, so picking another category swapped the recipe list out from under the recipe
+     * being edited -- and each new way out of an edit had to remember to ask about unsaved work.
+     */
+    @Test
+    fun editingIsModalSoTheLibraryCannotBeReachedBehindIt() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
+
+        // The browser's own notion of modality, not a class we set.
+        val isModal = page.evaluate(
+            "() => document.querySelector('wa-dialog.editdlg').shadowRoot.querySelector('dialog').matches(':modal')"
+        )
+        assertEquals(true, isModal, "the editor should be a real modal dialog")
+
+        // And the rail is genuinely unreachable: a hit test over a library row lands on the dialog.
+        val treeIsBlocked = page.evaluate(
+            """() => {
+                 const item = document.querySelector('wa-tree-item[data-kind="category"]');
+                 const r = item.getBoundingClientRect();
+                 const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                 return !item.contains(hit) && hit !== item;
+               }"""
+        )
+        assertEquals(true, treeIsBlocked, "the library rail should not be clickable behind the editor")
+        page.close()
+    }
+
+    /**
+     * Difficulty saved correctly but always rendered blank, which read as "saving doesn't work".
+     * `wa-select.value` only accepts strings: x-model.number assigned a NUMBER, which the component
+     * discards as null. The stored level then never appeared when the recipe was reopened.
+     */
+    @Test
+    fun difficultySurvivesAReopenAndIsDisplayed() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
+
+        page.locator("wa-select[label=Difficulty]").evaluate(
+            """el => { el.value = '4';
+                       el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); }"""
+        )
+        page.locator("[data-testid=save]").click()
+        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).dirty")
+
+        val stored = runBlocking {
+            RecipeRepository.getById(UserRepository.findByUsername("tester")!!.id, RECIPE_ID)
+        }
+        assertEquals(4, stored?.difficulty, "the chosen difficulty should reach the API")
+
+        // Reopen: the level must be visible, not silently dropped on the way back in.
+        page.locator("[data-testid=done]").click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
+        val shown = page.locator("wa-select[label=Difficulty]").evaluate("el => el.value")
+        assertEquals("4", shown, "the stored difficulty should be displayed when reopening the editor")
+        page.close()
+    }
+
+    /**
+     * Every level the shared Difficulty enum defines must be reachable. The first version offered
+     * four options with invented labels, so "Hard" actually stored MEDIUM and two levels could not
+     * be chosen at all -- a value the native clients would then render differently.
+     */
+    @Test
+    fun difficultyOffersEveryLevelTheSharedEnumDefines() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
+
+        val values = page.locator("wa-select[label=Difficulty]").evaluate(
+            "el => [...el.querySelectorAll('wa-option')].map(o => o.getAttribute('value')).join(',')"
+        )
+        assertEquals("0,1,2,3,4,5", values, "every Difficulty level should be selectable")
+        page.close()
+    }
+
+    /**
+     * `wa-hide` bubbles: every wa-select and wa-dropdown inside the editor raises it when its menu
+     * closes. The dialog's close handler saw those too, so simply picking a course or difficulty
+     * asked "Discard unsaved changes?".
+     */
+    @Test
+    fun aDropdownInsideTheEditorDoesNotAskToDiscard() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
+
+        page.evaluate("() => { window.__confirms = []; window.confirm = m => { window.__confirms.push(m); return false; }; }")
+        // Make it dirty, so a stray hide WOULD prompt if the handler were still listening broadly.
+        page.locator(".titlefield").evaluate(
+            """el => { el.value = 'Dirty';
+                       el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }"""
+        )
+        // Open and close a real dropdown inside the editor.
+        page.locator("wa-select[label=Difficulty]").click()
+        page.waitForTimeout(300.0)
+        page.locator("wa-select[label=Difficulty] wa-option[value='3']").click()
+        page.waitForTimeout(400.0)
+
+        val prompts = page.evaluate("() => window.__confirms.length")
+        assertEquals(0, prompts, "choosing from a dropdown should not ask to discard the edit")
+        assertThat(page.locator(".edit")).isVisible()
+        page.close()
+    }
+
+    /**
+     * The detail column follows the list. It used to keep showing a recipe the middle column no
+     * longer listed, so the two columns disagreed about where you were.
+     */
+    @Test
+    fun changingTheLibraryFilterClearsARecipeThatIsNoLongerListed() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        assertThat(page.locator(".read")).isVisible()
+
+        // The seeded recipe is not a favourite, so this filter cannot contain it.
+        page.locator("wa-tree-item[data-kind=favorites]").click()
+        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).current")
+        assertThat(page.locator(".read")).hasCount(0)
+        page.close()
+    }
 }

@@ -230,6 +230,13 @@ wa-page { height: 100dvh; }
            padding: var(--wa-space-xs) var(--wa-space-m);
            border-block-start: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border);
            background: var(--wa-color-surface-lowered); }
+/* In the edit dialog the footer already has WA's own separator and surface, so the bar contributes
+   layout only -- keeping its border and fill would double them up. */
+.savebar--dialog { padding: 0; border-block-start: none; background: none; width: 100%; }
+
+/* Roomy enough for two columns of ingredient rows on a laptop, still inset on a small screen. The
+   body scrolls, so a long recipe never pushes the footer buttons off-screen. */
+.editdlg { --width: min(60rem, 94vw); }
 .savebar__status { font-size: var(--wa-font-size-s); color: var(--wa-color-neutral-on-quiet);
                    margin-inline-end: auto; }
 .savebar__status.is-dirty { color: var(--wa-color-brand-on-quiet);
