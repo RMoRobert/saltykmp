@@ -333,3 +333,24 @@ wa-page { height: 100dvh; }
    also collapses the rail on desktop, so it stays; the hook is only there to stop wa-page drawing
    a second hamburger of its own next to it. */
 wa-page[view="desktop"] .appbar__nav { display: inline-flex !important; }
+
+/* ------------------------------------------------- secondary sub-editors -- */
+
+.subsect { margin-block-end: var(--wa-space-s); }
+
+/* One line per preparation time: type, the time itself, and a way to remove it. */
+.subrow { display: flex; gap: var(--wa-space-xs); align-items: center;
+          margin-block-end: var(--wa-space-xs); }
+.subrow > wa-input { flex: 1; min-width: 0; }
+
+/* Notes and variations are a heading plus prose, so they stack rather than sit on one line. */
+.subblock { margin-block-end: var(--wa-space-m); }
+.subblock__head { display: flex; gap: var(--wa-space-xs); align-items: center;
+                  margin-block-end: var(--wa-space-2xs); }
+.subblock__head > wa-input { flex: 1; min-width: 0; }
+
+.nutgroup { margin-block-end: var(--wa-space-m); }
+.nutgroup__head { margin: 0 0 var(--wa-space-2xs);
+                  font-size: var(--wa-font-size-s); color: var(--wa-color-neutral-on-quiet); }
+.nutgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+           gap: var(--wa-space-xs); }

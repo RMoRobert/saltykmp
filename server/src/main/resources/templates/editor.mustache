@@ -703,6 +703,95 @@
           </div>
         </wa-card>
 
+        <!-- Secondary editors. Collapsed by default and set apart from the cards above because most
+             recipes have none of this, and seventeen nutrition fields left open would bury the
+             ingredients. The summary carries a count, so what IS filled in is visible without
+             opening anything. -->
+        <wa-details class="subsect" data-testid="details-times"
+                    :summary="'Preparation Times' + (current.preparationTimes.length ? ' (' + current.preparationTimes.length + ')' : '')">
+          <template x-for="row in current.preparationTimes" :key="row.id">
+            <div class="subrow">
+              <wa-input size="small" placeholder='Type (e.g., "Bake")' aria-label="Time type"
+                        x-model="row.type" @input="touch()"></wa-input>
+              <wa-input size="small" placeholder='Time (e.g., "1 hr, 30 min")' aria-label="Time"
+                        x-model="row.timeString" @input="touch()"></wa-input>
+              <wa-button size="small" appearance="plain" title="Remove"
+                         @click="removeSubRow('preparationTimes', row.id)">
+                <wa-icon name="xmark" label="Remove"></wa-icon>
+              </wa-button>
+            </div>
+          </template>
+          <wa-button size="small" appearance="filled" data-testid="add-time"
+                     @click="addSubRow('preparationTimes', { type: '', timeString: '' })">
+            <wa-icon slot="start" name="plus"></wa-icon> Time
+          </wa-button>
+        </wa-details>
+
+        <wa-details class="subsect" data-testid="details-notes"
+                    :summary="'Notes' + (current.notes.length ? ' (' + current.notes.length + ')' : '')">
+          <template x-for="row in current.notes" :key="row.id">
+            <div class="subblock">
+              <div class="subblock__head">
+                <wa-input size="small" placeholder="Note Title" aria-label="Note title"
+                          x-model="row.title" @input="touch()"></wa-input>
+                <wa-button size="small" appearance="plain" title="Remove"
+                           @click="removeSubRow('notes', row.id)">
+                  <wa-icon name="xmark" label="Remove"></wa-icon>
+                </wa-button>
+              </div>
+              <wa-textarea size="small" resize="auto" rows="2" placeholder="Note content"
+                           aria-label="Note content" x-model="row.content" @input="touch()"></wa-textarea>
+            </div>
+          </template>
+          <wa-button size="small" appearance="filled" data-testid="add-note"
+                     @click="addSubRow('notes', { title: '', content: '' })">
+            <wa-icon slot="start" name="plus"></wa-icon> Note
+          </wa-button>
+        </wa-details>
+
+        <wa-details class="subsect" data-testid="details-variations"
+                    :summary="'Variations' + (current.variations.length ? ' (' + current.variations.length + ')' : '')">
+          <template x-for="row in current.variations" :key="row.id">
+            <div class="subblock">
+              <div class="subblock__head">
+                <wa-input size="small" placeholder="Variation Name" aria-label="Variation name"
+                          x-model="row.variationName" @input="touch()"></wa-input>
+                <wa-button size="small" appearance="plain" title="Remove"
+                           @click="removeSubRow('variations', row.id)">
+                  <wa-icon name="xmark" label="Remove"></wa-icon>
+                </wa-button>
+              </div>
+              <wa-textarea size="small" resize="auto" rows="2" placeholder="Text"
+                           aria-label="Variation text" x-model="row.text" @input="touch()"></wa-textarea>
+            </div>
+          </template>
+          <wa-button size="small" appearance="filled" data-testid="add-variation"
+                     @click="addSubRow('variations', { variationName: '', text: '' })">
+            <wa-icon slot="start" name="plus"></wa-icon> Variation
+          </wa-button>
+        </wa-details>
+
+        <!-- Fields come from NUTRITION_GROUPS in editor.js, which the reading view reads too, so
+             the two can't drift and a new field only has to be named once. -->
+        <wa-details class="subsect" data-testid="details-nutrition"
+                    :summary="'Nutrition' + (nutritionRows.length ? ' (' + nutritionRows.length + ')' : '')">
+          <template x-for="g in nutritionGroups" :key="g.group">
+            <div class="nutgroup">
+              <h4 class="nutgroup__head" x-text="g.group"></h4>
+              <div class="nutgrid">
+                <template x-for="f in g.fields" :key="f.key">
+                  <wa-input size="small" with-label
+                            :label="f.label + (f.unit ? ' (' + f.unit + ')' : '')"
+                            :type="f.text ? 'text' : 'number'"
+                            :placeholder="f.placeholder || ''"
+                            :value="nutritionValue(f.key)"
+                            @input="setNutrition(f.key, $event.target.value, !!f.text)"></wa-input>
+                </template>
+              </div>
+            </div>
+          </template>
+        </wa-details>
+
       </div>
     </template>
 

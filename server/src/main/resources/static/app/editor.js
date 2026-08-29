@@ -17,6 +17,41 @@ function saltyEditor() {
   const SALTY = window.SALTY || { csrfToken: "" };
 
   const SCALES = [0.5, 1, 1.5, 2, 3, 4];
+
+  /**
+   * Nutrition fields in the order, wording and grouping the Swift editor uses (NutritionEditView).
+   * One list drives both the editor and the reading view so the two can't drift, and so a field
+   * added to the model shows up in both places by being named once.
+   */
+  const NUTRITION_GROUPS = [
+    { group: "General", fields: [
+      { key: "servingSize", label: "Serving Size", text: true, placeholder: "e.g., 1 cup, 2 slices" },
+      { key: "calories", label: "Calories" },
+    ] },
+    { group: "Macronutrients", fields: [
+      { key: "protein", label: "Protein", unit: "g" },
+      { key: "carbohydrates", label: "Carbohydrates", unit: "g" },
+      { key: "fat", label: "Total Fat", unit: "g" },
+      { key: "saturatedFat", label: "Saturated Fat", unit: "g" },
+      { key: "transFat", label: "Trans Fat", unit: "g" },
+      { key: "fiber", label: "Fiber", unit: "g" },
+      { key: "sugar", label: "Sugar", unit: "g" },
+      { key: "addedSugar", label: "Added Sugar", unit: "g" },
+    ] },
+    { group: "Other Nutrients", fields: [
+      { key: "sodium", label: "Sodium", unit: "mg" },
+      { key: "cholesterol", label: "Cholesterol", unit: "mg" },
+    ] },
+    { group: "Vitamins and Minerals", fields: [
+      { key: "vitaminD", label: "Vitamin D", unit: "\u03bcg" },
+      { key: "calcium", label: "Calcium", unit: "mg" },
+      { key: "iron", label: "Iron", unit: "mg" },
+      { key: "potassium", label: "Potassium", unit: "mg" },
+      { key: "vitaminA", label: "Vitamin A", unit: "\u03bcg" },
+      { key: "vitaminC", label: "Vitamin C", unit: "mg" },
+    ] },
+  ];
+  const NUTRITION_FIELDS = NUTRITION_GROUPS.flatMap(g => g.fields);
   const FRACTIONS = [[1, 8, "1/8"], [1, 4, "1/4"], [1, 3, "1/3"], [3, 8, "3/8"], [1, 2, "1/2"],
                      [5, 8, "5/8"], [2, 3, "2/3"], [3, 4, "3/4"], [7, 8, "7/8"]];
 
@@ -203,23 +238,12 @@ function saltyEditor() {
     get nutritionRows() {
       const n = this.current && this.current.nutrition;
       if (!n) return [];
-      const units = {
-        calories: "", protein: "g", carbohydrates: "g", fat: "g", saturatedFat: "g",
-        transFat: "g", fiber: "g", sugar: "g", sodium: "mg", cholesterol: "mg",
-      };
-      const labels = {
-        calories: "Calories", protein: "Protein", carbohydrates: "Carbohydrates", fat: "Fat",
-        saturatedFat: "Saturated fat", transFat: "Trans fat", fiber: "Fiber", sugar: "Sugar",
-        sodium: "Sodium", cholesterol: "Cholesterol",
-      };
-      const rows = [];
-      if (n.servingSize) rows.push({ label: "Serving size", value: n.servingSize });
-      for (const key of Object.keys(labels)) {
-        const v = n[key];
-        if (v === null || v === undefined) continue;
-        rows.push({ label: labels[key], value: `${v.toLocaleString()}${units[key]}` });
-      }
-      return rows;
+      return NUTRITION_FIELDS
+        .filter(f => n[f.key] !== null && n[f.key] !== undefined && n[f.key] !== "")
+        .map(f => ({
+          label: f.label,
+          value: f.text ? String(n[f.key]) : `${Number(n[f.key]).toLocaleString()}${f.unit || ""}`,
+        }));
     },
 
     get favoriteCount() { return this.list.filter(r => r.isFavorite).length; },
@@ -676,6 +700,69 @@ function saltyEditor() {
       if (!this.dirty) this.mode = "read";
     },
 
+    /* --- notes, variations and preparation times --- */
+
+    /**
+     * The three repeatable sub-lists behave identically -- append a row carrying a fresh id, or
+     * drop one by id -- so they share these rather than being written out three times. Only the
+     * shape of a blank row differs, and that's the caller's business.
+     */
+    addSubRow(field, blank) {
+      if (!this.current) return;
+      this.current[field] = [...(this.current[field] || []), { id: uuidv7(), ...blank }];
+      this.touch();
+    },
+
+    removeSubRow(field, id) {
+      if (!this.current) return;
+      this.current[field] = (this.current[field] || []).filter(r => r.id !== id);
+      this.touch();
+    },
+
+    /* --- nutrition --- */
+
+    get nutritionGroups() { return NUTRITION_GROUPS; },
+
+    /** Blank rather than 0 for an absent value, so an untouched field reads as unknown. */
+    nutritionValue(key) {
+      const n = this.current && this.current.nutrition;
+      const v = n ? n[key] : null;
+      return (v === null || v === undefined) ? "" : v;
+    },
+
+    /**
+     * Writes one nutrition field, creating the record on first use and removing it again once the
+     * last value is cleared -- so a recipe nobody entered nutrition for doesn't start carrying an
+     * empty record with an id.
+     *
+     * An emptied field stores null, never 0: "0 g of fat" is a claim about the food and "unknown"
+     * is not, and the native clients render the two differently.
+     */
+    setNutrition(key, raw, isText = false) {
+      if (!this.current) return;
+      const text = String(raw ?? "").trim();
+      let value;
+      if (isText) {
+        value = text === "" ? null : text;
+      } else {
+        if (text === "") value = null;
+        else {
+          const n = Number(text);
+          if (Number.isNaN(n)) return;      // mid-typing garbage: leave the stored value alone
+          value = n;
+        }
+      }
+      if (!this.current.nutrition) this.current.nutrition = { id: uuidv7() };
+      this.current.nutrition[key] = value;
+      if (!NUTRITION_FIELDS.some(f => {
+        const v = this.current.nutrition[f.key];
+        return v !== null && v !== undefined && v !== "";
+      })) {
+        this.current.nutrition = null;
+      }
+      this.touch();
+    },
+
     /* --- presentation --- */
 
     touch() { this.dirty = true; },
@@ -780,6 +867,11 @@ function saltyEditor() {
         // recipe that has never been categorised behaves like one with an empty list.
         r.categoryIds = r.categoryIds || [];
         r.tagIds = r.tagIds || [];
+        // Same reason: the repeatable sub-editors bind straight to these, so they must be arrays
+        // even for a recipe that has never had a note, a variation or a time.
+        r.notes = r.notes || [];
+        r.variations = r.variations || [];
+        r.preparationTimes = r.preparationTimes || [];
         this.current = r;
         this.selectedId = r.id;
         // Rows are held separately so Alpine's reactivity and x-sort keys stay simple; they're

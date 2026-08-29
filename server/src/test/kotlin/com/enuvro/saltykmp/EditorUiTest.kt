@@ -742,4 +742,131 @@ class EditorUiTest {
         assertEquals(1, stored?.tagIds?.size, "the new tag should be attached to the recipe")
         page.close()
     }
+
+    /* ------------------------------------------- notes, variations, times -- */
+
+    private fun openEditorFor(page: Page) {
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
+    }
+
+    private fun saveAndWait(page: Page) {
+        page.locator("[data-testid=save]").click()
+        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).dirty")
+    }
+
+    private fun stored(): ServerRecipe? = runBlocking {
+        RecipeRepository.getById(UserRepository.findByUsername("tester")!!.id, RECIPE_ID)
+    }
+
+    /** Adding a note through the real controls, and removing it again, both have to persist. */
+    @Test
+    fun aNoteCanBeAddedAndRemovedThroughTheEditor() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        openEditorFor(page)
+
+        page.locator("[data-testid=details-notes]").evaluate("el => el.open = true")
+        page.locator("[data-testid=add-note]").click()
+        page.waitForSelector(".subblock")
+        page.locator(".subblock__head wa-input").first().evaluate(
+            """el => { el.value = 'Make ahead';
+                       el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }"""
+        )
+        saveAndWait(page)
+        assertEquals(listOf("Make ahead"), stored()?.notes.orEmpty().map { it.title })
+
+        page.locator(".subblock__head wa-button").first().click()
+        saveAndWait(page)
+        assertTrue(stored()?.notes.orEmpty().isEmpty(), "removing the note should persist")
+        page.close()
+    }
+
+    /** Variations and preparation times use the same machinery; this checks they're wired to it. */
+    @Test
+    fun variationsAndPreparationTimesPersist() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        openEditorFor(page)
+        page.evaluate(
+            """() => {
+                 const st = Alpine.${'$'}data(document.getElementById('app'));
+                 st.addSubRow('variations', { variationName: 'Mini', text: 'Muffin tin.' });
+                 st.addSubRow('preparationTimes', { type: 'Chill', timeString: '2 hr' });
+               }"""
+        )
+        saveAndWait(page)
+
+        val r = stored()
+        assertEquals(listOf("Mini"), r?.variations.orEmpty().map { it.variationName })
+        assertEquals(listOf("Chill" to "2 hr"), r?.preparationTimes.orEmpty().map { it.type to it.timeString })
+        page.close()
+    }
+
+    /**
+     * "0 g of trans fat" is a claim about the food; an empty field is not. They must not collapse
+     * into each other, which is the whole reason the editor writes null rather than 0 for a blank.
+     */
+    @Test
+    fun nutritionKeepsZeroButTreatsAnEmptyFieldAsUnknown() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        openEditorFor(page)
+        page.locator("[data-testid=details-nutrition]").evaluate("el => el.open = true")
+
+        page.evaluate(
+            """() => {
+                 const st = Alpine.${'$'}data(document.getElementById('app'));
+                 st.setNutrition('transFat', '0');
+                 st.setNutrition('protein', '12.5');
+                 st.setNutrition('iron', '');
+               }"""
+        )
+        saveAndWait(page)
+
+        val n = stored()?.nutrition
+        assertEquals(0.0, n?.transFat, "an explicit zero must be kept")
+        assertEquals(12.5, n?.protein)
+        assertEquals(null, n?.iron, "a blank field means unknown, not zero")
+        page.close()
+    }
+
+    /** Clearing the last value should drop the record, not leave an empty one carrying an id. */
+    @Test
+    fun clearingEveryNutritionFieldRemovesTheRecord() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        openEditorFor(page)
+        page.evaluate(
+            """() => {
+                 const st = Alpine.${'$'}data(document.getElementById('app'));
+                 st.setNutrition('protein', '10');
+                 for (const g of st.nutritionGroups) for (const f of g.fields)
+                   st.setNutrition(f.key, '', !!f.text);
+               }"""
+        )
+        saveAndWait(page)
+        assertEquals(null, stored()?.nutrition, "an emptied nutrition record should not be stored")
+        page.close()
+    }
+
+    /**
+     * Guards against the editor and the model drifting apart: every field NutritionInformation
+     * defines gets an input, because both the editor and the reading view are generated from one
+     * list in editor.js.
+     */
+    @Test
+    fun theNutritionEditorCoversEveryFieldInTheModel() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        openEditorFor(page)
+        page.locator("[data-testid=details-nutrition]").evaluate("el => el.open = true")
+
+        // NutritionInformation has 18 fields besides its id.
+        assertThat(page.locator("[data-testid=details-nutrition] wa-input")).hasCount(18)
+        assertThat(page.locator("[data-testid=details-nutrition] .nutgroup")).hasCount(4)
+        page.close()
+    }
 }
