@@ -231,6 +231,21 @@ function saltyEditor() {
       if (link) link.href = link.href.replace(/themes\/[a-z]+\.css/, `themes/${name}.css`);
     },
 
+    /**
+     * One control, two behaviours: below wa-page's breakpoint the navigation is a drawer it owns,
+     * so ask it to toggle; above, collapse our own rail. wa-page reflects which mode it is in via
+     * its `view` attribute.
+     */
+    toggleSidebar() {
+      const page = document.getElementById("app");
+      if (page && page.getAttribute("view") === "mobile") {
+        if (typeof page.toggleNavigation === "function") page.toggleNavigation();
+        else page.toggleAttribute("nav-open");
+      } else {
+        this.railOpen = !this.railOpen;
+      }
+    },
+
     setFilter(kind, id, label) {
       this.filter = { kind, id, label: label || "All Recipes" };
       this.pane = "list";

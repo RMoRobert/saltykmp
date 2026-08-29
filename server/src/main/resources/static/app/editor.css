@@ -16,37 +16,39 @@ body { background: var(--wa-color-surface-default); }
 
 /* --------------------------------------------------------------- structure -- */
 
-.app {
+/* wa-page owns the outer frame — header, the navigation area and its mobile drawer. What's left
+   for us is the two inner panes (recipe list + recipe) inside the main slot, and how they collapse
+   on a narrow screen. */
+
+wa-page { height: 100dvh; }
+
+.panes {
   display: grid;
-  grid-template-columns: 220px 280px 1fr;
-  grid-template-rows: auto 1fr;
-  grid-template-areas:
-    "bar  bar  bar"
-    "rail list detail";
-  height: 100dvh;
+  grid-template-columns: 280px 1fr;
+  height: 100%;
   min-height: 0;
 }
-.app[data-rail="false"] { grid-template-columns: 0 280px 1fr; }
-.app[data-rail="false"] .rail { display: none; }
 
 .only-compact { display: none; }
 
-.appbar {
-  grid-area: bar;
-  display: flex; align-items: center; gap: var(--wa-space-s, 0.5rem);
-  padding: var(--wa-space-xs, 0.4rem) var(--wa-space-s, 0.6rem);
-  border-block-end: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border);
-  background: var(--wa-color-surface-lowered);
-}
+.appbar { display: flex; align-items: center; gap: var(--wa-space-s, 0.5rem); width: 100%; }
 .appbar__brand { font-size: var(--wa-font-size-s); }
 .appbar__account { margin-inline-start: auto; }
 
-.rail   { grid-area: rail;   display: flex; flex-direction: column; min-height: 0;
-          border-inline-end: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border);
-          background: var(--wa-color-surface-lowered); }
-.list   { grid-area: list;   display: flex; flex-direction: column; min-height: 0;
+/* Desktop-only collapse. Below wa-page's breakpoint the navigation is a drawer the component
+   controls, so this must not interfere there.
+   --menu-width is wa-page's own knob for the left section; collapsing that rather than forcing
+   display:none on the part means we're not fighting its internal grid, which sets display itself
+   and wins the cascade against a bare ::part() rule. */
+@media (min-width: 768px) {
+  wa-page[data-rail="false"] { --menu-width: 0; }
+  wa-page[data-rail="false"]::part(navigation-desktop) { display: none; }
+}
+
+.rail   { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.list   { display: flex; flex-direction: column; min-height: 0;
           border-inline-end: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border); }
-.detail { grid-area: detail; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 /* -------------------------------------------------------------------- rail -- */
 
@@ -253,22 +255,12 @@ body { background: var(--wa-color-surface-default); }
 
 /* -------------------------------------------------------------- responsive -- */
 
-@media (max-width: 1099px) {
-  .app,
-  .app[data-rail="false"] { grid-template-columns: 240px 1fr;
-                            grid-template-areas: "bar bar" "list detail"; }
-  .rail { display: none; }
-  .app[data-pane="rail"] { grid-template-areas: "bar bar" "rail rail"; }
-  .app[data-pane="rail"] .rail { display: flex; }
-  .app[data-pane="rail"] .list,
-  .app[data-pane="rail"] .detail { display: none; }
-  .only-compact { display: inline-flex; }
-}
+/* wa-page turns the navigation into a drawer below its own breakpoint, so nothing here touches
+   the rail. All that's left is choosing which of the two inner panes is on screen. */
 
-@media (max-width: 767px) {
-  .app,
-  .app[data-rail="false"] { grid-template-columns: 1fr; grid-template-areas: "bar" "list"; }
-  .app[data-pane="detail"] { grid-template-areas: "bar" "detail"; }
-  .app[data-pane="detail"] .list { display: none; }
-  .app[data-pane="list"] .detail { display: none; }
+@media (max-width: 900px) {
+  .panes { grid-template-columns: 1fr; }
+  wa-page[data-pane="detail"] .list { display: none; }
+  wa-page[data-pane="list"] .detail { display: none; }
+  .only-compact { display: inline-flex; }
 }

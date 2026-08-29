@@ -38,14 +38,20 @@
 </script>
 
 <!-- No x-init: Alpine calls init() on the x-data object automatically. Declaring both runs it
-     twice and races two loadList() calls. -->
-<div id="app" class="app" x-data="saltyEditor()" x-cloak :data-pane="pane" :data-rail="railOpen ? 'true' : 'false'">
+     twice and races two loadList() calls.
 
-  <!-- ═══════════════ app bar ═══════════════
-       The hamburger does one thing: show/hide the sidebar. Everything else lives either in the
-       sidebar or in the account menu on the right. -->
-  <header class="appbar">
-    <wa-button data-testid="hamburger" appearance="plain" size="small" @click="railOpen = !railOpen"
+     Structure comes from <wa-page>, which supplies the responsive navigation-to-drawer behaviour,
+     the toggle wiring and a skip-to-content link. It deliberately renders no sectioning elements of
+     its own, so the real <header>, <nav> and <main> landmarks below are ours to provide. -->
+<wa-page id="app" x-data="saltyEditor()" x-cloak mobile-breakpoint="768"
+         :data-pane="pane" :data-rail="railOpen ? 'true' : 'false'">
+
+  <header slot="header" class="appbar">
+    <!-- Deliberately NOT data-toggle-nav: wa-page hides elements carrying that hook on desktop,
+         because a drawer toggle is a mobile idea. One button should do the obvious thing on both,
+         so it opens the drawer below the breakpoint and collapses the rail above it. -->
+    <wa-button data-testid="hamburger" appearance="plain" size="small"
+               @click="toggleSidebar()"
                :title="railOpen ? 'Hide sidebar' : 'Show sidebar'">
       <wa-icon name="bars" :label="railOpen ? 'Hide sidebar' : 'Show sidebar'"></wa-icon>
     </wa-button>
@@ -77,9 +83,10 @@
     </wa-dropdown>
   </header>
 
-  <!-- ═══════════════════ pane 1 · library rail ═══════════════════ -->
-  <aside class="rail">
-    <nav class="rail__nav" aria-label="Library">
+  <!-- ═══════════════ navigation · the library ═══════════════
+       Slotted into wa-page's navigation area, so below 768px it becomes a drawer for free. -->
+  <nav slot="navigation" class="rail" aria-label="Library">
+    <div class="rail__nav">
       <button type="button" class="railitem" :class="{ 'railitem--on': filter.kind === 'all' }"
               @click="setFilter('all', null, 'All Recipes')">
         <wa-icon name="book-open"></wa-icon>
@@ -112,11 +119,12 @@
           <wa-icon name="arrow-up-right-from-square" class="railitem__ext"></wa-icon>
         </a>
       </div>
-    </nav>
-  </aside>
+    </div>
+  </nav>
 
-  <!-- ═══════════════════ pane 2 · recipe list ═══════════════════ -->
-  <section class="list">
+  <!-- ═══════════════ main · recipe list + recipe ═══════════════ -->
+  <main class="panes">
+  <section class="list" aria-label="Recipes">
     <header class="list__head">
       <wa-button class="only-compact" size="small" appearance="plain" @click="railOpen = true; pane = 'rail'">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Library
@@ -421,6 +429,8 @@
     </footer>
   </main>
 
+  </main>
+
   <wa-dialog label="Delete recipe" :open="confirmDelete" @wa-hide="confirmDelete = false">
     <p>Delete “<strong x-text="current ? current.name : ''"></strong>”? This removes it from every
        synced device and can't be undone.</p>
@@ -436,7 +446,7 @@
       </wa-callout>
     </template>
   </div>
-</div>
+</wa-page>
 
 </body>
 </html>
