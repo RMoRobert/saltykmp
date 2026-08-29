@@ -5,23 +5,302 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
     <title>Salty - {{pageTitle}}</title>
-    <link rel="stylesheet" href="/static/vendor/vuetify.min.css">
+
+    <!-- Web Awesome 3 (MIT). Note dist-cdn, not dist: the dist/ build has bare module specifiers
+         that a browser can't resolve without a bundler. Version pinned deliberately — a floating
+         major would be a silent redesign. Swapping to /static/vendor later is three URL edits. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/webawesome.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/themes/default.css">
     <link rel="stylesheet" href="/static/app/editor.css">
+
+    <!-- The autoloader watches the DOM and fetches each <wa-*> definition on first use, so there's
+         no hand-maintained import list. -->
+    <script type="module"
+            src="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/webawesome.loader.js"></script>
+
+    <!-- Alpine plugins must register before Alpine itself, hence the order. -->
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/sort@3.16.3/dist/cdn.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/focus@3.16.3/dist/cdn.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.16.3/dist/cdn.min.js"></script>
+    <script src="/static/app/editor.js"></script>
 </head>
 <body>
-<div id="app"></div>
 
 <script>
-  // Handed from the session to the page. The editor echoes the token in X-CSRF-Token on every
-  // state-changing API call; see ApiCsrfGuard on the server side.
+  // Handed over from the session. Every state-changing API call echoes this in X-CSRF-Token;
+  // see ApiCsrfGuard on the server.
   window.SALTY = {
     csrfToken: "{{csrfToken}}",
     username: "{{username}}",
     isAdmin: {{#isAdmin}}true{{/isAdmin}}{{^isAdmin}}false{{/isAdmin}}
   };
 </script>
-<script src="/static/vendor/vue.global.prod.js"></script>
-<script src="/static/vendor/vuetify.min.js"></script>
-<script src="/static/app/editor.js"></script>
+
+<!-- No x-init here: Alpine automatically calls init() on the x-data object. Declaring both runs
+     it twice, which raced two loadList() calls against each other. -->
+<div id="app" class="app" x-data="saltyEditor()" x-cloak>
+
+  <!-- ───────────────────────── sidebar ───────────────────────── -->
+  <aside class="sidebar" :hidden="!mdUp && current">
+    <div class="sidebar__head">
+      <div class="brand">
+        <span aria-hidden="true">&#127858;</span>
+        <strong>Salty</strong>
+        <wa-button size="small" appearance="filled" @click="createRecipe()" title="New recipe">
+          <wa-icon slot="start" name="plus" label="New recipe"></wa-icon>
+          New
+        </wa-button>
+      </div>
+      <wa-input size="small" placeholder="Search recipes" x-model="query" with-clear>
+        <wa-icon slot="start" name="magnifying-glass"></wa-icon>
+      </wa-input>
+    </div>
+
+    <div class="sidebar__list" role="navigation" aria-label="Recipes">
+      <wa-spinner x-show="listLoading" class="centered"></wa-spinner>
+
+      <wa-callout variant="danger" size="small" x-show="loadError" x-transition class="m-2">
+        <span x-text="loadError"></span>
+      </wa-callout>
+
+      <template x-for="r in filtered" :key="r.id">
+        <button type="button" class="rrow" :class="{ 'rrow--active': r.id === selectedId }"
+                @click="open(r.id)" :aria-current="r.id === selectedId">
+          <span class="rrow__name" x-text="r.name || 'Untitled'"></span>
+          <span class="rrow__meta" x-text="relativeDate(r.lastModifiedDate)"></span>
+        </button>
+      </template>
+
+      <p class="empty" x-show="!listLoading && !filtered.length"
+         x-text="query ? 'No matches' : 'No recipes yet'"></p>
+    </div>
+  </aside>
+
+  <!-- ───────────────────────── main ───────────────────────── -->
+  <main class="main" :hidden="!mdUp && !current">
+    <header class="topbar">
+      <wa-button size="small" appearance="plain" class="backbtn" @click="closeRecipe()" x-show="!mdUp">
+        <wa-icon slot="start" name="chevron-left"></wa-icon> Recipes
+      </wa-button>
+
+      <h1 class="topbar__title" x-text="current ? (current.name || 'Untitled') : 'Salty'"></h1>
+
+      <template x-if="current">
+        <div class="topbar__actions">
+          <wa-button-group label="View mode">
+            <wa-button size="small" :appearance="mode === 'read' ? 'filled' : 'outlined'"
+                       @click="mode = 'read'">Read</wa-button>
+            <wa-button size="small" :appearance="mode === 'edit' ? 'filled' : 'outlined'"
+                       @click="mode = 'edit'">Edit</wa-button>
+          </wa-button-group>
+
+          <wa-dropdown>
+            <wa-button slot="trigger" size="small" appearance="plain" title="More actions">
+              <wa-icon name="ellipsis-vertical" label="More actions"></wa-icon>
+            </wa-button>
+            <wa-dropdown-item @click="createRecipe()">
+              <wa-icon slot="icon" name="plus"></wa-icon> New recipe
+            </wa-dropdown-item>
+            <wa-divider></wa-divider>
+            <wa-dropdown-item variant="danger" @click="confirmDelete = true">
+              <wa-icon slot="icon" name="trash"></wa-icon> Delete recipe…
+            </wa-dropdown-item>
+          </wa-dropdown>
+        </div>
+      </template>
+    </header>
+
+    <div class="doc">
+      <wa-spinner x-show="loadingRecipe" class="centered"></wa-spinner>
+
+      <div class="empty-state" x-show="!current && !listLoading && !loadingRecipe">
+        <p>No recipe selected.</p>
+        <wa-button appearance="outlined" @click="createRecipe()">
+          <wa-icon slot="start" name="plus"></wa-icon> New recipe
+        </wa-button>
+      </div>
+
+      <template x-if="current">
+        <div class="doc__inner">
+
+          <wa-input class="titlefield" x-model="current.name" @input="touch()"
+                    aria-label="Recipe name" size="large"></wa-input>
+          <p class="subline">
+            Modified <strong x-text="relativeDate(current.lastModifiedDate)"></strong>
+            <template x-if="current.yield">
+              <span> · Yield <strong x-text="current.yield"></strong></span>
+            </template>
+          </p>
+
+          <!-- ── ingredients ── -->
+          <wa-card class="sect">
+            <div slot="header" class="sect__head">
+              <h2>Ingredients</h2>
+              <wa-badge variant="neutral" x-text="ingCount + ' items'"></wa-badge>
+              <div class="scaler">
+                <span class="scaler__label">Scale</span>
+                <wa-button size="small" appearance="outlined" @click="bumpScale(-1)" title="Decrease scale">
+                  <wa-icon name="minus" label="Decrease scale"></wa-icon>
+                </wa-button>
+                <output x-text="scaleLabel"></output>
+                <wa-button size="small" appearance="outlined" @click="bumpScale(1)" title="Increase scale">
+                  <wa-icon name="plus" label="Increase scale"></wa-icon>
+                </wa-button>
+              </div>
+            </div>
+
+            <ul class="rows" x-sort="(item, pos) => reorder('ingredients', item, pos)" x-sort:config="{ handle: '.grip' }">
+              <template x-for="(row, i) in ingredients" :key="row.id">
+                <li class="row" :class="{ 'row--heading': row.isHeading, 'row--main': row.isMain }"
+                    x-sort:item="row.id">
+                  <span class="grip" x-show="mode === 'edit'" title="Drag to reorder" aria-hidden="true">
+                    <wa-icon name="grip-vertical"></wa-icon>
+                  </span>
+                  <span class="row__lead" x-text="row.isHeading ? '' : '•'"></span>
+
+                  <div class="row__read" x-show="mode === 'read'">
+                    <span x-show="row.isHeading" x-text="row.text"></span>
+                    <span x-show="!row.isHeading" x-html="scaledHTML(row.text)"></span>
+                  </div>
+
+                  <wa-textarea x-show="mode === 'edit'" class="row__edit" x-model="row.text"
+                               @input="touch()" resize="auto" rows="1"
+                               :aria-label="(row.isHeading ? 'Heading ' : 'Ingredient ') + (i + 1)"></wa-textarea>
+
+                  <span class="row__tools" x-show="mode === 'edit'">
+                    <wa-button size="small" appearance="plain" x-show="!row.isHeading"
+                               @click="row.isMain = !row.isMain; touch()"
+                               :title="row.isMain ? 'Main ingredient' : 'Mark as main ingredient'">
+                      <wa-icon :name="row.isMain ? 'star' : 'star'"
+                               :variant="row.isMain ? 'solid' : 'regular'"
+                               label="Mark as main ingredient"></wa-icon>
+                    </wa-button>
+                    <wa-button size="small" appearance="plain" @click="removeRow('ingredients', i)" title="Delete">
+                      <wa-icon name="xmark" label="Delete row"></wa-icon>
+                    </wa-button>
+                  </span>
+                </li>
+              </template>
+            </ul>
+
+            <div slot="footer" class="sect__foot" x-show="mode === 'edit'">
+              <wa-button size="small" appearance="filled" @click="addRow('ingredients', false)">
+                <wa-icon slot="start" name="plus"></wa-icon> Ingredient
+              </wa-button>
+              <wa-button size="small" appearance="plain" @click="addRow('ingredients', true)">
+                <wa-icon slot="start" name="heading"></wa-icon> Section heading
+              </wa-button>
+            </div>
+          </wa-card>
+
+          <!-- ── directions ── -->
+          <wa-card class="sect">
+            <div slot="header" class="sect__head">
+              <h2>Directions</h2>
+              <wa-badge variant="neutral" x-text="dirCount + ' steps'"></wa-badge>
+            </div>
+
+            <ul class="rows" x-sort="(item, pos) => reorder('directions', item, pos)" x-sort:config="{ handle: '.grip' }">
+              <template x-for="(row, i) in directions" :key="row.id">
+                <li class="row" :class="{ 'row--heading': row.isHeading }" x-sort:item="row.id">
+                  <span class="grip" x-show="mode === 'edit'" title="Drag to reorder" aria-hidden="true">
+                    <wa-icon name="grip-vertical"></wa-icon>
+                  </span>
+                  <span class="row__lead" x-text="row.isHeading ? '' : stepNumber(i) + '.'"></span>
+
+                  <div class="row__read" x-show="mode === 'read'" x-text="row.text"></div>
+
+                  <wa-textarea x-show="mode === 'edit'" class="row__edit" x-model="row.text"
+                               @input="touch()" resize="auto" rows="1"
+                               :aria-label="(row.isHeading ? 'Heading ' : 'Step ') + (i + 1)"></wa-textarea>
+
+                  <span class="row__tools" x-show="mode === 'edit'">
+                    <wa-button size="small" appearance="plain" @click="removeRow('directions', i)" title="Delete">
+                      <wa-icon name="xmark" label="Delete row"></wa-icon>
+                    </wa-button>
+                  </span>
+                </li>
+              </template>
+            </ul>
+
+            <div slot="footer" class="sect__foot" x-show="mode === 'edit'">
+              <wa-button size="small" appearance="filled" @click="addRow('directions', false)">
+                <wa-icon slot="start" name="plus"></wa-icon> Step
+              </wa-button>
+              <wa-button size="small" appearance="plain" @click="addRow('directions', true)">
+                <wa-icon slot="start" name="heading"></wa-icon> Section heading
+              </wa-button>
+            </div>
+          </wa-card>
+
+          <!-- ── details ── -->
+          <wa-card class="sect">
+            <div slot="header" class="sect__head"><h2>Details</h2></div>
+
+            <div class="grid">
+              <wa-input label="Yield" x-model="current.yield" @input="touch()"></wa-input>
+              <wa-input label="Servings" type="number" x-model.number="current.servings" @input="touch()"></wa-input>
+
+              <wa-select label="Difficulty" x-model.number="current.difficulty" @change="touch()">
+                <wa-option value="0">Not set</wa-option>
+                <wa-option value="1">Easy</wa-option>
+                <wa-option value="2">Moderate</wa-option>
+                <wa-option value="3">Hard</wa-option>
+              </wa-select>
+
+              <div class="field">
+                <label class="field__label" for="rating">Rating</label>
+                <wa-rating id="rating" :value="current.rating || 0"
+                           @change="current.rating = $event.target.value; touch()"></wa-rating>
+              </div>
+
+              <!-- Native date input on purpose: one field, and the platform picker beats any
+                   library component. Web Awesome's date picker is Pro and unreleased anyway. -->
+              <div class="field">
+                <label class="field__label" for="lastPrepared">Last made on</label>
+                <input class="native-date" type="date" id="lastPrepared"
+                       :value="dateOnly(current.lastPrepared)"
+                       @change="setLastPrepared($event.target.value)">
+              </div>
+
+              <wa-input label="Source" x-model="current.source" @input="touch()"></wa-input>
+              <wa-input label="Source details" x-model="current.sourceDetails" @input="touch()"></wa-input>
+            </div>
+
+            <wa-textarea class="intro" label="Introduction" resize="auto" rows="2"
+                         x-model="current.introduction" @input="touch()"></wa-textarea>
+          </wa-card>
+
+        </div>
+      </template>
+    </div>
+
+    <footer class="savebar" x-show="current">
+      <span class="savebar__status" :class="{ 'is-dirty': dirty }"
+            x-text="dirty ? 'Unsaved changes' : 'All changes saved'"></span>
+      <wa-button size="small" appearance="plain" :disabled="!dirty" @click="revert()">Revert</wa-button>
+      <wa-button size="small" appearance="accent" variant="brand" :disabled="!dirty"
+                 :loading="saving" @click="save()">Save</wa-button>
+    </footer>
+  </main>
+
+  <!-- ───────────────────────── dialogs ───────────────────────── -->
+  <wa-dialog label="Delete recipe" :open="confirmDelete" @wa-hide="confirmDelete = false">
+    <p>Delete “<strong x-text="current ? current.name : ''"></strong>”? This removes it from every
+       synced device and can't be undone.</p>
+    <wa-button slot="footer" appearance="plain" @click="confirmDelete = false">Cancel</wa-button>
+    <wa-button slot="footer" variant="danger" appearance="accent" @click="doDelete()">Delete</wa-button>
+  </wa-dialog>
+
+  <div class="toasts" aria-live="polite">
+    <template x-for="t in toasts" :key="t.id">
+      <wa-callout :variant="t.variant" x-transition class="toast">
+        <wa-icon slot="icon" :name="t.variant === 'danger' ? 'circle-exclamation' : 'circle-check'"></wa-icon>
+        <span x-text="t.text"></span>
+      </wa-callout>
+    </template>
+  </div>
+</div>
+
 </body>
 </html>
