@@ -122,18 +122,15 @@
         </wa-tree-item>
       </template>
 
-      <wa-tree-item data-group>
-        <span>Shopping Lists</span>
-        <wa-tree-item data-href="/shoppingLists">
-          <wa-icon name="cart-shopping"></wa-icon> All Lists
-        </wa-tree-item>
+      <wa-tree-item data-kind="shopping" :selected="section === 'shopping'">
+        <wa-icon name="cart-shopping"></wa-icon> Shopping Lists
       </wa-tree-item>
     </wa-tree>
   </nav>
 
   <!-- ═══════════════ main · recipe list + recipe ═══════════════ -->
   <main class="panes">
-  <section class="list" aria-label="Recipes">
+  <section class="list" aria-label="Recipes" x-show="section === 'recipes'">
     <header class="list__head">
       <wa-button class="only-compact" size="small" appearance="plain" @click="railOpen = true; pane = 'rail'">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Library
@@ -169,8 +166,34 @@
     </div>
   </section>
 
+  <!-- The same middle column, showing shopping lists. Mirrors the Swift client, where the content
+       column lists the shopping lists and the detail column shows the one that's selected. -->
+  <section class="list" aria-label="Shopping lists" x-show="section === 'shopping'">
+    <header class="list__head">
+      <wa-button class="only-compact" size="small" appearance="plain" @click="railOpen = true; pane = 'rail'">
+        <wa-icon slot="start" name="chevron-left"></wa-icon> Library
+      </wa-button>
+      <h2 class="list__title">Shopping Lists</h2>
+      <wa-button size="small" appearance="filled" @click="createList()" title="New list">
+        <wa-icon name="plus" label="New list"></wa-icon>
+      </wa-button>
+    </header>
+
+    <div class="list__scroll">
+      <wa-spinner x-show="shoppingListsLoading" class="centered"></wa-spinner>
+      <template x-for="l in shoppingLists" :key="l.id">
+        <button type="button" class="rrow" :class="{ 'rrow--on': l.id === selectedListId }"
+                @click="openList(l.id)" :aria-current="l.id === selectedListId">
+          <span class="rrow__name" x-text="l.name || 'Untitled'"></span>
+          <span class="rrow__meta" x-text="listMeta(l)"></span>
+        </button>
+      </template>
+      <p class="empty" x-show="!shoppingListsLoading && !shoppingLists.length">No lists yet</p>
+    </div>
+  </section>
+
   <!-- ═══════════════════ pane 3 · recipe ═══════════════════ -->
-  <main class="detail">
+  <main class="detail" x-show="section === 'recipes'">
     <header class="detail__bar">
       <wa-button class="only-compact" size="small" appearance="plain" @click="backToList()">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Recipes
@@ -301,7 +324,124 @@
     </div>
   </main>
 
+  <!-- ═══════════════════ pane 3 · shopping list ═══════════════════
+       Unlike a recipe this edits in place with no Edit button: a shopping list is worked, not
+       composed, and autosaves as items are ticked (see touchList). That's also what makes
+       concurrent edits ordinary here rather than rare, hence the merge on 409. -->
+  <main class="detail" x-show="section === 'shopping'">
+    <header class="detail__bar">
+      <wa-button class="only-compact" size="small" appearance="plain" @click="pane = 'list'">
+        <wa-icon slot="start" name="chevron-left"></wa-icon> Lists
+      </wa-button>
+
+      <h1 class="detail__title" x-text="currentList ? (currentList.name || 'Untitled') : ''"></h1>
+
+      <template x-if="currentList">
+        <div class="detail__actions">
+          <span class="savebar__status" :class="{ 'is-dirty': listDirty }"
+                x-text="listSaving ? 'Saving…' : (listDirty ? 'Unsaved changes' : 'All changes saved')"></span>
+          <wa-dropdown>
+            <wa-button slot="trigger" size="small" appearance="plain" title="More actions">
+              <wa-icon name="ellipsis-vertical" label="More actions"></wa-icon>
+            </wa-button>
+            <wa-dropdown-item @click="addListHeading()">
+              <wa-icon slot="icon" name="heading"></wa-icon> Add section heading
+            </wa-dropdown-item>
+            <wa-dropdown-item @click="clearCompleted()">
+              <wa-icon slot="icon" name="broom"></wa-icon> Clear completed
+            </wa-dropdown-item>
+            <wa-divider></wa-divider>
+            <wa-dropdown-item variant="danger" @click="confirmDeleteList = true">
+              <wa-icon slot="icon" name="trash"></wa-icon> Delete list…
+            </wa-dropdown-item>
+          </wa-dropdown>
+        </div>
+      </template>
+    </header>
+
+    <div class="doc">
+      <div class="empty-state" x-show="!currentList">
+        <wa-icon name="cart-shopping" class="empty-state__icon"></wa-icon>
+        <p>Select a list.</p>
+      </div>
+
+      <template x-if="currentList">
+        <div class="doc__inner slist">
+          <wa-input class="titlefield" x-model="currentList.name" @input="touchList()"
+                    aria-label="List name" size="large"></wa-input>
+
+          <!-- A freeform list is a scratch pad, so it gets a text area and nothing else. This is
+               also the one shape that cannot be merged item by item, which is why the server may
+               answer a conflict with a whole second copy. -->
+          <template x-if="currentList.isFreeform">
+            <wa-textarea class="freeform" resize="auto" rows="12" aria-label="List contents"
+                         x-model="currentList.contentsForFreeform" @input="touchList()"></wa-textarea>
+          </template>
+
+          <template x-if="!currentList.isFreeform">
+            <div>
+              <!-- Enter is handled on the input rather than by form submission: wa-input keeps its
+                   real <input> in shadow DOM, so a form never sees the implicit submit. -->
+              <div class="slist__add">
+                <wa-input size="small" placeholder="Add an item" x-model="newItemText"
+                          aria-label="Add an item" @keydown.enter.prevent="addItem()">
+                  <wa-icon slot="start" name="plus"></wa-icon>
+                </wa-input>
+                <wa-button size="small" appearance="filled" data-testid="add-item"
+                           :disabled="!newItemText.trim()" @click="addItem()">Add</wa-button>
+              </div>
+
+              <p class="slist__count" x-show="currentList.contentsForList.length"
+                 x-text="openItemCount + (openItemCount === 1 ? ' item left' : ' items left')"></p>
+
+              <ul class="slist__rows">
+                <template x-for="item in sortedItems" :key="item.id">
+                  <li class="sitem" :class="{ 'sitem--done': item.isCompleted && !item.isHeading,
+                                              'sitem--heading': item.isHeading }">
+                    <template x-if="!item.isHeading">
+                      <wa-checkbox :checked="item.isCompleted"
+                                   @change="item.isCompleted = $event.target.checked; touchList()"
+                                   :aria-label="item.text"></wa-checkbox>
+                    </template>
+
+                    <wa-input class="sitem__text" size="small" appearance="filled"
+                              x-model="item.text" @input="touchList()"
+                              :aria-label="item.isHeading ? 'Section heading' : 'Item'"></wa-input>
+
+                    <wa-button size="small" appearance="plain" x-show="!item.isHeading"
+                               :title="item.isImportant ? 'Not important' : 'Mark important'"
+                               @click="item.isImportant = !item.isImportant; touchList()">
+                      <wa-icon :name="item.isImportant ? 'star' : 'star'"
+                               :variant="item.isImportant ? 'solid' : 'regular'"
+                               :label="item.isImportant ? 'Important' : 'Mark important'"></wa-icon>
+                    </wa-button>
+
+                    <wa-button size="small" appearance="plain" title="Remove"
+                               @click="removeItem(item)">
+                      <wa-icon name="xmark" label="Remove"></wa-icon>
+                    </wa-button>
+                  </li>
+                </template>
+              </ul>
+
+              <p class="empty" x-show="!currentList.contentsForList.length">
+                Nothing on this list yet.
+              </p>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
   </main>
+
+  </main>
+
+  <wa-dialog label="Delete list" :open="confirmDeleteList" @wa-hide="confirmDeleteList = false">
+    <p>Delete <strong x-text="currentList ? (currentList.name || 'this list') : ''"></strong>? This
+       cannot be undone.</p>
+    <wa-button slot="footer" appearance="plain" @click="confirmDeleteList = false">Cancel</wa-button>
+    <wa-button slot="footer" variant="danger" appearance="accent" @click="deleteList()">Delete</wa-button>
+  </wa-dialog>
 
   <!-- Editing is modal, matching the Swift client, which presents its editor as a .sheet over the
        detail column rather than inside it. It also closes a real hazard: with the editor inline the

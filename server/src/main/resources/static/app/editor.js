@@ -45,6 +45,7 @@ function saltyEditor() {
     if (!resp.ok) {
       const err = new Error((data && (data.error || data.message)) || `${resp.status} ${resp.statusText}`);
       err.status = resp.status;
+      err.data = data;          // a 409 answers with the server's current row; conflict handling needs it
       throw err;
     }
     return data;
@@ -153,6 +154,19 @@ function saltyEditor() {
     categories: [],
     tags: [],
     filter: { kind: "all", id: null, label: "All Recipes" },
+    section: "recipes",        // which thing the middle and right panes are showing
+    shoppingLists: [],
+    shoppingListsLoading: false,
+    currentList: null,
+    /** The copy of the open list as it was loaded. The server keeps no syncedSnapshot -- that
+     *  column lives on the native clients -- so this browser has to hold the merge base itself. */
+    listBase: null,
+    selectedListId: null,
+    listDirty: false,
+    listSaving: false,
+    confirmDeleteList: false,
+    newItemText: "",
+    _listSaveTimer: null,
     scaleIdx: 1,
     dirty: false,
     saving: false,
@@ -196,7 +210,7 @@ function saltyEditor() {
       this.mdUp = wide.matches;
       wide.addEventListener("change", e => { this.mdUp = e.matches; });
       window.addEventListener("beforeunload", e => {
-        if (this.dirty) { e.preventDefault(); e.returnValue = ""; }
+        if (this.dirty || this.listDirty) { e.preventDefault(); e.returnValue = ""; }
       });
       await Promise.all([this.loadList(), this.loadLibrary()]);
     },
@@ -262,10 +276,208 @@ function saltyEditor() {
 
       const kind = el.getAttribute("data-kind");
       if (!kind) return;
+      if (kind === "shopping") { this.showShoppingLists(); return; }
       const id = el.getAttribute("data-id");
       const labels = { all: "All Recipes", favorites: "Favorites", wantToMake: "Want to Make" };
       const label = labels[kind] || (el.textContent || "").trim().replace(/\s+\d+$/, "");
       this.setFilter(kind, id, label);
+    },
+
+    /* ------------------------------------------------------ shopping lists -- */
+
+    showShoppingLists() {
+      this.section = "shopping";
+      this.pane = "list";
+      if (!this.shoppingLists.length) this.loadShoppingLists();
+    },
+
+    async loadShoppingLists() {
+      this.shoppingListsLoading = true;
+      try {
+        const rows = await api("GET", "/api/shoppingLists");
+        this.shoppingLists = (rows || []).sort(
+          (a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+      } catch (e) {
+        this.notify(`Couldn't load lists: ${e.message}`, "danger");
+      } finally {
+        this.shoppingListsLoading = false;
+      }
+    },
+
+    /** Rows arrive without `contentsForList` when a list has never had items; normalise so the
+     *  template can iterate and x-model can bind without null checks everywhere. */
+    normaliseList(l) {
+      l.contentsForList = l.contentsForList || [];
+      l.contentsForFreeform = l.contentsForFreeform || "";
+      return l;
+    },
+
+    async openList(id) {
+      await this.flushListSave();          // don't abandon a pending edit to the list we're leaving
+      this.pane = "detail";
+      try {
+        const l = this.normaliseList(await api("GET", `/api/shoppingLists/${encodeURIComponent(id)}`));
+        this.currentList = l;
+        this.listBase = structuredClone(l);
+        this.selectedListId = id;
+        this.listDirty = false;
+      } catch (e) {
+        this.notify(`Couldn't open list: ${e.message}`, "danger");
+      }
+    },
+
+    /**
+     * Shopping lists autosave: they're driven by check-offs, and a Save button on every tick would
+     * be noise. The debounce is what makes concurrent edits likely enough to matter, which is why
+     * the conflict path below exists rather than being theoretical.
+     */
+    touchList() {
+      this.listDirty = true;
+      clearTimeout(this._listSaveTimer);
+      this._listSaveTimer = setTimeout(() => { this.saveList(); }, 700);
+    },
+
+    /** Runs any debounced save immediately; used before navigating away from a list. */
+    async flushListSave() {
+      clearTimeout(this._listSaveTimer);
+      if (this.listDirty) await this.saveList();
+    },
+
+    async saveList() {
+      if (!this.currentList || this.listSaving) return;
+      this.listSaving = true;
+      const body = { ...this.currentList, lastModifiedDate: wireNow(),
+                     baseRevision: this.currentList.revision ?? null };
+      try {
+        const saved = await api("PUT", `/api/shoppingLists/${encodeURIComponent(this.currentList.id)}`, body);
+        this.applySavedList(saved);
+      } catch (e) {
+        // 409 means someone else wrote since we loaded. Rather than picking a winner, hand both
+        // sides plus the base we started from to the server, which runs the same merge the native
+        // clients run -- so a check-off here and an edit there both survive.
+        if (e.status === 409) { await this.resolveList(); }
+        else this.notify(`Couldn't save list: ${e.message}`, "danger");
+      } finally {
+        this.listSaving = false;
+      }
+    },
+
+    async resolveList() {
+      try {
+        const res = await api("POST",
+          `/api/shoppingLists/${encodeURIComponent(this.currentList.id)}/resolve`,
+          { base: this.listBase, local: this.currentList });
+        this.applySavedList(res.merged);
+        if (res.conflictCopy) {
+          // Freeform text can't be merged line by line, so the other version was kept whole rather
+          // than thrown away. Say so plainly -- silently dropping it would be the real failure.
+          await this.loadShoppingLists();
+          this.notify(`This list changed elsewhere. Both versions were kept — see "${res.conflictCopy.name}".`,
+                      "warning");
+        } else {
+          this.notify("Merged changes made elsewhere");
+        }
+      } catch (e) {
+        this.notify(`Couldn't merge changes: ${e.message}`, "danger");
+      }
+    },
+
+    applySavedList(saved) {
+      this.normaliseList(saved);
+      this.currentList = saved;
+      this.listBase = structuredClone(saved);
+      this.listDirty = false;
+      const i = this.shoppingLists.findIndex(l => l.id === saved.id);
+      if (i >= 0) this.shoppingLists[i] = { ...saved };
+    },
+
+    /* --- list contents --- */
+
+    addItem() {
+      const text = (this.newItemText || "").trim();
+      if (!text || !this.currentList) return;
+      this.currentList.contentsForList.push({
+        id: uuidv7(), text, isCompleted: false, isImportant: false, isHeading: false,
+      });
+      this.newItemText = "";
+      this.touchList();
+    },
+
+    addListHeading() {
+      if (!this.currentList) return;
+      this.currentList.contentsForList.push({
+        id: uuidv7(), text: "Section", isCompleted: false, isImportant: false, isHeading: true,
+      });
+      this.touchList();
+    },
+
+    removeItem(item) {
+      if (!this.currentList) return;
+      this.currentList.contentsForList =
+        this.currentList.contentsForList.filter(i => i.id !== item.id);
+      this.touchList();
+    },
+
+    /** Completed items sink to the bottom, headings hold their place. */
+    get sortedItems() {
+      if (!this.currentList) return [];
+      const rows = this.currentList.contentsForList;
+      return [...rows].sort((a, b) => (a.isCompleted ? 1 : 0) - (b.isCompleted ? 1 : 0));
+    },
+
+    get openItemCount() {
+      if (!this.currentList) return 0;
+      return this.currentList.contentsForList.filter(i => !i.isHeading && !i.isCompleted).length;
+    },
+
+    clearCompleted() {
+      if (!this.currentList) return;
+      this.currentList.contentsForList =
+        this.currentList.contentsForList.filter(i => !i.isCompleted);
+      this.touchList();
+    },
+
+    /* --- whole lists --- */
+
+    async createList() {
+      const id = uuidv7();
+      try {
+        const saved = await api("POST", "/api/shoppingLists", {
+          id, name: "New List", isFreeform: false, contentsForList: [],
+          lastModifiedDate: wireNow(),
+        });
+        this.shoppingLists.push(saved);
+        this.shoppingLists.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+        await this.openList(saved.id);
+      } catch (e) {
+        this.notify(`Couldn't create list: ${e.message}`, "danger");
+      }
+    },
+
+    async deleteList() {
+      if (!this.currentList) return;
+      const id = this.currentList.id;
+      clearTimeout(this._listSaveTimer);
+      this.listDirty = false;
+      try {
+        await api("DELETE", `/api/shoppingLists/${encodeURIComponent(id)}`);
+        this.shoppingLists = this.shoppingLists.filter(l => l.id !== id);
+        this.currentList = null;
+        this.selectedListId = null;
+        this.confirmDeleteList = false;
+        this.notify("List deleted");
+      } catch (e) {
+        this.notify(`Couldn't delete list: ${e.message}`, "danger");
+      }
+    },
+
+    /** "3 items · 1 left" — enough to pick a list out without opening it. */
+    listMeta(l) {
+      if (l.isFreeform) return "Notes";
+      const rows = (l.contentsForList || []).filter(i => !i.isHeading);
+      if (!rows.length) return "Empty";
+      const left = rows.filter(i => !i.isCompleted).length;
+      return `${rows.length} ${rows.length === 1 ? "item" : "items"} · ${left} left`;
     },
 
     /* ---------------------------------------------------- library manager -- */
@@ -354,6 +566,7 @@ function saltyEditor() {
     },
 
     setFilter(kind, id, label) {
+      this.section = "recipes";
       this.filter = { kind, id, label: label || "All Recipes" };
       this.pane = "list";
       // The detail column follows the list, as it does in the Swift client where detail is driven by

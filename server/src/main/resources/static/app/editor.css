@@ -270,3 +270,28 @@ wa-page { height: 100dvh; }
             padding-block-start: var(--wa-space-s);
             border-block-start: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border); }
 .mgr__add wa-input { flex: 1; min-width: 0; }
+
+/* ---------------------------------------------------------- shopping lists -- */
+
+.slist__add { display: flex; gap: var(--wa-space-xs); align-items: end;
+              margin-block-end: var(--wa-space-m); }
+.slist__add wa-input { flex: 1; }
+
+.slist__count { font-size: var(--wa-font-size-s); color: var(--wa-color-neutral-on-quiet);
+                margin-block: 0 var(--wa-space-xs); }
+
+.slist__rows { list-style: none; margin: 0; padding: 0;
+               display: flex; flex-direction: column; gap: var(--wa-space-3xs); }
+
+.sitem { display: flex; align-items: center; gap: var(--wa-space-xs); }
+.sitem__text { flex: 1; }
+
+/* Completed items stay legible but clearly settled -- they sink to the bottom of the list too. */
+.sitem--done .sitem__text { opacity: 0.55; text-decoration: line-through; }
+
+/* A heading is a divider with a label, not something you tick off, so it loses the checkbox
+   column and gains its own weight. */
+.sitem--heading { margin-block-start: var(--wa-space-s); }
+.sitem--heading .sitem__text { font-weight: var(--wa-font-weight-semibold); }
+
+.freeform { width: 100%; }

@@ -3,6 +3,7 @@ package com.enuvro.saltykmp
 import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerRecipe
+import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.db.Categories
 import com.enuvro.saltykmp.db.Courses
@@ -13,12 +14,14 @@ import com.enuvro.saltykmp.db.RecipeCategories
 import com.enuvro.saltykmp.db.RecipeRepository
 import com.enuvro.saltykmp.db.RecipeTags
 import com.enuvro.saltykmp.db.Recipes
+import com.enuvro.saltykmp.db.ShoppingListRepository
 import com.enuvro.saltykmp.db.ShoppingLists
 import com.enuvro.saltykmp.db.Tags
 import com.enuvro.saltykmp.db.UserRepository
 import com.enuvro.saltykmp.db.Users
 import com.enuvro.saltykmp.db.model.Direction
 import com.enuvro.saltykmp.db.model.Ingredient
+import com.enuvro.saltykmp.db.model.ShoppingListListContents
 import com.enuvro.saltykmp.image.ImageStore
 import com.microsoft.playwright.Browser
 import com.microsoft.playwright.BrowserType
@@ -77,6 +80,7 @@ class EditorUiTest {
         const val RECIPE_ID = "01A05100-0000-7000-8000-0000000000R1"
         const val COURSE_ID = "01A05100-0000-7000-8000-0000000000C1"
         const val CATEGORY_ID = "01A05100-0000-7000-8000-0000000000K1"
+        const val LIST_ID = "01A05100-0000-7000-8000-0000000000L1"
     }
 
     /** Null when no browser can be launched, which turns every test into a skip. */
@@ -278,12 +282,12 @@ class EditorUiTest {
         assertThat(page.locator(".rrow")).hasCount(1)
 
         page.locator("wa-tree-item[data-kind=category]").first().click()
-        assertThat(page.locator(".list__title")).hasText("Baking")
+        assertThat(page.locator("section[aria-label='Recipes'] .list__title")).hasText("Baking")
         assertThat(page.locator(".rrow")).hasCount(1)
 
         // Favourites: nothing is flagged in the fixture, so the list should empty out.
         page.locator("wa-tree-item[data-kind=favorites]").click()
-        assertThat(page.locator(".list__title")).hasText("Favorites")
+        assertThat(page.locator("section[aria-label='Recipes'] .list__title")).hasText("Favorites")
         assertThat(page.locator(".rrow")).hasCount(0)
 
         // Back to everything.
@@ -374,7 +378,7 @@ class EditorUiTest {
     fun expandingAGroupDoesNotChangeTheFilter() {
         val b = browserOrNull() ?: return
         val page = editorPage(b)
-        val title = page.locator(".list__title")
+        val title = page.locator("section[aria-label='Recipes'] .list__title")
         assertThat(title).hasText("All Recipes")
 
         // Click the group's own row, not its centre: an expanded wa-tree-item's box encloses its
@@ -551,6 +555,114 @@ class EditorUiTest {
         page.locator("wa-tree-item[data-kind=favorites]").click()
         page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).current")
         assertThat(page.locator(".read")).hasCount(0)
+        page.close()
+    }
+
+    /* ------------------------------------------------------ shopping lists -- */
+
+    private fun seedList(vararg items: Pair<String, Boolean>): ServerShoppingList = runBlocking {
+        val user = UserRepository.findByUsername("tester")!!
+        val list = ServerShoppingList(
+            id = LIST_ID,
+            name = "Groceries",
+            isFreeform = false,
+            contentsForList = items.mapIndexed { i, (text, done) ->
+                ShoppingListListContents(id = "s$i", text = text, isCompleted = done)
+            },
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        )
+        (ShoppingListRepository.save(user.id, list) as ShoppingListRepository.SaveResult.Saved).list
+    }
+
+    private fun storedList(): ServerShoppingList? = runBlocking {
+        ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, LIST_ID)
+    }
+
+    /** Shopping lists are a pane in the editor now, not a link back to the classic page. */
+    @Test
+    fun shoppingListsOpenInsideTheEditor() {
+        val b = browserOrNull() ?: return
+        seedList("Milk" to false, "Eggs" to false)
+        val page = editorPage(b)
+
+        page.locator("wa-tree-item[data-kind=shopping]").click()
+        page.waitForSelector("section[aria-label='Shopping lists'] .rrow")
+        page.locator("section[aria-label='Shopping lists'] .rrow").first().click()
+        page.waitForSelector(".slist")
+
+        assertThat(page.locator(".sitem")).hasCount(2)
+        page.close()
+    }
+
+    /**
+     * Enter adds an item. wa-input keeps its real <input> in shadow DOM, so a <form> never sees an
+     * implicit submit -- the handler is on the input itself, and this is what proves it.
+     */
+    @Test
+    fun pressingEnterAddsAnItemAndAutosaves() {
+        val b = browserOrNull() ?: return
+        seedList("Milk" to false)
+        val page = editorPage(b)
+        page.locator("wa-tree-item[data-kind=shopping]").click()
+        page.locator("section[aria-label='Shopping lists'] .rrow").first().click()
+        page.waitForSelector(".slist")
+
+        page.locator(".slist__add wa-input").click()
+        page.keyboard().type("Butter")
+        page.keyboard().press("Enter")
+
+        // Autosave is debounced; wait for it to settle rather than for a fixed delay.
+        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).listDirty")
+        page.waitForTimeout(300.0)
+
+        val texts = storedList()?.contentsForList.orEmpty().map { it.text }
+        assertTrue(texts.contains("Butter"), "Enter should have added and saved the item: $texts")
+        page.close()
+    }
+
+    /**
+     * The reason this pane resolves conflicts at all. A shopping list is worked by several people
+     * at once, so a check-off landing between this browser's load and its save must not be undone
+     * by it -- and the browser's own edit must not be lost either. Both survive because the save
+     * falls back to the shared merge on 409 instead of overwriting.
+     */
+    @Test
+    fun aConcurrentCheckOffIsMergedRatherThanOverwritten() {
+        val b = browserOrNull() ?: return
+        val seeded = seedList("Milk" to false, "Eggs" to false)
+        val page = editorPage(b)
+        page.locator("wa-tree-item[data-kind=shopping]").click()
+        page.locator("section[aria-label='Shopping lists'] .rrow").first().click()
+        page.waitForSelector(".slist")
+
+        // Another client ticks off "Milk" while this browser holds the copy it loaded.
+        runBlocking {
+            val user = UserRepository.findByUsername("tester")!!
+            ShoppingListRepository.save(
+                user.id,
+                seeded.copy(
+                    contentsForList = seeded.contentsForList.orEmpty().map {
+                        if (it.text == "Milk") it.copy(isCompleted = true) else it
+                    },
+                    lastModifiedDate = "2026-08-02T00:00:00.000Z",
+                    baseRevision = seeded.revision,
+                ),
+            )
+        }
+
+        // This browser renames the OTHER item and saves against its now-stale revision.
+        page.locator(".sitem").nth(1).locator("wa-input").evaluate(
+            """el => { el.value = 'Free-range eggs';
+                       el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }"""
+        )
+        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).listDirty")
+        page.waitForTimeout(400.0)
+
+        val stored = storedList()?.contentsForList.orEmpty().associateBy { it.text }
+        assertEquals(true, stored["Milk"]?.isCompleted,
+            "the other client's check-off must survive this browser's save")
+        assertTrue(stored.containsKey("Free-range eggs"),
+            "this browser's rename must survive too: ${stored.keys}")
         page.close()
     }
 }
