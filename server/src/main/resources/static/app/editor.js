@@ -130,10 +130,14 @@
     var h = Vue.h;
     var svgSet = {
       component: function (props) {
+        // Sized in em, not %: an <svg> with only a viewBox falls back to its default intrinsic
+        // size (300x300), and a percentage would resolve against a .v-icon that is itself
+        // sized by its content -- circular, and it lands right back on 300px.
         return h("svg", {
           class: "v-icon__svg", xmlns: "http://www.w3.org/2000/svg",
-          viewBox: "0 0 24 24", role: "img", "aria-hidden": "true"
-        }, [h("path", { d: props.icon })]);
+          viewBox: "0 0 24 24", width: "1em", height: "1em",
+          role: "img", "aria-hidden": "true"
+        }, [h("path", { d: props.icon, fill: "currentColor" })]);
       }
     };
     var A = ICONS;
@@ -167,12 +171,16 @@
             error: "#E0756A", warning: "#E0AB4A", info: "#6FB5D1", success: "#3FB894" } }
         }
       },
-      // Material's touch defaults read as a stretched phone app on a desktop window.
+      // Material's touch defaults read as a stretched phone app on a desktop window, so tighten
+      // the things that carry text. NOT via `global`: that applies density to every component that
+      // accepts it, including VBtn, where it stacks on top of size="small" and collapses a button
+      // to ~16px tall. Density belongs on the input-ish components only.
       defaults: {
-        global: { density: "compact" },
         VTextField: { density: "compact", variant: "outlined", hideDetails: true },
         VTextarea: { density: "compact", hideDetails: true },
-        VSelect: { density: "compact", variant: "outlined", hideDetails: true }
+        VSelect: { density: "compact", variant: "outlined", hideDetails: true },
+        VList: { density: "compact" },
+        VToolbar: { density: "compact" }
       }
     });
   }
