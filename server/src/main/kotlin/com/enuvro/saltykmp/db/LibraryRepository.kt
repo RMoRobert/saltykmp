@@ -26,7 +26,7 @@ object LibraryRepository {
     suspend fun upsertCourse(userId: String, c: ServerCourse): ServerCourse = dbQuery {
         Courses.upsert {
             it[id] = c.id; it[Courses.userId] = userId; it[name] = c.name
-            it[lastModifiedDate] = WireDate.parse(c.lastModifiedDate)
+            it[lastModifiedDate] = WireDate.parse(c.lastModifiedDate) ?: WireDate.nowUtc()
         }
         c
     }
@@ -45,7 +45,7 @@ object LibraryRepository {
     suspend fun upsertCategory(userId: String, c: ServerCategory): ServerCategory = dbQuery {
         Categories.upsert {
             it[id] = c.id; it[Categories.userId] = userId; it[name] = c.name
-            it[lastModifiedDate] = WireDate.parse(c.lastModifiedDate)
+            it[lastModifiedDate] = WireDate.parse(c.lastModifiedDate) ?: WireDate.nowUtc()
         }
         c
     }
@@ -64,7 +64,7 @@ object LibraryRepository {
     suspend fun upsertTag(userId: String, t: ServerTag): ServerTag = dbQuery {
         Tags.upsert {
             it[id] = t.id; it[Tags.userId] = userId; it[name] = t.name
-            it[lastModifiedDate] = WireDate.parse(t.lastModifiedDate)
+            it[lastModifiedDate] = WireDate.parse(t.lastModifiedDate) ?: WireDate.nowUtc()
         }
         t
     }

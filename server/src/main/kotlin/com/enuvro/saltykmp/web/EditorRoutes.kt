@@ -8,7 +8,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 
 /**
- * The Vue/Vuetify recipe editor.
+ * The recipe editor (Web Awesome + Alpine).
  *
  * This route serves a shell and nothing else: no recipe data is rendered here. The page fetches and
  * writes everything through the JSON API the native clients already use, which is why those routes now

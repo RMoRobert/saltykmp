@@ -14,7 +14,12 @@
 function saltyEditor() {
   "use strict";
 
-  const SALTY = window.SALTY || { csrfToken: "" };
+  // Read from data attributes rather than a generated script literal; see the note in the template.
+  const SALTY = (() => {
+    const el = document.getElementById("salty-config");
+    const d = el ? el.dataset : {};
+    return { csrfToken: d.csrf || "", username: d.username || "", isAdmin: d.isAdmin === "true" };
+  })();
 
   const SCALES = [0.5, 1, 1.5, 2, 3, 4];
 
@@ -206,6 +211,11 @@ function saltyEditor() {
     confirmDeleteList: false,
     newItemText: "",
     _listSaveTimer: null,
+    _listSaveInFlight: null,
+    _listSavePending: false,
+    /** Bumped whenever the open list changes identity (opened, switched, deleted). A response that
+     *  was computed under an older generation is stale and must not be applied. */
+    _listGeneration: 0,
     scaleIdx: 1,
     dirty: false,
     saving: false,
@@ -385,6 +395,7 @@ function saltyEditor() {
       this.pane = "detail";
       try {
         const l = this.normaliseList(await api("GET", `/api/shoppingLists/${encodeURIComponent(id)}`));
+        this._listGeneration++;
         this.currentList = l;
         this.listBase = structuredClone(l);
         this.selectedListId = id;
@@ -398,43 +409,103 @@ function saltyEditor() {
      * Shopping lists autosave: they're driven by check-offs, and a Save button on every tick would
      * be noise. The debounce is what makes concurrent edits likely enough to matter, which is why
      * the conflict path below exists rather than being theoretical.
+     *
+     * The stamp goes on `currentList` itself, not just on the outgoing body. `resolveList` sends
+     * `currentList` as its `local` side, and the shared merge breaks both-changed ties by
+     * comparing dates -- so a stale stamp here made the browser lose every one of those ties.
      */
     touchList() {
       this.listDirty = true;
+      if (this.currentList) this.currentList.lastModifiedDate = wireNow();
       clearTimeout(this._listSaveTimer);
-      this._listSaveTimer = setTimeout(() => { this.saveList(); }, 700);
+      this._listSaveTimer = setTimeout(() => { if (this.listDirty) this.saveList(); }, 700);
     },
 
-    /** Runs any debounced save immediately; used before navigating away from a list. */
+    /**
+     * Runs any pending save to completion, including one already on the wire. Awaiting saveList()
+     * alone was not enough: it returns immediately when a save is in flight, so navigating away
+     * mid-save silently abandoned the newest edits.
+     */
     async flushListSave() {
       clearTimeout(this._listSaveTimer);
+      if (this._listSaveInFlight) await this._listSaveInFlight.catch(() => {});
       if (this.listDirty) await this.saveList();
     },
 
+    /**
+     * Writes the open list, then applies the server's echo -- but only if it is still the answer to
+     * a question we are asking. Every guard here exists because a response is applied to state that
+     * may have moved on while it was on the wire:
+     *
+     *  - the list may have been switched, deleted or reloaded (checked via `_listGeneration`),
+     *  - and edits made after the body was serialised are NOT in that body, so accepting the echo
+     *    would visibly undo them and then report "All changes saved".
+     *
+     * When either happens the echo is dropped and the save is re-driven, so the newest state wins
+     * instead of the newest *response*.
+     */
     async saveList() {
-      if (!this.currentList || this.listSaving) return;
+      if (!this.currentList) return;
+      if (this._listSaveInFlight) { this._listSavePending = true; return; }
+
+      const generation = this._listGeneration;
+      const listId = this.currentList.id;
+      const body = { ...this.currentList, baseRevision: this.currentList.revision ?? null };
       this.listSaving = true;
-      const body = { ...this.currentList, lastModifiedDate: wireNow(),
-                     baseRevision: this.currentList.revision ?? null };
+      this.listDirty = false;              // anything typed from here on re-dirties and re-saves
+
+      const run = (async () => {
+        try {
+          const saved = await api("PUT", `/api/shoppingLists/${encodeURIComponent(listId)}`, body);
+          if (this._listGeneration !== generation) return;   // switched/deleted while in flight
+          if (this.listDirty) {
+            // Edits landed after the body was serialised, so they are NOT in this echo. Applying it
+            // wholesale would visibly undo them and then report "All changes saved". Take only what
+            // the server owns -- the revision, and the base a later merge is measured from -- and
+            // leave the newer local contents; the finally block re-drives the save.
+            this.adoptServerRevision(saved);
+          } else {
+            this.applySavedList(saved);
+          }
+        } catch (e) {
+          if (this._listGeneration !== generation) return;
+          // 409 means someone else wrote since we loaded. Rather than picking a winner, hand both
+          // sides plus the base we started from to the server, which runs the same merge the native
+          // clients run -- so a check-off here and an edit there both survive.
+          if (e.status === 409) { await this.resolveList(listId, generation); }
+          else {
+            this.listDirty = true;         // nothing was stored; don't claim it was
+            this.notify(`Couldn't save list: ${e.message}`, "danger");
+          }
+        }
+      })();
+
+      this._listSaveInFlight = run;
       try {
-        const saved = await api("PUT", `/api/shoppingLists/${encodeURIComponent(this.currentList.id)}`, body);
-        this.applySavedList(saved);
-      } catch (e) {
-        // 409 means someone else wrote since we loaded. Rather than picking a winner, hand both
-        // sides plus the base we started from to the server, which runs the same merge the native
-        // clients run -- so a check-off here and an edit there both survive.
-        if (e.status === 409) { await this.resolveList(); }
-        else this.notify(`Couldn't save list: ${e.message}`, "danger");
+        await run;
       } finally {
+        this._listSaveInFlight = null;
         this.listSaving = false;
+        // Edits that landed mid-flight, or a save requested while one was running.
+        if ((this._listSavePending || this.listDirty) && this._listGeneration === generation) {
+          this._listSavePending = false;
+          await this.saveList();
+        }
+        this._listSavePending = false;
       }
     },
 
-    async resolveList() {
+    /**
+     * Hands the server the two sides the browser has plus the base it started from, and takes back
+     * whatever the shared merge produced. Scoped to the list and generation the save was issued
+     * for, so a response arriving after the user switched lists can't be applied to the new one --
+     * previously this read `currentList` at response time and could merge a list against itself.
+     */
+    async resolveList(listId, generation, retried = false) {
       try {
-        const res = await api("POST",
-          `/api/shoppingLists/${encodeURIComponent(this.currentList.id)}/resolve`,
-          { base: this.listBase, local: this.currentList });
+        const res = await api("POST", `/api/shoppingLists/${encodeURIComponent(listId)}/resolve`,
+                              { base: this.listBase, local: this.currentList });
+        if (this._listGeneration !== generation) return;
         this.applySavedList(res.merged);
         if (res.conflictCopy) {
           // Freeform text can't be merged line by line, so the other version was kept whole rather
@@ -446,11 +517,37 @@ function saltyEditor() {
           this.notify("Merged changes made elsewhere");
         }
       } catch (e) {
+        if (this._listGeneration !== generation) return;
+        // The resolve itself can 409 when a third write lands between the server's read and its
+        // save. The body is the current row, so re-basing on it and trying once more is exactly
+        // what the endpoint asks for.
+        if (e.status === 409 && !retried && e.data) {
+          this.listBase = structuredClone(this.normaliseList(e.data));
+          await this.resolveList(listId, generation, true);
+          return;
+        }
+        this.listDirty = true;
         this.notify(`Couldn't merge changes: ${e.message}`, "danger");
       }
     },
 
+    /**
+     * Takes the server-owned parts of an echo without touching contents the user has since changed.
+     * The echo still defines the agreed base: it is what the server holds now, so a later three-way
+     * merge must measure against it rather than against the copy originally loaded.
+     */
+    adoptServerRevision(saved) {
+      if (!this.currentList || saved.id !== this.currentList.id) return;
+      this.normaliseList(saved);
+      this.currentList.revision = saved.revision;
+      this.listBase = structuredClone(saved);
+      const i = this.shoppingLists.findIndex(l => l.id === saved.id);
+      if (i >= 0) this.shoppingLists[i] = { ...saved };
+    },
+
     applySavedList(saved) {
+      // Belt and braces alongside the generation check: never let one list's echo overwrite another.
+      if (!this.currentList || saved.id !== this.currentList.id) return;
       this.normaliseList(saved);
       this.currentList = saved;
       this.listBase = structuredClone(saved);
@@ -527,6 +624,11 @@ function saltyEditor() {
       const id = this.currentList.id;
       clearTimeout(this._listSaveTimer);
       this.listDirty = false;
+      // A save already on the wire would otherwise land after the delete and re-create the row --
+      // the repository treats a write with no current row as an insert. Let it finish, then take
+      // the generation past it so its echo is ignored.
+      if (this._listSaveInFlight) await this._listSaveInFlight.catch(() => {});
+      this._listGeneration++;
       try {
         await api("DELETE", `/api/shoppingLists/${encodeURIComponent(id)}`);
         this.shoppingLists = this.shoppingLists.filter(l => l.id !== id);
@@ -577,7 +679,8 @@ function saltyEditor() {
         return;
       }
       try {
-        const created = await api("POST", "/api/tags", { id: uuidv7(), name });
+        const created = await api("POST", "/api/tags",
+                                  { id: uuidv7(), name, lastModifiedDate: wireNow() });
         this.tags.push(created);
         this.tags.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
         this.attachTag(created.id);
@@ -598,7 +701,8 @@ function saltyEditor() {
       const name = (this.newClassifier[kind] || "").trim();
       if (!name) return;
       try {
-        const created = await api("POST", this.endpointFor(kind), { id: uuidv7(), name });
+        const created = await api("POST", this.endpointFor(kind),
+                                  { id: uuidv7(), name, lastModifiedDate: wireNow() });
         this[this.collectionFor(kind)].push(created);
         this[this.collectionFor(kind)].sort((a, b) =>
           String(a.name || "").localeCompare(String(b.name || "")));
@@ -616,7 +720,7 @@ function saltyEditor() {
       item.name = trimmed;                       // optimistic: the field already shows it
       try {
         await api("PUT", `${this.endpointFor(kind)}/${encodeURIComponent(item.id)}`,
-                  { id: item.id, name: trimmed });
+                  { id: item.id, name: trimmed, lastModifiedDate: wireNow() });
         // A rename can change the heading of the list you're looking at.
         if (this.filter.kind === kind && this.filter.id === item.id) this.filter.label = trimmed;
       } catch (e) {
@@ -718,10 +822,29 @@ function saltyEditor() {
       this.mode = "read";
     },
 
-    /** The Done button: save if there's anything to save, then drop back to reading. */
+    /** The Save button: write if there's anything to write, then close. */
     async saveAndClose() {
       if (this.dirty) await this.save();
-      if (!this.dirty) this.mode = "read";
+      if (!this.dirty) this.mode = "read";      // stays open when the save failed
+    },
+
+    /**
+     * The Cancel button: throw away everything done since the dialog opened and close.
+     *
+     * Asks first only when there is something to lose, and reloads from the server rather than
+     * merely clearing the flag -- otherwise the edited values would sit in `current` and the
+     * reading view behind would render text that was never saved.
+     */
+    async cancelEdit() {
+      if (this.dirty && !window.confirm("Discard unsaved changes?")) return;
+      this.resetImageStaging();
+      const id = this.current && this.current.id;
+      this.dirty = false;
+      // Reload BEFORE closing. Closing first leaves the reload in flight while the editor is
+      // reachable again, and when it lands it replaces `current` -- tearing down the form and
+      // taking any keystrokes typed in between with it.
+      if (id) await this.open(id, { keepMode: true });
+      this.mode = "read";
     },
 
     /* --- image --- */
@@ -948,6 +1071,28 @@ function saltyEditor() {
       this.touch();
     },
 
+    /**
+     * Moves a row one place, the keyboard-reachable equivalent of dragging it.
+     *
+     * Reordering was bound only to x-sort with an aria-hidden drag handle, so it could not be done
+     * without a pointer at all -- a WCAG 2.1.1 failure on new UI. @alpinejs/sort has no keyboard
+     * mode, so these buttons are the way in; they reuse the same reorder() the drag path calls.
+     */
+    moveRow(which, itemId, delta) {
+      const arr = this[which];
+      const from = arr.findIndex(r => r.id === itemId);
+      if (from === -1) return;
+      const to = from + delta;
+      if (to < 0 || to >= arr.length) return;
+      this.reorder(which, itemId, to);
+      // Keep focus on the button that was pressed, so a run of moves doesn't need re-tabbing.
+      this.$nextTick(() => {
+        const sel = `[data-move="${which}:${itemId}:${delta > 0 ? "down" : "up"}"]`;
+        const el = document.querySelector(sel);
+        if (el && typeof el.focus === "function") el.focus();
+      });
+    },
+
     /* --- data --- */
 
     async loadList() {
@@ -968,7 +1113,14 @@ function saltyEditor() {
       }
     },
 
-    async open(id) {
+    /**
+     * Loads a recipe into the detail pane.
+     *
+     * `keepMode` exists for the discard path: that reload finishes AFTER the user may have already
+     * re-opened the editor, and unconditionally forcing "read" at the end would slam the dialog
+     * shut under them -- and silently drop whatever they had just typed.
+     */
+    async open(id, { keepMode = false } = {}) {
       if (this.dirty && !window.confirm("Discard unsaved changes?")) return;
       this.resetImageStaging();
       this.loadingRecipe = true;
@@ -994,7 +1146,7 @@ function saltyEditor() {
           id: x.id || uuidv7(), text: x.text || "", isHeading: !!x.isHeading, isMain: false,
         }));
         this.dirty = false;
-        this.mode = "read";
+        if (!keepMode) this.mode = "read";
         this.pane = "detail";
       } catch (e) {
         this.notify(`Couldn't open recipe: ${e.message}`, "danger");
@@ -1035,18 +1187,30 @@ function saltyEditor() {
         // them here would silently wipe them.
         const payload = {
           ...this.current,
+          // servings is an Int on the wire; a decimal typed here would fail deserialisation and
+          // take the entire recipe save down with a generic 500.
+          servings: this.current.servings == null || this.current.servings === ""
+            ? null : Math.round(Number(this.current.servings)) || null,
           ingredients: this.ingredients,
           directions: this.directions,
           lastModifiedDate: wireNow(),
         };
         const saved = await api("PUT", `/api/recipes/${encodeURIComponent(this.current.id)}`, payload);
         this.current = saved;
-        // After the body, so the PUT's copy of imageFilename can't overwrite what these set.
-        await this.applyImageChanges();
+        this.syncListRow();          // the body IS stored now, whatever the image does next
+
+        // After the body, so the PUT's copy of imageFilename can't overwrite what these set. A
+        // failure here must not be reported as "Save failed": the recipe was written, only the
+        // image wasn't, and saying otherwise sends the user looking for lost text that is safe.
+        try {
+          await this.applyImageChanges();
+        } catch (imageError) {
+          this.syncListRow();
+          this.notify(`Recipe saved, but the image didn't upload: ${imageError.message}`, "danger");
+          return;                     // dirty stays true; the staged file survives for a retry
+        }
         this.dirty = false;
-        const row = { ...this.current };
-        const idx = this.list.findIndex(x => x.id === row.id);
-        if (idx > -1) this.list.splice(idx, 1, row); else this.list.unshift(row);
+        this.syncListRow();
         this.notify("Saved");
       } catch (e) {
         this.notify(`Save failed: ${e.message}`, "danger");
@@ -1055,9 +1219,24 @@ function saltyEditor() {
       }
     },
 
-    revert() {
+    /** Keeps the middle column's row in step with `current` after a write. */
+    syncListRow() {
+      if (!this.current) return;
+      const row = { ...this.current };
+      const idx = this.list.findIndex(x => x.id === row.id);
+      if (idx > -1) this.list.splice(idx, 1, row); else this.list.unshift(row);
+    },
+
+    /**
+     * Throws away in-memory edits by reloading the stored recipe. Both callers set `mode`
+     * themselves, so this reload must not touch it: it completes asynchronously, and forcing
+     * "read" at the end would close an editor the user had meanwhile re-opened.
+     */
+    async revert() {
       this.resetImageStaging();
-      if (this.current) { this.dirty = false; this.open(this.current.id); }
+      if (!this.current) return;
+      this.dirty = false;
+      await this.open(this.current.id, { keepMode: true });
     },
 
     async doDelete() {

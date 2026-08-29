@@ -98,8 +98,9 @@ fun Application.configureAuth(
  * The authenticated user's id. Only valid inside authenticated routes.
  *
  * API routes accept either a Bearer JWT (native clients) or the web session cookie (the browser UI),
- * so resolve whichever principal the matching provider installed. Both are equally trusted: the JWT is
- * signature- and freshness-checked in [configureAuth], the session rides in a MAC-signed cookie.
+ * so resolve whichever principal the matching provider installed. Both are freshness-checked against
+ * the user table on every request -- the JWT in [configureAuth]'s validator, the cookie in
+ * [revalidateSession] -- so a deleted user or a password reset takes effect immediately on both.
  */
 fun ApplicationCall.userId(): String {
     principal<JWTPrincipal>()?.let { return it.payload.getClaim("uid").asString() }
@@ -134,4 +135,23 @@ fun Route.authRoutes(jwtService: JwtService, throttle: LoginThrottle, accountLoc
         val token = jwtService.generate(user.id, user.username)
         call.respond(AuthResponse(token = token, username = user.username, expiresIn = jwtService.validityMs))
     }
+}
+
+/**
+ * Re-checks a session cookie against the user table on every request, the way the JWT provider
+ * re-checks a token.
+ *
+ * A signed cookie proves only that we minted it, not that the account still exists or that its
+ * password hasn't since been reset. Without this, deleting a user or resetting a compromised
+ * password left their open browser tab writing recipes, images and library rows for the cookie's
+ * full lifetime, while native clients were locked out immediately.
+ *
+ * Returns null to reject, which routes the request to the provider's challenge.
+ */
+suspend fun revalidateSession(session: UserSession): UserSession? {
+    val user = UserRepository.findById(session.userId) ?: return null
+    // Whole-second granularity: session issuedAt is epoch seconds, as JWT `iat` is.
+    val changedSec = user.passwordChangedAt.toEpochSecond(java.time.ZoneOffset.UTC)
+    if (session.issuedAt < changedSec) return null
+    return session
 }

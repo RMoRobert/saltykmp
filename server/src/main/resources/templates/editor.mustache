@@ -41,13 +41,14 @@
 </head>
 <body>
 
-<script>
-  window.SALTY = {
-    csrfToken: "{{csrfToken}}",
-    username: "{{username}}",
-    isAdmin: {{#isAdmin}}true{{/isAdmin}}{{^isAdmin}}false{{/isAdmin}}
-  };
-</script>
+<!-- Config travels in data attributes, not as JS string literals. Mustache escapes for HTML, which
+     is the correct escaper for an attribute value but the wrong one inside <script>: a backslash in
+     a username passed through untouched and started a bogus \u escape, throwing a SyntaxError that
+     left window.SALTY undefined, the CSRF token empty, and every write rejected with 403. -->
+<div id="salty-config" hidden
+     data-csrf="{{csrfToken}}"
+     data-username="{{username}}"
+     data-is-admin="{{#isAdmin}}true{{/isAdmin}}{{^isAdmin}}false{{/isAdmin}}"></div>
 
 <!-- No x-init: Alpine calls init() on the x-data object automatically. Declaring both runs it
      twice and races two loadList() calls.
@@ -130,7 +131,10 @@
   </nav>
 
   <!-- ═══════════════ main · recipe list + recipe ═══════════════ -->
-  <main class="panes">
+  <!-- Exactly one <main>, and it carries the id wa-page's skip-to-content link points at. The
+       three panes inside are <section>s: nesting <main> inside <main> is invalid and exposed two
+       unlabelled landmarks at once. -->
+  <main class="panes" id="main-content">
   <section class="list" aria-label="Recipes" x-show="section === 'recipes'">
     <header class="list__head">
       <wa-button class="only-compact" size="small" appearance="plain" @click="showLibrary()">
@@ -194,7 +198,7 @@
   </section>
 
   <!-- ═══════════════════ pane 3 · recipe ═══════════════════ -->
-  <main class="detail" x-show="section === 'recipes'">
+  <section class="detail" aria-label="Recipe" x-show="section === 'recipes'">
     <header class="detail__bar">
       <wa-button class="only-compact" size="small" appearance="plain" @click="backToList()">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Recipes
@@ -379,13 +383,13 @@
         </article>
       </template>
     </div>
-  </main>
+  </section>
 
   <!-- ═══════════════════ pane 3 · shopping list ═══════════════════
        Unlike a recipe this edits in place with no Edit button: a shopping list is worked, not
        composed, and autosaves as items are ticked (see touchList). That's also what makes
        concurrent edits ordinary here rather than rare, hence the merge on 409. -->
-  <main class="detail" x-show="section === 'shopping'">
+  <section class="detail" aria-label="Shopping list" x-show="section === 'shopping'">
     <header class="detail__bar">
       <wa-button class="only-compact" size="small" appearance="plain" @click="pane = 'list'">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Lists
@@ -489,7 +493,7 @@
         </div>
       </template>
     </div>
-  </main>
+  </section>
 
   </main>
 
@@ -544,7 +548,7 @@
             </template>
 
             <div class="imgedit__actions">
-              <input type="file" id="imgfile" class="visually-hidden"
+              <input type="file" id="imgfile" class="visually-hidden" aria-label="Recipe image file"
                      accept="image/jpeg,image/png,image/gif" @change="chooseImage($event)">
               <wa-button size="small" appearance="filled" data-testid="choose-image"
                          @click="document.getElementById('imgfile').click()">
@@ -579,7 +583,7 @@
 
           <div class="fieldrow">
             <wa-input label="Yield" with-label x-model="current.yield" @input="touch()"></wa-input>
-            <wa-input label="Servings" with-label type="number"
+            <wa-input label="Servings" with-label type="number" step="1" min="0"
                       x-model.number="current.servings" @input="touch()"></wa-input>
             <wa-select label="Course" with-label x-model="current.courseId" @change="touch()">
               <wa-option value="">None</wa-option>
@@ -675,6 +679,16 @@
                              resize="auto" rows="1"
                              :aria-label="(row.isHeading ? 'Heading ' : 'Ingredient ') + (i + 1)"></wa-textarea>
                 <span class="row__tools">
+                  <wa-button size="small" appearance="plain" :disabled="i === 0"
+                             :data-move="'ingredients:' + row.id + ':up'"
+                             @click="moveRow('ingredients', row.id, -1)" title="Move up">
+                    <wa-icon name="chevron-up" label="Move up"></wa-icon>
+                  </wa-button>
+                  <wa-button size="small" appearance="plain" :disabled="i === ingredients.length - 1"
+                             :data-move="'ingredients:' + row.id + ':down'"
+                             @click="moveRow('ingredients', row.id, 1)" title="Move down">
+                    <wa-icon name="chevron-down" label="Move down"></wa-icon>
+                  </wa-button>
                   <wa-button size="small" appearance="plain" x-show="!row.isHeading"
                              @click="row.isMain = !row.isMain; touch()"
                              :title="row.isMain ? 'Main ingredient' : 'Mark as main ingredient'">
@@ -714,6 +728,16 @@
                              resize="auto" rows="1"
                              :aria-label="(row.isHeading ? 'Heading ' : 'Step ') + (i + 1)"></wa-textarea>
                 <span class="row__tools">
+                  <wa-button size="small" appearance="plain" :disabled="i === 0"
+                             :data-move="'directions:' + row.id + ':up'"
+                             @click="moveRow('directions', row.id, -1)" title="Move up">
+                    <wa-icon name="chevron-up" label="Move up"></wa-icon>
+                  </wa-button>
+                  <wa-button size="small" appearance="plain" :disabled="i === directions.length - 1"
+                             :data-move="'directions:' + row.id + ':down'"
+                             @click="moveRow('directions', row.id, 1)" title="Move down">
+                    <wa-icon name="chevron-down" label="Move down"></wa-icon>
+                  </wa-button>
                   <wa-button size="small" appearance="plain" @click="removeRow('directions', i)" title="Delete">
                     <wa-icon name="xmark" label="Delete row"></wa-icon>
                   </wa-button>
@@ -823,14 +847,17 @@
       </div>
     </template>
 
+    <!-- Cancel and Save, the pairing people expect from a modal. It replaces Revert/Save/Done,
+         which offered three exits for two intentions: Revert discarded AND closed (so it was
+         Cancel by another name), while Save and Done differed only in whether the dialog stayed
+         open -- a distinction nobody asked for. -->
     <div slot="footer" class="savebar savebar--dialog">
       <span class="savebar__status" :class="{ 'is-dirty': dirty }"
             x-text="dirty ? 'Unsaved changes' : 'All changes saved'"></span>
-      <wa-button size="small" appearance="plain" :disabled="!dirty" @click="revert()">Revert</wa-button>
-      <wa-button data-testid="save" size="small" appearance="accent" variant="brand" :disabled="!dirty"
-                 :loading="saving" @click="save()">Save</wa-button>
-      <wa-button data-testid="done" size="small" appearance="accent" variant="brand"
-                 :loading="saving" @click="saveAndClose()">Done</wa-button>
+      <wa-button data-testid="cancel" size="small" appearance="plain"
+                 @click="cancelEdit()">Cancel</wa-button>
+      <wa-button data-testid="save" size="small" appearance="accent" variant="brand"
+                 :loading="saving" @click="saveAndClose()">Save</wa-button>
     </div>
   </wa-dialog>
 

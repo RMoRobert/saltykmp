@@ -27,9 +27,14 @@ sits almost entirely on marketing and ecommerce page patterns.
 
 ## What changed on the server
 
-Only one thing, and it predates this UI: **the JSON API now accepts the web session cookie as well as
-a Bearer JWT**, so the browser reuses the endpoints the native clients use instead of growing a
-parallel set of form-POST routes that would duplicate the write rules.
+Mostly one thing: **the JSON API now accepts the web session cookie as well as a Bearer JWT**, so the
+browser reuses the endpoints the native clients use instead of growing a parallel set of form-POST
+routes that would duplicate the write rules.
+
+The exception, and the highest-risk new server code on the branch, is
+**`shoppinglist/ShoppingListResolve.kt`** — read that first. It exists because the browser has no
+local database and therefore no `syncedSnapshot` to merge against, so it sends the copy it loaded as
+the base and the server runs the shared merge on its behalf.
 
 - **`WEB_API_AUTH`** (`auth/Auth.kt`) — a second session provider over the same cookie. It exists
   because `WEB_AUTH` answers an unauthenticated request with a redirect to `/login`, which is right
@@ -83,24 +88,28 @@ Saving spreads the loaded recipe, so fields this screen doesn't edit — `imageF
 
 ## Not done
 
-- **No Playwright tests.** I intended to add them and ran out of room. This is the biggest gap: the
-  server flows are covered by `WebApiAuthTest`, but the UI was verified by driving a real browser by
-  hand. Every UI bug found today (invalid `appearance`, visible labels, centred rows, double init) was
-  visible on screen and invisible in the code — that's exactly what Playwright would catch.
-  `com.microsoft.playwright:playwright` is a Gradle test dependency; it needs no npm.
-- **No image upload, category/tag editing, notes/variations/nutrition editing.** Preserved on save,
-  not exposed.
-- **No conflict handling.** Recipe saves are last-writer-wins on `lastModifiedDate`. Shopping lists
-  have revision-based optimistic concurrency; recipes don't, and this UI adds none.
-- **CDN, not vendored.** The page needs network for Web Awesome and Alpine. Vendoring is copying files
-  into `static/vendor/` and editing three URLs.
-- **Light theme only** in practice — WA ships a dark theme, but I haven't checked Salty's overrides
-  against it.
+- **No conflict handling for recipes.** Recipe saves remain last-writer-wins on `lastModifiedDate`,
+  by choice. Shopping lists do resolve conflicts: a 409 sends `{base, local}` to
+  `/api/shoppingLists/{id}/resolve`, which runs the same shared `ShoppingListMerge` the native
+  clients run, so a check-off on one device and an edit on another both survive.
+- **No reordering for notes, variations or preparation times.** Ingredients and directions can be
+  dragged or moved with the keyboard; the three secondary lists append and delete only.
+- **CDN, not vendored.** The page needs network for Web Awesome and Alpine. Vendoring is copying
+  files into `static/vendor/` and editing three URLs.
 
 ## Tests
 
-`WebApiAuthTest` — 7 tests: session cookie reads the API; unauthenticated API calls get 401 JSON not a
+`WebApiAuthTest` — session cookie reads the API; unauthenticated calls get 401 JSON rather than a
 login redirect; a cookie write without a CSRF token is rejected *and changes nothing*; with the token
 it succeeds; Bearer still works and is exempt; `/editor` requires auth; the page carries the token.
 
-Full server suite: **73 tests, 0 failures.**
+`ShoppingListResolveTest` — the merge endpoint: a check-off and an edit to a different item both
+survive; additions from both sides are unioned; unmergeable freeform text is preserved as a saved
+conflict copy; the no-base two-way degrade; 404; and CSRF.
+
+`EditorUiTest` — Playwright drives a real browser. These earn their keep because every UI defect
+found while building this screen was plainly visible on screen and invisible in the code. They are
+**skipped, not passed**, when no browser can be launched.
+
+Run the suite with `./gradlew :server:test`. The count changes often enough that quoting it here
+only creates another thing to go stale.

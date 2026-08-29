@@ -65,7 +65,7 @@ object ShoppingListResolver {
         id: String,
         request: ResolveRequest,
         newId: () -> String,
-        today: () -> LocalDate = { LocalDate.now() },
+        today: () -> LocalDate = { LocalDate.now(java.time.ZoneOffset.UTC) },
     ): Result {
         val current = ShoppingListRepository.getById(userId, id) ?: return Result.NotFound
 
@@ -82,7 +82,10 @@ object ShoppingListResolver {
         val toSave = resolution.merged.copy(
             id = id,
             baseRevision = current.revision,
-            lastModifiedDate = resolution.merged.lastModifiedDate ?: WireDate.format(java.time.LocalDateTime.now()),
+            // nowUtc(), not LocalDateTime.now(): WireDate.FORMAT appends a literal 'Z' without converting,
+            // so a local-zone value would be stored as UTC and could sit hours in the future --
+            // enough for ShoppingListRepository's legacy path to swallow a client's genuine write.
+            lastModifiedDate = resolution.merged.lastModifiedDate ?: WireDate.format(WireDate.nowUtc()),
         )
 
         val saved = when (val r = ShoppingListRepository.save(userId, toSave)) {

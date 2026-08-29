@@ -10,6 +10,7 @@ import com.enuvro.saltykmp.db.LibraryRepository
 import com.enuvro.saltykmp.db.RecipeRepository
 import com.enuvro.saltykmp.db.ShoppingListRepository
 import com.enuvro.saltykmp.db.UserRepository
+import java.time.Instant
 import com.enuvro.saltykmp.db.UserRow
 import com.enuvro.saltykmp.db.model.NutritionInformation
 import com.enuvro.saltykmp.db.model.ShoppingListListContents
@@ -43,6 +44,13 @@ data class UserSession(
     val isAdmin: Boolean = false,
     /** Anti-CSRF token minted at login and echoed as a hidden field in every state-changing form. */
     val csrfToken: String = "",
+    /**
+     * When this session was minted, epoch seconds. Compared against the user's passwordChangedAt so
+     * a password reset invalidates cookies that predate it, matching what the JWT provider already
+     * does with `iat`. Defaults to 0 so any session issued before this field existed fails that
+     * comparison and is re-authenticated once -- the safe direction.
+     */
+    val issuedAt: Long = 0,
 )
 
 const val WEB_AUTH = "web-session"
@@ -85,7 +93,8 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
             throttle.recordSuccess(ip, username)
             accountLockout.recordSuccess(username)
             // Mint a fresh CSRF token per session and store it in the (signed) session cookie.
-            call.sessions.set(UserSession(user.id, user.username, user.isAdmin, newCsrfToken()))
+            call.sessions.set(UserSession(user.id, user.username, user.isAdmin, newCsrfToken(),
+                                          issuedAt = Instant.now().epochSecond))
             call.respondRedirect("/")
         } else {
             throttle.recordFailure(ip, username)

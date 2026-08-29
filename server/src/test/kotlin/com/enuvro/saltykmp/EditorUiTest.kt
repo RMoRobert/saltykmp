@@ -52,8 +52,10 @@ import kotlin.test.assertTrue
  * attribute instead of writing "false". None of those would fail a Ktor test.
  *
  * Playwright drives a real browser; it downloads its own browsers on first run and needs no Node
- * toolchain in this build. The whole class is skipped rather than failed when a browser can't be
- * launched (a CI image with no download, say), so it never blocks the rest of the suite.
+ * toolchain in this build. When a browser cannot be launched (a CI image with no download, say)
+ * these are SKIPPED, not passed: the earlier `?: return` reported 33 green tests on a machine that
+ * had never opened a browser, which is indistinguishable from a real run and hides the loss of the
+ * only coverage ~2000 lines of editor.js and editor.mustache have.
  */
 class EditorUiTest {
 
@@ -80,10 +82,18 @@ class EditorUiTest {
         const val RECIPE_ID = "01A05100-0000-7000-8000-0000000000R1"
         const val COURSE_ID = "01A05100-0000-7000-8000-0000000000C1"
         const val CATEGORY_ID = "01A05100-0000-7000-8000-0000000000K1"
+        const val TAG_ID = "01A05100-0000-7000-8000-0000000000T1"
         const val LIST_ID = "01A05100-0000-7000-8000-0000000000L1"
     }
 
-    /** Null when no browser can be launched, which turns every test into a skip. */
+    /** Skips the test (does not pass it) when no browser can be launched. */
+    private fun requireBrowser(): Browser {
+        val b = browserOrNull()
+        org.junit.Assume.assumeTrue("no Playwright browser available; skipping browser tests", b != null)
+        return b!!
+    }
+
+    /** Null when no browser can be launched. */
     private fun browserOrNull(): Browser? {
         if (browser != null) return browser
         return runCatching {
@@ -165,7 +175,7 @@ class EditorUiTest {
 
     @Test
     fun theEditorRendersAndComponentsUpgrade() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
 
         // If Web Awesome fails to load (the dist vs dist-cdn trap), custom elements never upgrade
@@ -188,7 +198,7 @@ class EditorUiTest {
 
     @Test
     fun readIsTheDefaultAndEditIsAnAction() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -207,7 +217,7 @@ class EditorUiTest {
     /** Section headings are list items too; an <ol> counted them and skipped a number. */
     @Test
     fun directionStepsSkipHeadingsWhenNumbering() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read__steps")
@@ -224,7 +234,7 @@ class EditorUiTest {
      */
     @Test
     fun everyRatingStarIsClickableIncludingTheLast() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -260,7 +270,7 @@ class EditorUiTest {
      */
     @Test
     fun thereIsExactlyOneNavigationToggle() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.waitForSelector("wa-page")
 
@@ -283,7 +293,7 @@ class EditorUiTest {
      */
     @Test
     fun theSidebarOpensOnANarrowScreen() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.setViewportSize(420, 800)
         // wa-page switches view from a ResizeObserver, so wait for it rather than assuming.
@@ -304,7 +314,7 @@ class EditorUiTest {
      */
     @Test
     fun theCompactBackChainReachesTheLibrary() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -317,7 +327,7 @@ class EditorUiTest {
         assertThat(rail).not().isVisible(LocatorAssertions.IsVisibleOptions().setTimeout(3000.0))
 
         // Detail -> list.
-        page.locator("main.detail .only-compact").first().click()
+        page.locator("section.detail .only-compact").first().click()
         assertThat(list).isVisible()
 
         // List -> library drawer.
@@ -332,7 +342,7 @@ class EditorUiTest {
      */
     @Test
     fun thePanesMeetTheWindowEdges() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.setViewportSize(420, 800)
         val padding = page.evaluate(
@@ -349,12 +359,27 @@ class EditorUiTest {
      */
     @Test
     fun librarySelectionFiltersTheRecipeList() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
+        // A second recipe outside every fixture classifier. Without it the counts before and after
+        // a category click were both 1, so a filter that stopped filtering entirely still passed.
+        seedSecondRecipe()
+        // Seeded here rather than in setUp: anEmptyLibraryGroupIsNotSelectable depends on the
+        // fixture having no tags at all.
+        seedTagOnFixtureRecipe()
         val page = editorPage(b)
-        assertThat(page.locator(".rrow")).hasCount(1)
+        assertThat(page.locator(".rrow")).hasCount(2)
 
         page.locator("wa-tree-item[data-kind=category]").first().click()
         assertThat(page.locator("section[aria-label='Recipes'] .list__title")).hasText("Baking")
+        assertThat(page.locator(".rrow")).hasCount(1)
+
+        // Courses and tags run through the same predicate but had no coverage at all. Their groups
+        // start collapsed, so open them the way a user would before the rows can be clicked.
+        page.evaluate(
+            "() => document.querySelectorAll('wa-tree-item[data-group]').forEach(g => g.expanded = true)")
+        page.locator("wa-tree-item[data-kind=course]").first().click()
+        assertThat(page.locator(".rrow")).hasCount(1)
+        page.locator("wa-tree-item[data-kind=tag]").first().click()
         assertThat(page.locator(".rrow")).hasCount(1)
 
         // Favourites: nothing is flagged in the fixture, so the list should empty out.
@@ -364,8 +389,28 @@ class EditorUiTest {
 
         // Back to everything.
         page.locator("wa-tree-item[data-kind=all]").click()
-        assertThat(page.locator(".rrow")).hasCount(1)
+        assertThat(page.locator(".rrow")).hasCount(2)
         page.close()
+    }
+
+    /** Gives the fixture recipe a tag, so the tag branch of the filter has something to match. */
+    private fun seedTagOnFixtureRecipe() = runBlocking {
+        val userId = UserRepository.findByUsername("tester")!!.id
+        LibraryRepository.upsertTag(userId, com.enuvro.saltykmp.api.ServerTag(TAG_ID, "Quick"))
+        val recipe = RecipeRepository.getById(userId, RECIPE_ID)!!
+        RecipeRepository.upsert(userId, recipe.copy(tagIds = listOf(TAG_ID)))
+    }
+
+    /** A recipe in no category, no course and no tag, so filters have something to exclude. */
+    private fun seedSecondRecipe() = runBlocking {
+        RecipeRepository.upsert(
+            UserRepository.findByUsername("tester")!!.id,
+            ServerRecipe(
+                id = "01A05100-0000-7000-8000-0000000000R2",
+                name = "Unfiled Soup",
+                lastModifiedDate = "2026-08-01T00:00:00.000Z",
+            ),
+        )
     }
 
     /**
@@ -374,7 +419,7 @@ class EditorUiTest {
      */
     @Test
     fun assigningACategoryPersists() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -406,7 +451,7 @@ class EditorUiTest {
     /** Create, rename and delete a tag through the library manager. */
     @Test
     fun libraryManagerCreatesRenamesAndDeletes() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
 
         page.evaluate(
@@ -448,7 +493,7 @@ class EditorUiTest {
     /** Group rows (Categories, Courses, ...) are containers: selecting one must not filter. */
     @Test
     fun expandingAGroupDoesNotChangeTheFilter() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         val title = page.locator("section[aria-label='Recipes'] .list__title")
         assertThat(title).hasText("All Recipes")
@@ -464,7 +509,7 @@ class EditorUiTest {
     /** An edit made in the browser must reach the API and come back on reload. */
     @Test
     fun editingARecipePersistsThroughTheApi() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -496,7 +541,7 @@ class EditorUiTest {
      */
     @Test
     fun editingIsModalSoTheLibraryCannotBeReachedBehindIt() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -529,7 +574,7 @@ class EditorUiTest {
      */
     @Test
     fun difficultySurvivesAReopenAndIsDisplayed() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -540,8 +585,7 @@ class EditorUiTest {
             """el => { el.value = '4';
                        el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); }"""
         )
-        page.locator("[data-testid=save]").click()
-        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).dirty")
+        saveAndWait(page)
 
         val stored = runBlocking {
             RecipeRepository.getById(UserRepository.findByUsername("tester")!!.id, RECIPE_ID)
@@ -549,10 +593,7 @@ class EditorUiTest {
         assertEquals(4, stored?.difficulty, "the chosen difficulty should reach the API")
 
         // Reopen: the level must be visible, not silently dropped on the way back in.
-        page.locator("[data-testid=done]").click()
-        page.waitForSelector(".read")
-        page.locator("[data-testid=edit]").click()
-        page.waitForSelector(".edit")
+        reopenEditor(page)
         val shown = page.locator("wa-select[label=Difficulty]").evaluate("el => el.value")
         assertEquals("4", shown, "the stored difficulty should be displayed when reopening the editor")
         page.close()
@@ -565,7 +606,7 @@ class EditorUiTest {
      */
     @Test
     fun difficultyOffersEveryLevelTheSharedEnumDefines() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -586,7 +627,7 @@ class EditorUiTest {
      */
     @Test
     fun aDropdownInsideTheEditorDoesNotAskToDiscard() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -617,7 +658,7 @@ class EditorUiTest {
      */
     @Test
     fun changingTheLibraryFilterClearsARecipeThatIsNoLongerListed() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -653,7 +694,7 @@ class EditorUiTest {
     /** Shopping lists are a pane in the editor now, not a link back to the classic page. */
     @Test
     fun shoppingListsOpenInsideTheEditor() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         seedList("Milk" to false, "Eggs" to false)
         val page = editorPage(b)
 
@@ -672,7 +713,7 @@ class EditorUiTest {
      */
     @Test
     fun pressingEnterAddsAnItemAndAutosaves() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         seedList("Milk" to false)
         val page = editorPage(b)
         page.locator("wa-tree-item[data-kind=shopping]").click()
@@ -700,7 +741,7 @@ class EditorUiTest {
      */
     @Test
     fun aConcurrentCheckOffIsMergedRatherThanOverwritten() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val seeded = seedList("Milk" to false, "Eggs" to false)
         val page = editorPage(b)
         page.locator("wa-tree-item[data-kind=shopping]").click()
@@ -746,7 +787,7 @@ class EditorUiTest {
      */
     @Test
     fun anEmptyLibraryGroupIsNotSelectable() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.waitForSelector("wa-tree-item[data-group]")
 
@@ -764,31 +805,35 @@ class EditorUiTest {
     /** Both flags were settable everywhere except the editor. */
     @Test
     fun favoriteAndWantToMakeCanBeSetWhileEditing() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
         page.locator("[data-testid=edit]").click()
         page.waitForSelector(".edit")
 
-        page.locator(".fieldrow--flags wa-checkbox").first().evaluate(
-            """el => { el.checked = true;
-                       el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); }"""
-        )
-        page.locator("[data-testid=save]").click()
-        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).dirty")
+        // Both boxes, not just the first: they are adjacent near-identical blocks, which is exactly
+        // the copy-paste slip this test's name promises to catch.
+        for (i in 0..1) {
+            page.locator(".fieldrow--flags wa-checkbox").nth(i).evaluate(
+                """el => { el.checked = true;
+                           el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); }"""
+            )
+        }
+        saveAndWait(page)
 
         val stored = runBlocking {
             RecipeRepository.getById(UserRepository.findByUsername("tester")!!.id, RECIPE_ID)
         }
         assertEquals(true, stored?.isFavorite, "Favorite should be settable from the editor")
+        assertEquals(true, stored?.wantToMake, "Want to Make should be settable from the editor")
         page.close()
     }
 
     /** A tag can be invented mid-recipe without leaving the editor for the library manager. */
     @Test
     fun aTagCanBeCreatedFromInsideTheEditor() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         page.locator(".rrow").first().click()
         page.waitForSelector(".read")
@@ -824,9 +869,17 @@ class EditorUiTest {
         page.waitForSelector(".edit")
     }
 
+    /** Save writes and closes the dialog, as a modal's primary action should. */
     private fun saveAndWait(page: Page) {
         page.locator("[data-testid=save]").click()
         page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).dirty")
+        page.waitForSelector(".read")
+    }
+
+    /** For tests that keep editing after a save; the dialog is closed by then. */
+    private fun reopenEditor(page: Page) {
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
     }
 
     private fun stored(): ServerRecipe? = runBlocking {
@@ -836,7 +889,7 @@ class EditorUiTest {
     /** Adding a note through the real controls, and removing it again, both have to persist. */
     @Test
     fun aNoteCanBeAddedAndRemovedThroughTheEditor() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         openEditorFor(page)
 
@@ -850,6 +903,8 @@ class EditorUiTest {
         saveAndWait(page)
         assertEquals(listOf("Make ahead"), stored()?.notes.orEmpty().map { it.title })
 
+        reopenEditor(page)
+        page.locator("[data-testid=details-notes]").evaluate("el => el.open = true")
         page.locator(".subblock__head wa-button").first().click()
         saveAndWait(page)
         assertTrue(stored()?.notes.orEmpty().isEmpty(), "removing the note should persist")
@@ -859,7 +914,7 @@ class EditorUiTest {
     /** Variations and preparation times use the same machinery; this checks they're wired to it. */
     @Test
     fun variationsAndPreparationTimesPersist() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         openEditorFor(page)
         page.evaluate(
@@ -883,7 +938,7 @@ class EditorUiTest {
      */
     @Test
     fun nutritionKeepsZeroButTreatsAnEmptyFieldAsUnknown() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         openEditorFor(page)
         page.locator("[data-testid=details-nutrition]").evaluate("el => el.open = true")
@@ -908,7 +963,7 @@ class EditorUiTest {
     /** Clearing the last value should drop the record, not leave an empty one carrying an id. */
     @Test
     fun clearingEveryNutritionFieldRemovesTheRecord() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         openEditorFor(page)
         page.evaluate(
@@ -931,13 +986,18 @@ class EditorUiTest {
      */
     @Test
     fun theNutritionEditorCoversEveryFieldInTheModel() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         openEditorFor(page)
         page.locator("[data-testid=details-nutrition]").evaluate("el => el.open = true")
 
-        // NutritionInformation has 18 fields besides its id.
-        assertThat(page.locator("[data-testid=details-nutrition] wa-input")).hasCount(18)
+        // Counted from the model itself, not a literal: both sides of the old assertion derived
+        // from editor.js, so a field added to NutritionInformation and forgotten in the JS list
+        // left this green while the field was uneditable and invisible.
+        val modelFields =
+            com.enuvro.saltykmp.db.model.NutritionInformation.serializer().descriptor.elementsCount - 1
+        assertEquals(18, modelFields, "guard: update this test if NutritionInformation changes shape")
+        assertThat(page.locator("[data-testid=details-nutrition] wa-input")).hasCount(modelFields)
         assertThat(page.locator("[data-testid=details-nutrition] .nutgroup")).hasCount(4)
         page.close()
     }
@@ -970,7 +1030,7 @@ class EditorUiTest {
      */
     @Test
     fun anImageUploadsOnSaveAndIsServedBack() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         openEditorFor(page)
         stageImage(page, "#c4844a")
@@ -992,15 +1052,17 @@ class EditorUiTest {
         page.close()
     }
 
-    /** Revert has to undo a staged image like any other pending edit. */
+    /** Cancel has to undo a staged image like any other pending edit. */
     @Test
-    fun revertingDropsAStagedImage() {
-        val b = browserOrNull() ?: return
+    fun cancellingDropsAStagedImage() {
+        val b = requireBrowser()
         val page = editorPage(b)
+        // Cancel confirms before throwing work away; Playwright dismisses dialogs unless told.
+        page.onDialog { it.accept() }
         openEditorFor(page)
         stageImage(page, "#4a84c4")
 
-        page.locator("wa-dialog.editdlg wa-button:has-text('Revert')").first().click()
+        page.locator("[data-testid=cancel]").click()
         page.waitForFunction("() => Alpine.\$data(document.getElementById('app')).pendingImageFile === null")
 
         assertEquals(null, stored()?.imageFilename, "a reverted image must never be uploaded")
@@ -1010,7 +1072,7 @@ class EditorUiTest {
     /** Clearing stages a removal; the file and the filename go on save, with a fresh stamp. */
     @Test
     fun clearingAnImageRemovesItOnSave() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         openEditorFor(page)
         stageImage(page, "#c4844a")
@@ -1018,6 +1080,7 @@ class EditorUiTest {
         val filename = stored()?.imageFilename
         assertTrue(filename != null)
 
+        reopenEditor(page)
         page.locator("[data-testid=clear-image]").click()
         page.waitForFunction("() => Alpine.\$data(document.getElementById('app')).pendingImageRemoval")
         assertEquals(filename, stored()?.imageFilename, "clearing must not delete before save")
@@ -1035,7 +1098,7 @@ class EditorUiTest {
     /** A file the server would reject is refused here first, with a specific reason. */
     @Test
     fun aNonImageIsRefusedBeforeUploading() {
-        val b = browserOrNull() ?: return
+        val b = requireBrowser()
         val page = editorPage(b)
         openEditorFor(page)
         page.evaluate(
@@ -1051,6 +1114,81 @@ class EditorUiTest {
         assertEquals(false, page.evaluate(
             "() => Alpine.\$data(document.getElementById('app')).pendingImageFile !== null"),
             "a PDF should never be staged")
+        page.close()
+    }
+
+    /**
+     * L5: ingredients and directions are the ONLY payload fields not carried by save()'s
+     * `...this.current` spread — they are rebuilt from separate row state and folded back in. Break
+     * that mapping and every other test still passes while a browser save blanks both on every
+     * device. This also pins the untouched fields, so the spread itself can't silently drop one.
+     */
+    @Test
+    fun savingKeepsIngredientsDirectionsAndTheFieldsThisScreenDidNotTouch() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        openEditorFor(page)
+
+        page.locator(".rows--plain .row__edit").first().evaluate(
+            """el => { el.value = 'Dry mix';
+                       el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }"""
+        )
+        saveAndWait(page)
+
+        val r = stored()
+        assertEquals(
+            listOf("Dry mix", "1 1/2 cups yellow cornmeal", "1/2 cup all-purpose flour"),
+            r?.ingredients.orEmpty().map { it.text },
+            "the edited ingredient and its neighbours must all survive",
+        )
+        assertEquals(
+            listOf("Heat the skillet.", "Bake", "Bake 22 minutes."),
+            r?.directions.orEmpty().map { it.text },
+            "directions are rebuilt the same way and must survive untouched",
+        )
+        assertEquals(true, r?.ingredients?.get(0)?.isHeading, "row flags must round-trip")
+        assertEquals(true, r?.ingredients?.get(1)?.isMain)
+
+        // Fields the editor never touched in this run.
+        assertEquals(4, r?.rating)
+        assertEquals("8 servings", r?.yield)
+        assertEquals(8, r?.servings)
+        assertEquals(COURSE_ID, r?.courseId)
+        assertEquals(listOf(CATEGORY_ID), r?.categoryIds)
+        page.close()
+    }
+
+    /**
+     * Both exits must actually close the dialog. Nothing asserted this before: every test waited
+     * for `.read`, which renders whenever mode is "read" regardless of whether the modal is still
+     * covering it -- so a dialog stuck open would have left the whole suite green.
+     *
+     * Asserted on the component's own state, not Playwright visibility: a wa-dialog host has no
+     * box of its own (the panel lives in the top layer), so `isVisible()` reports false even while
+     * the modal is up -- which would make the obvious version of this test vacuous.
+     *
+     * Scope is deliberately just the closing. That the two buttons write or discard is covered by
+     * editingARecipePersistsThroughTheApi and cancellingDropsAStagedImage.
+     */
+    @Test
+    fun cancelAndSaveBothCloseTheDialog() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        page.onDialog { it.accept() }
+        val isOpen = "() => document.querySelector('wa-dialog.editdlg').hasAttribute('open')"
+        val isShut = "() => !document.querySelector('wa-dialog.editdlg').hasAttribute('open')"
+
+        openEditorFor(page)
+        page.waitForFunction(isOpen)
+
+        page.locator("[data-testid=cancel]").click()
+        page.waitForFunction(isShut)
+        assertEquals("Skillet Cornbread", stored()?.name, "Cancel must not write anything")
+
+        openEditorFor(page)
+        page.waitForFunction(isOpen)
+        page.locator("[data-testid=save]").click()
+        page.waitForFunction(isShut)
         page.close()
     }
 }

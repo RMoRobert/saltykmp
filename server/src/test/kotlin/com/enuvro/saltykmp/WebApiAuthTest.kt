@@ -226,4 +226,27 @@ class WebApiAuthTest {
         }
         assertEquals("Edited By A Native Client", stored?.name)
     }
+
+    /**
+     * A signed cookie proves we minted it, not that the account still exists. Deleting a user used
+     * to lock their native clients out immediately while their open browser tab kept writing for
+     * the cookie's full lifetime.
+     */
+    @Test
+    fun aSessionStopsWorkingOnceTheUserIsDeleted() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = createClient { install(ContentNegotiation) { json(appJson) }; install(HttpCookies) }
+        client.submitForm(
+            url = "/login",
+            formParameters = parameters { append("username", "tester"); append("password", "pw") },
+        )
+        assertEquals(HttpStatusCode.OK, client.get("/api/recipes").status, "the session should work first")
+
+        runBlocking {
+            UserRepository.deleteWithData(UserRepository.findByUsername("tester")!!.id)
+        }
+
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/api/recipes").status,
+            "the cookie must stop working the moment the account is gone")
+    }
 }

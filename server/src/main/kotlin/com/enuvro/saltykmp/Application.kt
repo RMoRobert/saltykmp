@@ -5,6 +5,7 @@ import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.auth.LoginThrottle
 import com.enuvro.saltykmp.auth.authRoutes
 import com.enuvro.saltykmp.auth.configureAuth
+import com.enuvro.saltykmp.auth.revalidateSession
 import com.enuvro.saltykmp.db.DatabaseFactory
 import com.enuvro.saltykmp.db.UserRepository
 import com.enuvro.saltykmp.image.ImageStore
@@ -35,6 +36,7 @@ import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.forwardedheaders.XForwardedHeaders
+import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.contentType
 import io.ktor.server.response.respond
@@ -199,6 +201,13 @@ fun Application.installSalty(
         mustacheFactory = DefaultMustacheFactory("templates")
     }
     install(StatusPages) {
+        // A malformed request body is the client's mistake, not a server fault. Answering 500
+        // "Internal error" for it hid which field was wrong and buried the cause in the log; a
+        // decimal in an Int field, for instance, looked identical to a crash.
+        exception<BadRequestException> { call, cause ->
+            call.application.log.info("Rejected malformed request for ${call.request.local.uri}: ${cause.message}")
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Malformed request")))
+        }
         exception<Throwable> { call, cause ->
             // Log the real cause server-side; return a generic body so internal details (SQL, stack traces,
             // file paths) aren't leaked to clients.
@@ -220,12 +229,12 @@ fun Application.installSalty(
     // JWT for the API (Bearer) + a session provider for the web UI (cookie → redirect to /login).
     configureAuth(jwtService) {
         session<UserSession>(WEB_AUTH) {
-            validate { it }
+            validate { revalidateSession(it) }
             challenge { call.respondRedirect("/login") }
         }
         // Same cookie, but answers `fetch` with 401 JSON instead of an HTML redirect.
         session<UserSession>(WEB_API_AUTH) {
-            validate { it }
+            validate { revalidateSession(it) }
             challenge {
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "Not signed in"))
             }
