@@ -90,7 +90,9 @@
   <nav slot="navigation" class="rail" aria-label="Library">
     <p class="rail__heading">Library</p>
 
-    <wa-tree selection="single" class="railtree" @wa-selection-change="onTreeSelect($event)">
+    <!-- selection="leaf": parents only expand and collapse, so the group rows can't be selected
+         at all. All Recipes / Favorites / Want to Make have no children, so they stay selectable. -->
+    <wa-tree selection="leaf" class="railtree" @wa-selection-change="onTreeSelect($event)">
       <wa-tree-item data-kind="all" :selected="filter.kind === 'all'">
         <wa-icon name="book-open"></wa-icon> All Recipes
       </wa-tree-item>

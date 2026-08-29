@@ -260,14 +260,8 @@ function saltyEditor() {
       if (!el) return;
       if (el.hasAttribute("data-href")) { window.location.href = el.getAttribute("data-href"); return; }
 
-      // Group rows (Categories, Courses, ...) are containers. wa-tree will happily select one, but
-      // there is nothing for it to mean, so hand selection back to whatever filter is actually
-      // active rather than leaving a highlighted row that does nothing.
-      if (el.hasAttribute("data-group")) {
-        el.selected = false;
-        this.restoreTreeSelection();
-        return;
-      }
+      // Group rows can't be selected at all now (the tree is in leaf mode), so nothing to guard.
+      if (el.hasAttribute("data-group")) return;
 
       const kind = el.getAttribute("data-kind");
       if (!kind) return;
@@ -275,15 +269,6 @@ function saltyEditor() {
       const labels = { all: "All Recipes", favorites: "Favorites", wantToMake: "Want to Make" };
       const label = labels[kind] || (el.textContent || "").trim().replace(/\s+\d+$/, "");
       this.setFilter(kind, id, label);
-    },
-
-    /** Re-marks the tree row matching the active filter. */
-    restoreTreeSelection() {
-      const sel = this.filter.id
-        ? `wa-tree-item[data-kind="${this.filter.kind}"][data-id="${this.filter.id}"]`
-        : `wa-tree-item[data-kind="${this.filter.kind}"]`;
-      const node = document.querySelector(sel);
-      if (node) node.selected = true;
     },
 
     setFilter(kind, id, label) {
