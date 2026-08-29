@@ -14,6 +14,7 @@ import io.ktor.server.auth.authentication
 import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.jwt.jwt
 import io.ktor.server.auth.principal
+import com.enuvro.saltykmp.web.UserSession
 import io.ktor.server.plugins.origin
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -25,6 +26,16 @@ import java.util.Date
 
 const val JWT_REALM = "salty"
 const val JWT_AUTH = "auth-jwt"
+
+/**
+ * Session provider for browser calls to the JSON API.
+ *
+ * Deliberately separate from [WEB_AUTH]: that one answers an unauthenticated request by redirecting to
+ * /login, which is right for a page navigation and wrong for `fetch` — an expired session would hand the
+ * caller a 200 full of HTML instead of a 401 it can act on. Same cookie, same validation, different
+ * challenge.
+ */
+const val WEB_API_AUTH = "auth-web-api"
 
 /** Minimum length enforced when an admin sets/resets a user's password via the web UI. */
 const val MIN_PASSWORD_LENGTH = 8
@@ -83,9 +94,18 @@ fun Application.configureAuth(
     }
 }
 
-/** The authenticated user's id (from the verified JWT). Only valid inside authenticated routes. */
-fun ApplicationCall.userId(): String =
-    principal<JWTPrincipal>()!!.payload.getClaim("uid").asString()
+/**
+ * The authenticated user's id. Only valid inside authenticated routes.
+ *
+ * API routes accept either a Bearer JWT (native clients) or the web session cookie (the browser UI),
+ * so resolve whichever principal the matching provider installed. Both are equally trusted: the JWT is
+ * signature- and freshness-checked in [configureAuth], the session rides in a MAC-signed cookie.
+ */
+fun ApplicationCall.userId(): String {
+    principal<JWTPrincipal>()?.let { return it.payload.getClaim("uid").asString() }
+    principal<UserSession>()?.let { return it.userId }
+    error("userId() called outside an authenticated route")
+}
 
 fun Route.authRoutes(jwtService: JwtService, throttle: LoginThrottle, accountLockout: AccountLockout) {
     post("/api/auth/login") {

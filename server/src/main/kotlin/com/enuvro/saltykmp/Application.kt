@@ -13,7 +13,9 @@ import com.enuvro.saltykmp.util.appJson
 import com.enuvro.saltykmp.library.libraryRoutes
 import com.enuvro.saltykmp.shoppinglist.shoppingListRoutes
 import com.enuvro.saltykmp.web.UserSession
+import com.enuvro.saltykmp.auth.WEB_API_AUTH
 import com.enuvro.saltykmp.web.WEB_AUTH
+import com.enuvro.saltykmp.web.editorRoutes
 import com.enuvro.saltykmp.web.webRoutes
 import com.github.mustachejava.DefaultMustacheFactory
 import io.ktor.http.ContentType
@@ -221,6 +223,13 @@ fun Application.installSalty(
             validate { it }
             challenge { call.respondRedirect("/login") }
         }
+        // Same cookie, but answers `fetch` with 401 JSON instead of an HTML redirect.
+        session<UserSession>(WEB_API_AUTH) {
+            validate { it }
+            challenge {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "Not signed in"))
+            }
+        }
     }
 
     // Reject oversized request bodies before any handler (including the unauthenticated login endpoints)
@@ -246,5 +255,6 @@ fun Application.installSalty(
         libraryRoutes()
         shoppingListRoutes()
         webRoutes(imageStore, loginThrottle, accountLockout)
+        editorRoutes()
     }
 }

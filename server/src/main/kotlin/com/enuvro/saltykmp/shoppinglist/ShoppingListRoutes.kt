@@ -1,11 +1,14 @@
 package com.enuvro.saltykmp.shoppinglist
 
 import com.enuvro.saltykmp.api.ServerShoppingList
+import com.enuvro.saltykmp.auth.ApiCsrfGuard
 import com.enuvro.saltykmp.auth.JWT_AUTH
+import com.enuvro.saltykmp.auth.WEB_API_AUTH
 import com.enuvro.saltykmp.auth.userId
 import com.enuvro.saltykmp.db.ShoppingListRepository
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.install
 import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -26,7 +29,10 @@ import io.ktor.server.routing.route
  * notice a short read rather than mistaking it for "everything was deleted".
  */
 fun Route.shoppingListRoutes() {
-    authenticate(JWT_AUTH) {
+    authenticate(JWT_AUTH, WEB_API_AUTH) {
+        // Browser callers arrive with the session cookie; guard their writes against CSRF.
+        install(ApiCsrfGuard)
+
         route("/api/shoppingLists") {
             get {
                 val userId = call.userId()

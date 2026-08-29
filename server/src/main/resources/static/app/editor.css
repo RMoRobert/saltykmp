@@ -1,0 +1,52 @@
+/* Salty's layer over Vuetify. Kept small on purpose: the theme itself is configured in
+   editor.js (createVuetify → theme.themes), so this file only covers what component props
+   can't express. */
+
+html, body { background: #F2F4F3; }
+@media (prefers-color-scheme: dark) { html, body { background: #161A19; } }
+
+.v-application {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
+               Roboto, "Helvetica Neue", sans-serif;
+}
+
+.title-field input {
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  padding-top: 0;
+}
+
+/* Row affordances appear on hover on desktop, and stay put where there is no hover. */
+.row-line:hover { background: rgba(128, 140, 136, .08); }
+.row-line .row-tools { opacity: 0; transition: opacity .12s; }
+.row-line:hover .row-tools,
+.row-line:focus-within .row-tools { opacity: 1; }
+@media (hover: none) { .row-line .row-tools { opacity: 1; } }
+
+.lead { width: 22px; text-align: right; padding-top: 7px; flex: 0 0 auto; user-select: none; }
+
+.row-input .v-field__input { padding-top: 4px; padding-bottom: 4px; font-size: 14px; }
+.row-input.is-heading .v-field__input {
+  font-weight: 700; font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+}
+.row-input.is-main .v-field__input { font-weight: 600; }
+
+/* The scaled quantity, highlighted so it's obvious the number shown isn't the stored one. */
+.scaled {
+  background: rgba(30, 140, 110, .14);
+  color: rgb(var(--v-theme-primary));
+  border-radius: 5px;
+  padding: 0 5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.savebar {
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

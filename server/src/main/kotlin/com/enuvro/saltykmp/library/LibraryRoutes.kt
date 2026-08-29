@@ -3,10 +3,13 @@ package com.enuvro.saltykmp.library
 import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerTag
+import com.enuvro.saltykmp.auth.ApiCsrfGuard
 import com.enuvro.saltykmp.auth.JWT_AUTH
+import com.enuvro.saltykmp.auth.WEB_API_AUTH
 import com.enuvro.saltykmp.auth.userId
 import com.enuvro.saltykmp.db.LibraryRepository
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.install
 import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -18,7 +21,10 @@ import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 
 fun Route.libraryRoutes() {
-    authenticate(JWT_AUTH) {
+    authenticate(JWT_AUTH, WEB_API_AUTH) {
+        // Browser callers arrive with the session cookie; guard their writes against CSRF.
+        install(ApiCsrfGuard)
+
         route("/api/courses") {
             get {
                 val userId = call.userId()

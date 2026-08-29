@@ -5,7 +5,9 @@ import com.enuvro.saltykmp.api.DeviceSyncInfo
 import com.enuvro.saltykmp.api.ServerRecipe
 import com.enuvro.saltykmp.api.SyncDeleteRequest
 import com.enuvro.saltykmp.api.SyncDeleteResponse
+import com.enuvro.saltykmp.auth.ApiCsrfGuard
 import com.enuvro.saltykmp.auth.JWT_AUTH
+import com.enuvro.saltykmp.auth.WEB_API_AUTH
 import com.enuvro.saltykmp.auth.userId
 import com.enuvro.saltykmp.db.DeviceRepository
 import com.enuvro.saltykmp.db.RecipeRepository
@@ -18,6 +20,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.PartData
 import io.ktor.http.content.forEachPart
+import io.ktor.server.application.install
 import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.request.receiveMultipart
@@ -43,7 +46,10 @@ private const val MAX_PAGE_SIZE = 500
 private const val MAX_IMAGE_UPLOAD_BYTES = 25L * 1024 * 1024
 
 fun Route.recipeRoutes(imageStore: ImageStore) {
-    authenticate(JWT_AUTH) {
+    authenticate(JWT_AUTH, WEB_API_AUTH) {
+        // Browser callers arrive with the session cookie; guard their writes against CSRF.
+        install(ApiCsrfGuard)
+
         route("/api/recipes") {
 
             // List — optional modifiedSince delta + page/size pagination. The delta omits unchanged

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Salty - {{pageTitle}}</title>
+    <link rel="stylesheet" href="/static/vendor/vuetify.min.css">
+    <link rel="stylesheet" href="/static/app/editor.css">
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+  // Handed from the session to the page. The editor echoes the token in X-CSRF-Token on every
+  // state-changing API call; see ApiCsrfGuard on the server side.
+  window.SALTY = {
+    csrfToken: "{{csrfToken}}",
+    username: "{{username}}",
+    isAdmin: {{#isAdmin}}true{{/isAdmin}}{{^isAdmin}}false{{/isAdmin}}
+  };
+</script>
+<script src="/static/vendor/vue.global.prod.js"></script>
+<script src="/static/vendor/vuetify.min.js"></script>
+<script src="/static/app/editor.js"></script>
+</body>
+</html>
