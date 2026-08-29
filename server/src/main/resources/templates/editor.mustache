@@ -92,31 +92,26 @@
 
     <wa-tree selection="single" class="railtree" @wa-selection-change="onTreeSelect($event)">
       <wa-tree-item data-kind="all" :selected="filter.kind === 'all'">
-        <wa-icon name="book-open" class="railicon"></wa-icon> All Recipes
-        <span class="railcount" x-text="list.length"></span>
+        <wa-icon name="book-open"></wa-icon> All Recipes
       </wa-tree-item>
 
       <wa-tree-item data-kind="favorites" :selected="filter.kind === 'favorites'">
-        <wa-icon name="heart" class="railicon"></wa-icon> Favorites
-        <span class="railcount" x-text="favoriteCount"></span>
+        <wa-icon name="heart"></wa-icon> Favorites
       </wa-tree-item>
 
       <wa-tree-item data-kind="wantToMake" :selected="filter.kind === 'wantToMake'">
-        <wa-icon name="bookmark" class="railicon"></wa-icon> Want to Make
-        <span class="railcount" x-text="wantToMakeCount"></span>
+        <wa-icon name="bookmark"></wa-icon> Want to Make
       </wa-tree-item>
 
       <template x-for="group in libraryGroups" :key="group.kind">
         <wa-tree-item :expanded="group.kind === 'category'" data-group>
           <span x-text="group.label"></span>
-          <span class="railcount" x-text="group.items.length"></span>
 
           <template x-for="item in group.items" :key="item.id">
             <wa-tree-item :data-kind="group.kind" :data-id="item.id"
                           :selected="filter.kind === group.kind && filter.id === item.id">
-              <wa-icon :name="group.icon" class="railicon"></wa-icon>
+              <wa-icon :name="group.icon"></wa-icon>
               <span x-text="item.name || 'Untitled'"></span>
-              <span class="railcount" x-text="countFor(group.kind, item.id)"></span>
             </wa-tree-item>
           </template>
         </wa-tree-item>
@@ -125,7 +120,7 @@
       <wa-tree-item data-group>
         <span>Shopping Lists</span>
         <wa-tree-item data-href="/shoppingLists">
-          <wa-icon name="cart-shopping" class="railicon"></wa-icon> All Lists
+          <wa-icon name="cart-shopping"></wa-icon> All Lists
         </wa-tree-item>
       </wa-tree-item>
     </wa-tree>

@@ -31,11 +31,14 @@ wa-page { height: 100dvh; }
 
 .only-compact { display: none; }
 
-/* The header slot's default padding reads as very tall for an app bar. Tightened here rather
-   than restyled — colours still come from the theme. */
-wa-page::part(header) { padding-block: var(--wa-space-2xs); padding-inline: var(--wa-space-s); }
-
-.appbar { display: flex; align-items: center; gap: var(--wa-space-s, 0.5rem); width: 100%; }
+/* wa-page's header part has no padding of its own — measured at 0. The height came from Web
+   Awesome styling a bare <header> as a document header (16px all round), which is right for prose
+   and wrong for an app bar. Zeroing it on our own element rather than overriding the component:
+   78px -> 46px, which is just the button height. Everything else stays WA's default. */
+.appbar {
+  display: flex; align-items: center; gap: var(--wa-space-s, 0.5rem);
+  width: 100%; padding: 0;
+}
 .appbar__brand { font-size: var(--wa-font-size-s); }
 .appbar__account { margin-inline-start: auto; }
 
@@ -55,7 +58,8 @@ wa-page::part(header) { padding-block: var(--wa-space-2xs); padding-inline: var(
 .detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 /* -------------------------------------------------------------------- rail -- */
-/* Almost nothing here now: wa-tree draws the rows, chevrons, selection and indentation. */
+/* Nothing but scrolling and the section label. Rows, chevrons, indentation, selection styling
+   and density are all wa-tree's defaults, deliberately left alone. */
 
 .rail { overflow-y: auto; padding: var(--wa-space-xs); }
 
@@ -64,15 +68,6 @@ wa-page::part(header) { padding-block: var(--wa-space-2xs); padding-inline: var(
   letter-spacing: 0.08em; text-transform: uppercase; color: var(--wa-color-neutral-on-quiet);
   margin: var(--wa-space-2xs) 0 var(--wa-space-2xs) var(--wa-space-xs);
 }
-
-/* Counts sit at the trailing edge of each row. */
-.railcount {
-  margin-inline-start: auto; padding-inline-start: var(--wa-space-xs);
-  font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet);
-  font-variant-numeric: tabular-nums;
-}
-.railtree wa-tree-item::part(label) { display: flex; align-items: center; width: 100%; }
-.railicon { margin-inline-end: var(--wa-space-xs); color: var(--wa-color-neutral-on-quiet); }
 
 /* -------------------------------------------------------------------- list -- */
 
