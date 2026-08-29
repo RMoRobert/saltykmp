@@ -665,4 +665,81 @@ class EditorUiTest {
             "this browser's rename must survive too: ${stored.keys}")
         page.close()
     }
+
+    /* -------------------------------------------------------- editor parity -- */
+
+    /**
+     * `selection="leaf"` makes any childless node selectable, so a group with nothing in it became
+     * a selectable row that filtered to nothing. The seed has no tags, so Tags is the empty one.
+     */
+    @Test
+    fun anEmptyLibraryGroupIsNotSelectable() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.waitForSelector("wa-tree-item[data-group]")
+
+        val tags = page.locator("wa-tree-item[data-group]").filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Tags")).first()
+        assertThat(tags).hasAttribute("disabled", java.util.regex.Pattern.compile(".*"))
+
+        // Categories has one, so it stays usable.
+        val cats = page.locator("wa-tree-item[data-group]").filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Categories")).first()
+        assertEquals(false, cats.evaluate("el => el.hasAttribute('disabled')"))
+        page.close()
+    }
+
+    /** Both flags were settable everywhere except the editor. */
+    @Test
+    fun favoriteAndWantToMakeCanBeSetWhileEditing() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
+
+        page.locator(".fieldrow--flags wa-checkbox").first().evaluate(
+            """el => { el.checked = true;
+                       el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); }"""
+        )
+        page.locator("[data-testid=save]").click()
+        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).dirty")
+
+        val stored = runBlocking {
+            RecipeRepository.getById(UserRepository.findByUsername("tester")!!.id, RECIPE_ID)
+        }
+        assertEquals(true, stored?.isFavorite, "Favorite should be settable from the editor")
+        page.close()
+    }
+
+    /** A tag can be invented mid-recipe without leaving the editor for the library manager. */
+    @Test
+    fun aTagCanBeCreatedFromInsideTheEditor() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
+
+        page.locator("[data-testid=new-tag]").click()
+        page.waitForSelector("[data-testid=create-tag]")
+        page.locator("wa-dialog[label='New tag'] wa-input").evaluate(
+            """el => { el.value = 'Sheet Pan';
+                       el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }"""
+        )
+        page.locator("[data-testid=create-tag]").click()
+        page.waitForFunction(
+            "() => Alpine.\$data(document.getElementById('app')).tags.some(t => t.name === 'Sheet Pan')")
+
+        page.locator("[data-testid=save]").click()
+        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).dirty")
+
+        val stored = runBlocking {
+            RecipeRepository.getById(UserRepository.findByUsername("tester")!!.id, RECIPE_ID)
+        }
+        assertEquals(1, stored?.tagIds?.size, "the new tag should be attached to the recipe")
+        page.close()
+    }
 }

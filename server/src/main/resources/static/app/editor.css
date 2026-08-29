@@ -295,3 +295,41 @@ wa-page { height: 100dvh; }
 .sitem--heading .sitem__text { font-weight: var(--wa-font-weight-semibold); }
 
 .freeform { width: 100%; }
+
+/* --------------------------------------------------------- editor layout -- */
+
+/* Fields grouped by what belongs together, rather than one auto-fitting grid that reflowed
+   arbitrary neighbours onto the same line at every width. Still wraps when there isn't room. */
+.fieldrow { display: flex; flex-wrap: wrap; gap: var(--wa-space-s);
+            margin-block-end: var(--wa-space-m); }
+.fieldrow > * { flex: 1 1 11rem; min-width: 0; }
+.fieldrow--flags { align-items: center; }
+.fieldrow--flags > * { flex: 0 0 auto; }
+/* A row holding one field shouldn't stretch it the full width of the dialog. */
+.fieldrow--narrow > * { flex: 0 1 14rem; }
+
+.tagfield { display: flex; align-items: center; gap: var(--wa-space-2xs); }
+.tagfield wa-select { flex: 1; min-width: 0; }
+
+/* Ingredient rows carry no bullet in the editor -- the reading view still has them. Directions
+   keep the lead column for their numbers. */
+.rows--plain .row { grid-template-columns: auto 1fr auto; }
+
+/* ------------------------------------------------------ read-view extras -- */
+
+.read__pairs { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+               gap: var(--wa-space-2xs) var(--wa-space-m); margin: 0; }
+.read__pair { display: flex; justify-content: space-between; gap: var(--wa-space-s);
+              padding-block: var(--wa-space-3xs);
+              border-block-end: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border); }
+.read__pair dt { color: var(--wa-color-neutral-on-quiet); }
+.read__pair dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.read__block { margin-block-end: var(--wa-space-m); }
+.read__block h4 { margin: 0 0 var(--wa-space-3xs); }
+.read__body { margin: 0; white-space: pre-wrap; }
+
+/* wa-page hides [data-toggle-nav] on desktop, since a drawer toggle is a mobile idea. This button
+   also collapses the rail on desktop, so it stays; the hook is only there to stop wa-page drawing
+   a second hamburger of its own next to it. */
+wa-page[view="desktop"] .appbar__nav { display: inline-flex !important; }

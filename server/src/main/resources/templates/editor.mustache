@@ -10,13 +10,25 @@
          browser can't resolve, and every component silently fails to upgrade. Version pinned —
          a floating major would be a silent redesign. -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/webawesome.css">
-    <!-- Swapped live by the theme picker in the account menu. Web Awesome ships three:
-         default, awesome, shoelace. -->
-    <link id="wa-theme" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/themes/default.css">
+    <!-- Light and dark both come from the OS via <meta name="color-scheme">; there is no theme
+         control, as Web Awesome's three themes are near-identical for the components used here. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/themes/default.css">
     <!-- Web Awesome's own utility layer. utilities/fouce.css is their flash-of-undefined-elements
          fix and prose.css is their long-form typography — both were things I had hand-rolled. -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/utilities.css">
     <link rel="stylesheet" href="/static/app/editor.css">
+
+    <!-- Web Awesome's themes switch on a `wa-dark` class; they do NOT follow prefers-color-scheme
+         on their own, so a dark-mode browser rendered the whole app light until this ran. Inline
+         and ahead of first paint, or a dark-mode user gets a white flash on every load. -->
+    <script>
+      (function () {
+        var m = window.matchMedia("(prefers-color-scheme: dark)");
+        var apply = function () { document.documentElement.classList.toggle("wa-dark", m.matches); };
+        apply();
+        m.addEventListener("change", apply);
+      })();
+    </script>
 
     <script type="module"
             src="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/webawesome.loader.js"></script>
@@ -47,10 +59,16 @@
          :data-pane="pane" :data-rail="railOpen ? 'true' : 'false'">
 
   <header slot="header" class="appbar">
-    <!-- Deliberately NOT data-toggle-nav: wa-page hides elements carrying that hook on desktop,
-         because a drawer toggle is a mobile idea. One button should do the obvious thing on both,
-         so it opens the drawer below the breakpoint and collapses the rail above it. -->
-    <wa-button data-testid="hamburger" appearance="plain" size="small"
+    <!-- data-toggle-nav is what tells wa-page not to render its own hamburger; without it there
+         were two side by side on mobile. It has to be in the served markup, since wa-page looks
+         for it when it connects and ignores one added later. The `disable-navigation-toggle`
+         attribute is not an alternative: wa-page owns that property and resets it from this scan,
+         wiping the attribute set in HTML.
+
+         wa-page also hides elements carrying the hook on desktop, where a drawer toggle makes no
+         sense -- but this button does double duty and collapses the rail there, so .appbar__nav
+         in the stylesheet forces it back. -->
+    <wa-button data-testid="hamburger" data-toggle-nav class="appbar__nav" appearance="plain" size="small"
                @click="toggleSidebar()"
                :title="railOpen ? 'Hide sidebar' : 'Show sidebar'">
       <wa-icon name="bars" :label="railOpen ? 'Hide sidebar' : 'Show sidebar'"></wa-icon>
@@ -64,15 +82,6 @@
       </wa-button>
       <wa-dropdown-item disabled>Signed in as <strong x-text="username"></strong></wa-dropdown-item>
       <wa-divider></wa-divider>
-      <wa-dropdown-item>
-        Theme
-        <wa-dropdown-item slot="submenu" @click="setTheme('default')"
-                          :checked="theme === 'default'" type="checkbox">Default</wa-dropdown-item>
-        <wa-dropdown-item slot="submenu" @click="setTheme('awesome')"
-                          :checked="theme === 'awesome'" type="checkbox">Awesome</wa-dropdown-item>
-        <wa-dropdown-item slot="submenu" @click="setTheme('shoelace')"
-                          :checked="theme === 'shoelace'" type="checkbox">Shoelace</wa-dropdown-item>
-      </wa-dropdown-item>
       <wa-dropdown-item @click="openLibraryManager()">
         <wa-icon slot="icon" name="sliders"></wa-icon> Manage library…
       </wa-dropdown-item>
@@ -91,8 +100,6 @@
        expand and collapse), so role="tree" is accurate, and single-selection, keyboard navigation
        and the expand/collapse chevrons all come from the component. -->
   <nav slot="navigation" class="rail" aria-label="Library">
-    <p class="rail__heading">Library</p>
-
     <!-- selection="leaf": parents only expand and collapse, so the group rows can't be selected
          at all. All Recipes / Favorites / Want to Make have no children, so they stay selectable. -->
     <wa-tree selection="leaf" class="railtree" @wa-selection-change="onTreeSelect($event)">
@@ -101,21 +108,26 @@
       </wa-tree-item>
 
       <wa-tree-item data-kind="favorites" :selected="filter.kind === 'favorites'">
-        <wa-icon name="heart"></wa-icon> Favorites
+        <wa-icon name="heart" :variant="filter.kind === 'favorites' ? 'solid' : 'regular'"></wa-icon>
+        Favorites
       </wa-tree-item>
 
       <wa-tree-item data-kind="wantToMake" :selected="filter.kind === 'wantToMake'">
-        <wa-icon name="bookmark"></wa-icon> Want to Make
+        <wa-icon name="bookmark" :variant="filter.kind === 'wantToMake' ? 'solid' : 'regular'"></wa-icon>
+        Want to Make
       </wa-tree-item>
 
       <template x-for="group in libraryGroups" :key="group.kind">
-        <wa-tree-item :expanded="group.kind === 'category'" data-group>
+        <wa-tree-item :expanded="group.kind === 'category'" data-group
+                      :disabled="!group.items.length">
           <span x-text="group.label"></span>
 
           <template x-for="item in group.items" :key="item.id">
             <wa-tree-item :data-kind="group.kind" :data-id="item.id"
                           :selected="filter.kind === group.kind && filter.id === item.id">
-              <wa-icon :name="group.icon"></wa-icon>
+              <wa-icon :name="group.icon"
+                       :variant="group.outline && !(filter.kind === group.kind && filter.id === item.id)
+                                 ? 'regular' : 'solid'"></wa-icon>
               <span x-text="item.name || 'Untitled'"></span>
             </wa-tree-item>
           </template>
@@ -304,6 +316,58 @@
                 </ul>
               </section>
 
+              <template x-if="(current.preparationTimes || []).length">
+                <section class="read__sect">
+                  <h3>Times</h3>
+                  <dl class="read__pairs">
+                    <template x-for="t in current.preparationTimes" :key="t.id">
+                      <div class="read__pair">
+                        <dt x-text="t.type"></dt>
+                        <dd x-text="t.timeString"></dd>
+                      </div>
+                    </template>
+                  </dl>
+                </section>
+              </template>
+
+              <template x-if="(current.notes || []).length">
+                <section class="read__sect">
+                  <h3>Notes</h3>
+                  <template x-for="n in current.notes" :key="n.id">
+                    <div class="read__block">
+                      <h4 x-text="n.title"></h4>
+                      <p class="read__body" x-text="n.content"></p>
+                    </div>
+                  </template>
+                </section>
+              </template>
+
+              <template x-if="(current.variations || []).length">
+                <section class="read__sect">
+                  <h3>Variations</h3>
+                  <template x-for="v in current.variations" :key="v.id">
+                    <div class="read__block">
+                      <h4 x-text="v.variationName"></h4>
+                      <p class="read__body" x-text="v.text"></p>
+                    </div>
+                  </template>
+                </section>
+              </template>
+
+              <template x-if="hasNutrition">
+                <section class="read__sect">
+                  <h3>Nutrition</h3>
+                  <dl class="read__pairs">
+                    <template x-for="row in nutritionRows" :key="row.label">
+                      <div class="read__pair">
+                        <dt x-text="row.label"></dt>
+                        <dd x-text="row.value"></dd>
+                      </div>
+                    </template>
+                  </dl>
+                </section>
+              </template>
+
               <p class="read__footer">
                 <template x-if="current.source">
                   <span>Source: <strong x-text="current.source"></strong>
@@ -436,6 +500,16 @@
 
   </main>
 
+  <!-- Nested inside nothing: a dialog opened from within the editor dialog would stack, so this
+       is a sibling and the editor stays open behind it. -->
+  <wa-dialog label="New tag" :open="newTagOpen" @wa-hide="if ($event.target === $el) { newTagOpen = false; newTagName = ''; }">
+    <wa-input label="Tag name" with-label x-model="newTagName" autofocus
+              @keydown.enter.prevent="createTagInline()"></wa-input>
+    <wa-button slot="footer" appearance="plain" @click="newTagOpen = false; newTagName = ''">Cancel</wa-button>
+    <wa-button slot="footer" appearance="accent" variant="brand" data-testid="create-tag"
+               :disabled="!newTagName.trim()" @click="createTagInline()">Add</wa-button>
+  </wa-dialog>
+
   <wa-dialog label="Delete list" :open="confirmDeleteList" @wa-hide="confirmDeleteList = false">
     <p>Delete <strong x-text="currentList ? (currentList.name || 'this list') : ''"></strong>? This
        cannot be undone.</p>
@@ -461,10 +535,107 @@
                   aria-label="Recipe name" size="large"></wa-input>
 
         <wa-card class="sect">
+          <div slot="header" class="sect__head"><h3>Details</h3></div>
+
+          <!-- Grouped into lines that belong together rather than one auto-fitting grid, which
+               reflowed fields into arbitrary neighbours at every width. Each .fieldrow still wraps
+               on a narrow screen, so this is grouping, not a fixed column count. -->
+          <div class="fieldrow">
+            <wa-input label="Source" with-label x-model="current.source" @input="touch()"></wa-input>
+            <wa-input label="Source details" with-label x-model="current.sourceDetails"
+                      @input="touch()"></wa-input>
+          </div>
+
+          <wa-textarea class="intro" label="Introduction" with-label resize="auto" rows="3"
+                       x-model="current.introduction" @input="touch()"></wa-textarea>
+
+          <div class="fieldrow">
+            <wa-input label="Yield" with-label x-model="current.yield" @input="touch()"></wa-input>
+            <wa-input label="Servings" with-label type="number"
+                      x-model.number="current.servings" @input="touch()"></wa-input>
+            <wa-select label="Course" with-label x-model="current.courseId" @change="touch()">
+              <wa-option value="">None</wa-option>
+              <template x-for="c in courses" :key="c.id">
+                <wa-option :value="c.id" x-text="c.name"></wa-option>
+              </template>
+            </wa-select>
+          </div>
+
+          <div class="fieldrow">
+            <wa-select label="Difficulty" with-label :value="String(current.difficulty ?? 0)"
+                       @change="current.difficulty = Number($event.target.value); touch()">
+              <wa-option value="0">(not set)</wa-option>
+              <wa-option value="1">Easy</wa-option>
+              <wa-option value="2">Somewhat Easy</wa-option>
+              <wa-option value="3">Medium</wa-option>
+              <wa-option value="4">Slightly Difficult</wa-option>
+              <wa-option value="5">Difficult</wa-option>
+            </wa-select>
+
+            <div class="field">
+              <label class="field__label">Rating</label>
+              <!-- width:max-content in CSS: wa-rating is role=slider and maps click position
+                   across its element width, so a stretched box makes the last star unhittable. -->
+              <wa-rating class="rating-field" label="Rating" :value="current.rating || 0"
+                         @change="current.rating = Number($event.target.value); touch()"></wa-rating>
+            </div>
+          </div>
+
+          <!-- Both flags were settable everywhere except the editor, which is the one place you'd
+               expect to set them while writing the recipe down. -->
+          <div class="fieldrow fieldrow--flags">
+            <wa-checkbox :checked="!!current.isFavorite"
+                         @change="current.isFavorite = $event.target.checked; touch()">
+              Favorite
+            </wa-checkbox>
+            <wa-checkbox :checked="!!current.wantToMake"
+                         @change="current.wantToMake = $event.target.checked; touch()">
+              Want to Make
+            </wa-checkbox>
+          </div>
+
+          <div class="fieldrow">
+            <wa-select multiple with-clear max-options-visible="4" label="Categories" with-label
+                       x-model="current.categoryIds" @change="touch()">
+              <template x-for="c in categories" :key="c.id">
+                <wa-option :value="c.id" x-text="c.name"></wa-option>
+              </template>
+            </wa-select>
+
+            <div class="field">
+              <label class="field__label">Tags</label>
+              <div class="tagfield">
+                <wa-select multiple with-clear max-options-visible="4" aria-label="Tags"
+                           x-model="current.tagIds" @change="touch()">
+                  <template x-for="t in tags" :key="t.id">
+                    <wa-option :value="t.id" x-text="t.name"></wa-option>
+                  </template>
+                </wa-select>
+                <!-- Tags get invented while writing a recipe far more often than courses or
+                     categories do, so this makes one and attaches it without leaving the editor. -->
+                <wa-button size="small" appearance="plain" title="New tag"
+                           data-testid="new-tag" @click="newTagOpen = true">
+                  <wa-icon name="plus" label="New tag"></wa-icon>
+                </wa-button>
+              </div>
+            </div>
+          </div>
+
+          <div class="fieldrow fieldrow--narrow">
+            <div class="field">
+              <label class="field__label" for="lastPrepared">Last Prepared</label>
+              <input class="native-date" type="date" id="lastPrepared"
+                     :value="dateOnly(current.lastPrepared)"
+                     @change="setLastPrepared($event.target.value)">
+            </div>
+          </div>
+        </wa-card>
+
+        <wa-card class="sect">
           <div slot="header" class="sect__head">
             <h3>Ingredients</h3>
           </div>
-          <ul class="rows" x-sort="(item, pos) => reorder('ingredients', item, pos)"
+          <ul class="rows rows--plain" x-sort="(item, pos) => reorder('ingredients', item, pos)"
               x-sort:config="{ handle: '.grip' }">
             <template x-for="(row, i) in ingredients" :key="row.id">
               <li class="row" :class="{ 'row--heading': row.isHeading, 'row--main': row.isMain }"
@@ -472,7 +643,6 @@
                 <span class="grip" title="Drag to reorder" aria-hidden="true">
                   <wa-icon name="grip-vertical"></wa-icon>
                 </span>
-                <span class="row__lead" x-text="row.isHeading ? '' : '•'"></span>
                 <wa-textarea class="row__edit" x-model="row.text" @input="touch()"
                              resize="auto" rows="1"
                              :aria-label="(row.isHeading ? 'Heading ' : 'Ingredient ') + (i + 1)"></wa-textarea>
@@ -533,64 +703,6 @@
           </div>
         </wa-card>
 
-        <wa-card class="sect">
-          <div slot="header" class="sect__head"><h3>Details</h3></div>
-          <div class="grid">
-            <wa-input label="Yield" with-label x-model="current.yield" @input="touch()"></wa-input>
-            <wa-input label="Servings" with-label type="number"
-                      x-model.number="current.servings" @input="touch()"></wa-input>
-            <wa-select label="Course" with-label x-model="current.courseId" @change="touch()">
-              <wa-option value="">None</wa-option>
-              <template x-for="c in courses" :key="c.id">
-                <wa-option :value="c.id" x-text="c.name"></wa-option>
-              </template>
-            </wa-select>
-            <wa-select label="Difficulty" with-label :value="String(current.difficulty ?? 0)"
-                       @change="current.difficulty = Number($event.target.value); touch()">
-              <wa-option value="0">(not set)</wa-option>
-              <wa-option value="1">Easy</wa-option>
-              <wa-option value="2">Somewhat Easy</wa-option>
-              <wa-option value="3">Medium</wa-option>
-              <wa-option value="4">Slightly Difficult</wa-option>
-              <wa-option value="5">Difficult</wa-option>
-            </wa-select>
-
-            <div class="field">
-              <label class="field__label">Rating</label>
-              <!-- width:max-content in CSS: wa-rating is role=slider and maps click position
-                   across its element width, so a stretched box makes the last star unhittable. -->
-              <wa-rating class="rating-field" label="Rating" :value="current.rating || 0"
-                         @change="current.rating = Number($event.target.value); touch()"></wa-rating>
-            </div>
-
-            <div class="field">
-              <label class="field__label" for="lastPrepared">Last made on</label>
-              <input class="native-date" type="date" id="lastPrepared"
-                     :value="dateOnly(current.lastPrepared)"
-                     @change="setLastPrepared($event.target.value)">
-            </div>
-
-            <wa-select multiple with-clear max-options-visible="4" label="Categories" with-label
-                       x-model="current.categoryIds" @change="touch()">
-              <template x-for="c in categories" :key="c.id">
-                <wa-option :value="c.id" x-text="c.name"></wa-option>
-              </template>
-            </wa-select>
-
-            <wa-select multiple with-clear max-options-visible="4" label="Tags" with-label
-                       x-model="current.tagIds" @change="touch()">
-              <template x-for="t in tags" :key="t.id">
-                <wa-option :value="t.id" x-text="t.name"></wa-option>
-              </template>
-            </wa-select>
-
-            <wa-input label="Source" with-label x-model="current.source" @input="touch()"></wa-input>
-            <wa-input label="Source details" with-label x-model="current.sourceDetails" @input="touch()"></wa-input>
-          </div>
-
-          <wa-textarea class="intro" label="Introduction" with-label resize="auto" rows="2"
-                       x-model="current.introduction" @input="touch()"></wa-textarea>
-        </wa-card>
       </div>
     </template>
 

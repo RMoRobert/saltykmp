@@ -146,7 +146,6 @@ function saltyEditor() {
     selectedId: null,
     username: SALTY.username || "",
     railOpen: true,
-    theme: localStorage.getItem("salty.theme") || "default",
     // Read is the default, matching the Swift and CMP apps: Edit is an action you take, not a tab.
     mode: "read",
     pane: "list",          // compact-screen pane: rail | list | detail
@@ -175,6 +174,8 @@ function saltyEditor() {
     libraryManagerOpen: false,
     pendingClassifierDelete: null,
     newClassifier: { category: "", course: "", tag: "" },
+    newTagOpen: false,
+    newTagName: "",
     toasts: [],
     _toastSeq: 0,
 
@@ -184,10 +185,41 @@ function saltyEditor() {
       return [
         // `singular` is explicit rather than derived: stripping a trailing "s" turns Categories
         // into "Categorie".
-        { kind: "category", label: "Categories", singular: "category", icon: "folder", items: this.categories },
-        { kind: "course", label: "Courses", singular: "course", icon: "utensils", items: this.courses },
-        { kind: "tag", label: "Tags", singular: "tag", icon: "tag", items: this.tags },
+        // `outline` marks the icons that really have a regular variant in the free icon set, so
+        // the outline-unless-selected convention only applies where it would actually show. Asking
+        // for variant="regular" on utensils or tag silently renders the solid glyph instead.
+        { kind: "category", label: "Categories", singular: "category", icon: "folder",
+          outline: true, items: this.categories },
+        { kind: "course", label: "Courses", singular: "course", icon: "utensils",
+          outline: false, items: this.courses },
+        { kind: "tag", label: "Tags", singular: "tag", icon: "tag",
+          outline: false, items: this.tags },
       ];
+    },
+
+    /** Nutrition arrives as one object of mostly-null numbers; only show what's actually filled. */
+    get hasNutrition() { return this.nutritionRows.length > 0; },
+
+    get nutritionRows() {
+      const n = this.current && this.current.nutrition;
+      if (!n) return [];
+      const units = {
+        calories: "", protein: "g", carbohydrates: "g", fat: "g", saturatedFat: "g",
+        transFat: "g", fiber: "g", sugar: "g", sodium: "mg", cholesterol: "mg",
+      };
+      const labels = {
+        calories: "Calories", protein: "Protein", carbohydrates: "Carbohydrates", fat: "Fat",
+        saturatedFat: "Saturated fat", transFat: "Trans fat", fiber: "Fiber", sugar: "Sugar",
+        sodium: "Sodium", cholesterol: "Cholesterol",
+      };
+      const rows = [];
+      if (n.servingSize) rows.push({ label: "Serving size", value: n.servingSize });
+      for (const key of Object.keys(labels)) {
+        const v = n[key];
+        if (v === null || v === undefined) continue;
+        rows.push({ label: labels[key], value: `${v.toLocaleString()}${units[key]}` });
+      }
+      return rows;
     },
 
     get favoriteCount() { return this.list.filter(r => r.isFavorite).length; },
@@ -205,7 +237,6 @@ function saltyEditor() {
       // matchMedia rather than a resize listener seeded from innerWidth: the window can still be
       // settling when Alpine initialises (a pane that opens narrow and widens, a restored window),
       // and a stale mdUp silently skipped the auto-open below.
-      if (this.theme !== "default") this.setTheme(this.theme);
       const wide = window.matchMedia("(min-width: 900px)");
       this.mdUp = wide.matches;
       wide.addEventListener("change", e => { this.mdUp = e.matches; });
@@ -234,17 +265,6 @@ function saltyEditor() {
       } catch (e) {
         this.notify(`Couldn't load library: ${e.message}`, "danger");
       }
-    },
-
-    /**
-     * Swaps Web Awesome's theme stylesheet. Three ship with it: default, awesome, shoelace.
-     * Kept in localStorage so a reload doesn't lose the choice.
-     */
-    setTheme(name) {
-      this.theme = name;
-      localStorage.setItem("salty.theme", name);
-      const link = document.getElementById("wa-theme");
-      if (link) link.href = link.href.replace(/themes\/[a-z]+\.css/, `themes/${name}.css`);
     },
 
     /**
@@ -492,6 +512,39 @@ function saltyEditor() {
     },
 
     openLibraryManager() { this.libraryManagerOpen = true; },
+
+    /**
+     * Creates a tag and attaches it to the open recipe without leaving the editor. Tags get
+     * invented while writing a recipe far more often than courses or categories do, which is why
+     * this shortcut exists here and not for the others -- the library manager still handles those.
+     */
+    async createTagInline() {
+      const name = (this.newTagName || "").trim();
+      if (!name) return;
+      const existing = this.tags.find(t => (t.name || "").toLowerCase() === name.toLowerCase());
+      if (existing) {
+        this.attachTag(existing.id);
+        this.newTagOpen = false; this.newTagName = "";
+        this.notify(`"${existing.name}" already existed; attached it`);
+        return;
+      }
+      try {
+        const created = await api("POST", "/api/tags", { id: uuidv7(), name });
+        this.tags.push(created);
+        this.tags.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+        this.attachTag(created.id);
+        this.newTagOpen = false; this.newTagName = "";
+        this.notify(`Added ${name}`);
+      } catch (e) {
+        this.notify(`Couldn't add tag: ${e.message}`, "danger");
+      }
+    },
+
+    attachTag(id) {
+      if (!this.current) return;
+      const ids = this.current.tagIds || [];
+      if (!ids.includes(id)) { this.current.tagIds = [...ids, id]; this.touch(); }
+    },
 
     async addClassifier(kind) {
       const name = (this.newClassifier[kind] || "").trim();
