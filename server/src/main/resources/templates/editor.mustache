@@ -55,24 +55,13 @@
      Structure comes from <wa-page>, which supplies the responsive navigation-to-drawer behaviour,
      the toggle wiring and a skip-to-content link. It deliberately renders no sectioning elements of
      its own, so the real <header>, <nav> and <main> landmarks below are ours to provide. -->
-<wa-page id="app" x-data="saltyEditor()" x-cloak mobile-breakpoint="768"
-         :data-pane="pane" :data-rail="railOpen ? 'true' : 'false'">
+<wa-page id="app" x-data="saltyEditor()" x-cloak mobile-breakpoint="768px"
+         :data-pane="pane">
 
   <header slot="header" class="appbar">
-    <!-- data-toggle-nav is what tells wa-page not to render its own hamburger; without it there
-         were two side by side on mobile. It has to be in the served markup, since wa-page looks
-         for it when it connects and ignores one added later. The `disable-navigation-toggle`
-         attribute is not an alternative: wa-page owns that property and resets it from this scan,
-         wiping the attribute set in HTML.
-
-         wa-page also hides elements carrying the hook on desktop, where a drawer toggle makes no
-         sense -- but this button does double duty and collapses the rail there, so .appbar__nav
-         in the stylesheet forces it back. -->
-    <wa-button data-testid="hamburger" data-toggle-nav class="appbar__nav" appearance="plain" size="small"
-               @click="toggleSidebar()"
-               :title="railOpen ? 'Hide sidebar' : 'Show sidebar'">
-      <wa-icon name="bars" :label="railOpen ? 'Hide sidebar' : 'Show sidebar'"></wa-icon>
-    </wa-button>
+    <!-- No hamburger here on purpose. wa-page renders its own navigation toggle and owns the
+         drawer; a second hand-rolled button is what produced two of them side by side, and every
+         workaround after that (data-toggle-nav, a !important override) was papering over it. -->
 
     <span class="appbar__brand"><span aria-hidden="true">&#127858;</span> <strong>Salty</strong></span>
 
@@ -144,7 +133,7 @@
   <main class="panes">
   <section class="list" aria-label="Recipes" x-show="section === 'recipes'">
     <header class="list__head">
-      <wa-button class="only-compact" size="small" appearance="plain" @click="railOpen = true; pane = 'rail'">
+      <wa-button class="only-compact" size="small" appearance="plain" @click="showLibrary()">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Library
       </wa-button>
       <h2 class="list__title" x-text="filter.label"></h2>
@@ -182,7 +171,7 @@
        column lists the shopping lists and the detail column shows the one that's selected. -->
   <section class="list" aria-label="Shopping lists" x-show="section === 'shopping'">
     <header class="list__head">
-      <wa-button class="only-compact" size="small" appearance="plain" @click="railOpen = true; pane = 'rail'">
+      <wa-button class="only-compact" size="small" appearance="plain" @click="showLibrary()">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Library
       </wa-button>
       <h2 class="list__title">Shopping Lists</h2>

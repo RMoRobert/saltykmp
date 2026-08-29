@@ -27,6 +27,10 @@ wa-page { height: 100dvh; }
   grid-template-columns: 280px 1fr;
   height: 100%;
   min-height: 0;
+  /* Web Awesome styles a bare <main> as a document with 48px of padding. This is an app shell, not
+     a document -- the panes own their own spacing and should meet the window edges. On a 420px
+     phone that padding was eating 96px, nearly a quarter of the width. */
+  padding: 0;
 }
 
 .only-compact { display: none; }
@@ -41,16 +45,6 @@ wa-page { height: 100dvh; }
 }
 .appbar__brand { font-size: var(--wa-font-size-s); }
 .appbar__account { margin-inline-start: auto; }
-
-/* Desktop-only collapse. Below wa-page's breakpoint the navigation is a drawer the component
-   controls, so this must not interfere there.
-   --menu-width is wa-page's own knob for the left section; collapsing that rather than forcing
-   display:none on the part means we're not fighting its internal grid, which sets display itself
-   and wins the cascade against a bare ::part() rule. */
-@media (min-width: 768px) {
-  wa-page[data-rail="false"] { --menu-width: 0; }
-  wa-page[data-rail="false"]::part(navigation-desktop) { display: none; }
-}
 
 .rail   { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .list   { display: flex; flex-direction: column; min-height: 0;
@@ -328,11 +322,6 @@ wa-page { height: 100dvh; }
 .read__block { margin-block-end: var(--wa-space-m); }
 .read__block h4 { margin: 0 0 var(--wa-space-3xs); }
 .read__body { margin: 0; white-space: pre-wrap; }
-
-/* wa-page hides [data-toggle-nav] on desktop, since a drawer toggle is a mobile idea. This button
-   also collapses the rail on desktop, so it stays; the hook is only there to stop wa-page drawing
-   a second hamburger of its own next to it. */
-wa-page[view="desktop"] .appbar__nav { display: inline-flex !important; }
 
 /* ------------------------------------------------- secondary sub-editors -- */
 

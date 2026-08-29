@@ -253,19 +253,91 @@ class EditorUiTest {
         page.close()
     }
 
-    /** The hamburger does one thing: show and hide the sidebar. */
+    /**
+     * There must be exactly ONE navigation toggle. A hand-rolled hamburger in the header used to
+     * sit next to the one wa-page renders itself, and every attempt to suppress one of them broke
+     * the other -- ending with a narrow screen where neither opened the sidebar.
+     */
     @Test
-    fun hamburgerTogglesTheSidebar() {
+    fun thereIsExactlyOneNavigationToggle() {
         val b = browserOrNull() ?: return
         val page = editorPage(b)
-        val rail = page.locator(".rail")
-        assertThat(rail).isVisible()
+        page.waitForSelector("wa-page")
 
-        page.locator("[data-testid=hamburger]").click()
+        val toggles = page.evaluate(
+            """() => {
+                 const p = document.getElementById('app');
+                 const inShadow = p.shadowRoot.querySelectorAll('[part~="navigation-toggle"]').length;
+                 const inLight = document.querySelectorAll('wa-icon[name="bars"]').length;
+                 return inShadow + inLight;
+               }"""
+        )
+        assertEquals(1, toggles, "exactly one hamburger, drawn by wa-page itself")
+        page.close()
+    }
+
+    /**
+     * On a narrow screen the sidebar is wa-page's drawer: hidden until asked for, then shown.
+     * It used to be unreachable there -- the header button toggled a rail that mobile CSS hides,
+     * and the "Library" button set a pane value no CSS rule matched.
+     */
+    @Test
+    fun theSidebarOpensOnANarrowScreen() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.setViewportSize(420, 800)
+        // wa-page switches view from a ResizeObserver, so wait for it rather than assuming.
+        page.waitForFunction("() => document.getElementById('app').getAttribute('view') === 'mobile'")
+
+        val rail = page.locator("nav.rail")
         assertThat(rail).not().isVisible(LocatorAssertions.IsVisibleOptions().setTimeout(3000.0))
 
-        page.locator("[data-testid=hamburger]").click()
+        page.evaluate("() => document.getElementById('app').shadowRoot.querySelector('[part~=\"navigation-toggle\"]').click()")
         assertThat(rail).isVisible()
+        page.close()
+    }
+
+    /**
+     * The whole compact chain: recipe -> back to the list -> back to the library. On a narrow
+     * screen the app opens showing a recipe, and each step has to be reachable. The last step used
+     * to set a pane value no CSS rule matched, so the library was a dead end.
+     */
+    @Test
+    fun theCompactBackChainReachesTheLibrary() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+
+        page.setViewportSize(420, 800)
+        page.waitForFunction("() => document.getElementById('app').getAttribute('view') === 'mobile'")
+
+        val rail = page.locator("nav.rail")
+        val list = page.locator("section[aria-label='Recipes']")
+        assertThat(rail).not().isVisible(LocatorAssertions.IsVisibleOptions().setTimeout(3000.0))
+
+        // Detail -> list.
+        page.locator("main.detail .only-compact").first().click()
+        assertThat(list).isVisible()
+
+        // List -> library drawer.
+        page.locator("section[aria-label='Recipes'] .only-compact").first().click()
+        assertThat(rail).isVisible()
+        page.close()
+    }
+
+    /**
+     * Web Awesome styles a bare <main> as a document, with 48px of padding. This is an app shell;
+     * on a 420px phone that padding was eating nearly a quarter of the width.
+     */
+    @Test
+    fun thePanesMeetTheWindowEdges() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.setViewportSize(420, 800)
+        val padding = page.evaluate(
+            "() => getComputedStyle(document.querySelector('.panes')).paddingLeft")
+        assertEquals("0px", padding, "the pane grid should not inherit document padding")
         page.close()
     }
 

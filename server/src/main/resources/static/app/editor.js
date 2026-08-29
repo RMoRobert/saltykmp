@@ -186,7 +186,6 @@ function saltyEditor() {
     directions: [],
     selectedId: null,
     username: SALTY.username || "",
-    railOpen: true,
     // Read is the default, matching the Swift and CMP apps: Edit is an action you take, not a tab.
     mode: "read",
     pane: "list",          // compact-screen pane: rail | list | detail
@@ -319,14 +318,16 @@ function saltyEditor() {
      * so ask it to toggle; above, collapse our own rail. wa-page reflects which mode it is in via
      * its `view` attribute.
      */
-    toggleSidebar() {
+    /**
+     * Opens wa-page's navigation drawer, for the "Library" button on a compact screen.
+     *
+     * This asks the component rather than setting state of our own: the drawer is wa-page's, and
+     * the previous version set pane = "rail", a value no CSS rule matched, so the library simply
+     * could not be reached on a narrow screen.
+     */
+    showLibrary() {
       const page = document.getElementById("app");
-      if (page && page.getAttribute("view") === "mobile") {
-        if (typeof page.toggleNavigation === "function") page.toggleNavigation();
-        else page.toggleAttribute("nav-open");
-      } else {
-        this.railOpen = !this.railOpen;
-      }
+      if (page && typeof page.showNavigation === "function") page.showNavigation();
     },
 
     /**
