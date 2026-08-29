@@ -1,4 +1,5 @@
 [versions]
+playwright = "1.52.0"
 agp = "8.13.2"
 android-compileSdk = "36"
 android-minSdk = "24"
@@ -31,6 +32,7 @@ filekit = "0.13.0" # 0.14.x is built with Kotlin 2.4 (KLIB ABI 2.4.0); this proj
 jna = "5.17.0" # desktop only: Windows Credential Manager bindings (SecretStore.jvm.kt)
 
 [libraries]
+playwright = { module = "com.microsoft.playwright:playwright", version.ref = "playwright" }
 filekit-dialogs-compose = { module = "io.github.vinceglb:filekit-dialogs-compose", version.ref = "filekit" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-testJunit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }

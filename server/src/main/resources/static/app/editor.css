@@ -143,11 +143,10 @@ body { background: var(--wa-color-surface-default); }
 .read__list { list-style: none; margin: 0; padding: 0; }
 .read__list li { padding: var(--wa-space-3xs) 0 var(--wa-space-3xs) 1rem; text-indent: -1rem; }
 .read__list li::before { content: "· "; color: var(--wa-color-neutral-on-quiet); }
-.read__list li.is-main { font-weight: var(--wa-font-weight-semibold); }
 .read__list li.is-heading,
 .read__steps li.is-heading {
-  font-size: var(--wa-font-size-2xs, 0.72rem); font-weight: var(--wa-font-weight-bold);
-  letter-spacing: 0.08em; text-transform: uppercase; color: var(--wa-color-neutral-on-quiet);
+  /* Weight and colour only: no text-transform, so a heading reads back exactly as typed. */
+  font-weight: var(--wa-font-weight-bold); color: var(--wa-color-neutral-on-quiet);
   padding: var(--wa-space-m) 0 var(--wa-space-3xs); text-indent: 0;
 }
 .read__list li.is-heading::before { content: none; }
@@ -201,10 +200,8 @@ body { background: var(--wa-color-surface-default); }
 }
 
 .row--heading .row__edit::part(textarea) {
-  font-weight: var(--wa-font-weight-bold); font-size: var(--wa-font-size-2xs, 0.75rem);
-  letter-spacing: 0.06em; text-transform: uppercase;
+  font-weight: var(--wa-font-weight-bold);
 }
-.row--main .row__edit::part(textarea) { font-weight: var(--wa-font-weight-semibold); }
 
 .row__tools { display: flex; gap: 1px; opacity: 0; transition: opacity 0.12s; }
 .row:hover .row__tools, .row:focus-within .row__tools { opacity: 1; }
@@ -226,8 +223,10 @@ body { background: var(--wa-color-surface-default); }
 
 /* wa-rating is role="slider": it maps click position across its ELEMENT width, so a box stretched
    by a flex parent puts the last star's hit region past the visible stars. Shrink it to its content
-   and the pointer maths lines up again. */
-.rating { width: max-content; align-self: start; }
+   and the pointer maths lines up again.
+   Named rating-field, not rating: the component's own shadow root contains a div.rating, and tools
+   that pierce shadow DOM (Playwright's selectors do) would match both. */
+.rating-field { width: max-content; align-self: start; }
 
 .native-date {
   font: inherit;

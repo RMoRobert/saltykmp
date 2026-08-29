@@ -45,7 +45,7 @@
        The hamburger does one thing: show/hide the sidebar. Everything else lives either in the
        sidebar or in the account menu on the right. -->
   <header class="appbar">
-    <wa-button appearance="plain" size="small" @click="railOpen = !railOpen"
+    <wa-button data-testid="hamburger" appearance="plain" size="small" @click="railOpen = !railOpen"
                :title="railOpen ? 'Hide sidebar' : 'Show sidebar'">
       <wa-icon name="bars" :label="railOpen ? 'Hide sidebar' : 'Show sidebar'"></wa-icon>
     </wa-button>
@@ -165,12 +165,12 @@
         <div class="detail__actions">
           <!-- Read is the default; Edit is an action, matching the Swift and CMP apps. -->
           <template x-if="mode === 'read'">
-            <wa-button size="small" appearance="outlined" @click="mode = 'edit'">
+            <wa-button data-testid="edit" size="small" appearance="outlined" @click="mode = 'edit'">
               <wa-icon slot="start" name="pen"></wa-icon> Edit
             </wa-button>
           </template>
           <template x-if="mode === 'edit'">
-            <wa-button size="small" appearance="accent" variant="brand"
+            <wa-button data-testid="done" size="small" appearance="accent" variant="brand"
                        :loading="saving" @click="saveAndClose()">Done</wa-button>
           </template>
 
@@ -259,7 +259,9 @@
                 <ul class="read__steps">
                   <template x-for="(row, i) in directions" :key="row.id">
                     <li :class="{ 'is-heading': row.isHeading }">
-                      <span class="stepno" x-show="!row.isHeading" x-text="stepNumber(i) + '.'"></span>
+                      <template x-if="!row.isHeading">
+                        <span class="stepno" x-text="stepNumber(i) + '.'"></span>
+                      </template>
                       <span x-text="row.text"></span>
                     </li>
                   </template>
@@ -385,7 +387,7 @@
                     <label class="field__label">Rating</label>
                     <!-- width:max-content in CSS: wa-rating is role=slider and maps click position
                          across its element width, so a stretched box makes the last star unhittable. -->
-                    <wa-rating class="rating" label="Rating" :value="current.rating || 0"
+                    <wa-rating class="rating-field" label="Rating" :value="current.rating || 0"
                                @change="current.rating = Number($event.target.value); touch()"></wa-rating>
                   </div>
 
@@ -414,7 +416,7 @@
       <span class="savebar__status" :class="{ 'is-dirty': dirty }"
             x-text="dirty ? 'Unsaved changes' : 'All changes saved'"></span>
       <wa-button size="small" appearance="plain" :disabled="!dirty" @click="revert()">Revert</wa-button>
-      <wa-button size="small" appearance="accent" variant="brand" :disabled="!dirty"
+      <wa-button data-testid="save" size="small" appearance="accent" variant="brand" :disabled="!dirty"
                  :loading="saving" @click="save()">Save</wa-button>
     </footer>
   </main>

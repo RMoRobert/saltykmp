@@ -87,4 +87,7 @@ dependencies {
     testImplementation(libs.ktor.serverTestHost)
     testImplementation(libs.ktor.serverContentNegotiationTest)
     testImplementation(libs.kotlin.testJunit)
+    // Drives a real browser for the web editor's UI tests. Ships its own driver and
+    // downloads browsers on first run -- no Node toolchain in this build.
+    testImplementation(libs.playwright)
 }
