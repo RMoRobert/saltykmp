@@ -18,6 +18,12 @@ function saltyEditor() {
 
   const SCALES = [0.5, 1, 1.5, 2, 3, 4];
 
+  // Mirrors the server: ImageStore identifies the format from the BYTES and stores only these
+  // three, and MAX_IMAGE_UPLOAD_BYTES caps the request. Checking here too turns a 25 MB round trip
+  // that ends in 415 into an immediate, specific message.
+  const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif"];
+  const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+
   /**
    * Nutrition fields in the order, wording and grouping the Swift editor uses (NutritionEditView).
    * One list drives both the editor and the reading view so the two can't drift, and so a field
@@ -211,6 +217,12 @@ function saltyEditor() {
     newClassifier: { category: "", course: "", tag: "" },
     newTagOpen: false,
     newTagName: "",
+    // Image changes are staged, not applied on the spot. The editor is a modal with Save, Revert
+    // and Done, and a control that wrote through immediately would sit outside that contract --
+    // Revert would silently fail to undo it. Applied by applyImageChanges() during save().
+    pendingImageFile: null,
+    pendingImageUrl: null,
+    pendingImageRemoval: false,
     toasts: [],
     _toastSeq: 0,
 
@@ -244,6 +256,17 @@ function saltyEditor() {
           label: f.label,
           value: f.text ? String(n[f.key]) : `${Number(n[f.key]).toLocaleString()}${f.unit || ""}`,
         }));
+    },
+
+    /**
+     * What the editor and the reading view should show right now: a staged file if one was picked,
+     * nothing if removal is staged, otherwise whatever the recipe already has.
+     */
+    get imageUrl() {
+      if (this.pendingImageUrl) return this.pendingImageUrl;
+      if (this.pendingImageRemoval) return null;
+      const fn = this.current && this.current.imageFilename;
+      return fn ? `/api/recipes/images/${encodeURIComponent(fn)}` : null;
     },
 
     get favoriteCount() { return this.list.filter(r => r.isFavorite).length; },
@@ -700,6 +723,92 @@ function saltyEditor() {
       if (!this.dirty) this.mode = "read";
     },
 
+    /* --- image --- */
+
+    /**
+     * Stages a chosen file and previews it locally. Nothing is uploaded until Save, so Revert and
+     * the dialog's discard path undo an image change like any other edit.
+     */
+    chooseImage(event) {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = "";                 // so re-picking the same file fires change again
+      if (!file) return;
+      if (!IMAGE_TYPES.includes(file.type)) {
+        this.notify("Images must be JPEG, PNG or GIF.", "danger");
+        return;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        this.notify(`That image is ${(file.size / 1024 / 1024).toFixed(1)} MB; the limit is 25 MB.`, "danger");
+        return;
+      }
+      this.releasePendingImage();
+      this.pendingImageFile = file;
+      this.pendingImageUrl = URL.createObjectURL(file);
+      this.pendingImageRemoval = false;
+      this.touch();
+    },
+
+    /** Stages removal. An image picked but not yet saved is simply dropped instead. */
+    clearImage() {
+      if (this.pendingImageFile) {
+        this.releasePendingImage();
+        // Falls back to whatever was already stored; only stage a real removal if that exists.
+        if (!(this.current && this.current.imageFilename)) return;
+      }
+      this.pendingImageRemoval = true;
+      this.touch();
+    },
+
+    /** Object URLs are held by the document until revoked, so drop the old one on every swap. */
+    releasePendingImage() {
+      if (this.pendingImageUrl) URL.revokeObjectURL(this.pendingImageUrl);
+      this.pendingImageUrl = null;
+      this.pendingImageFile = null;
+    },
+
+    resetImageStaging() {
+      this.releasePendingImage();
+      this.pendingImageRemoval = false;
+    },
+
+    /**
+     * Applies a staged image change after the recipe body has been written. Order matters: the
+     * body PUT carries the OLD imageFilename, so doing this first would let that stale value
+     * overwrite what these endpoints just set.
+     *
+     * Both endpoints take the timestamp the change happened, which is what lets the other clients
+     * see it via /sync/manifest instead of treating their own copy as current.
+     */
+    async applyImageChanges() {
+      if (!this.current) return;
+      const id = encodeURIComponent(this.current.id);
+      const stamp = wireNow();
+      if (this.pendingImageFile) {
+        const body = new FormData();
+        body.append("file", this.pendingImageFile, this.pendingImageFile.name || "image");
+        body.append("lastModifiedImageDate", stamp);
+        const resp = await fetch(`/api/recipes/${id}/image`, {
+          method: "POST",
+          headers: { "X-CSRF-Token": SALTY.csrfToken },   // no Content-Type: the browser sets the boundary
+          credentials: "same-origin",
+          body,
+        });
+        if (!resp.ok) {
+          let detail = `${resp.status} ${resp.statusText}`;
+          try { const j = await resp.json(); if (j && j.error) detail = j.error; } catch { /* keep status */ }
+          throw new Error(detail);
+        }
+        const saved = await resp.json();
+        this.current.imageFilename = saved.filename;
+        this.current.lastModifiedImageDate = stamp;
+      } else if (this.pendingImageRemoval) {
+        await api("DELETE", `/api/recipes/${id}/image?lastModifiedImageDate=${encodeURIComponent(stamp)}`);
+        this.current.imageFilename = null;
+        this.current.lastModifiedImageDate = stamp;
+      }
+      this.resetImageStaging();
+    },
+
     /* --- notes, variations and preparation times --- */
 
     /**
@@ -860,6 +969,7 @@ function saltyEditor() {
 
     async open(id) {
       if (this.dirty && !window.confirm("Discard unsaved changes?")) return;
+      this.resetImageStaging();
       this.loadingRecipe = true;
       try {
         const r = await api("GET", `/api/recipes/${encodeURIComponent(id)}`);
@@ -930,9 +1040,12 @@ function saltyEditor() {
         };
         const saved = await api("PUT", `/api/recipes/${encodeURIComponent(this.current.id)}`, payload);
         this.current = saved;
+        // After the body, so the PUT's copy of imageFilename can't overwrite what these set.
+        await this.applyImageChanges();
         this.dirty = false;
-        const idx = this.list.findIndex(x => x.id === saved.id);
-        if (idx > -1) this.list.splice(idx, 1, saved); else this.list.unshift(saved);
+        const row = { ...this.current };
+        const idx = this.list.findIndex(x => x.id === row.id);
+        if (idx > -1) this.list.splice(idx, 1, row); else this.list.unshift(row);
         this.notify("Saved");
       } catch (e) {
         this.notify(`Save failed: ${e.message}`, "danger");
@@ -941,7 +1054,10 @@ function saltyEditor() {
       }
     },
 
-    revert() { if (this.current) { this.dirty = false; this.open(this.current.id); } },
+    revert() {
+      this.resetImageStaging();
+      if (this.current) { this.dirty = false; this.open(this.current.id); }
+    },
 
     async doDelete() {
       this.confirmDelete = false;

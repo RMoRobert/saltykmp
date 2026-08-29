@@ -869,4 +869,116 @@ class EditorUiTest {
         assertThat(page.locator("[data-testid=details-nutrition] .nutgroup")).hasCount(4)
         page.close()
     }
+
+    /* ---------------------------------------------------------------- image -- */
+
+    /** Puts real PNG bytes through the actual <input type=file>, as a file picker would. */
+    private fun stageImage(page: Page, color: String) {
+        page.evaluate(
+            """async (color) => {
+                 const canvas = document.createElement('canvas');
+                 canvas.width = 64; canvas.height = 48;
+                 const ctx = canvas.getContext('2d');
+                 ctx.fillStyle = color; ctx.fillRect(0, 0, 64, 48);
+                 const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+                 const input = document.getElementById('imgfile');
+                 const dt = new DataTransfer();
+                 dt.items.add(new File([blob], 'pic.png', { type: 'image/png' }));
+                 input.files = dt.files;
+                 input.dispatchEvent(new Event('change', { bubbles: true }));
+               }""",
+            color,
+        )
+        page.waitForFunction("() => Alpine.\$data(document.getElementById('app')).pendingImageFile !== null")
+    }
+
+    /**
+     * An image is staged and only uploaded on save, so it behaves like every other edit in the
+     * dialog. Uploading on pick would put one control outside the Save/Revert contract.
+     */
+    @Test
+    fun anImageUploadsOnSaveAndIsServedBack() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        openEditorFor(page)
+        stageImage(page, "#c4844a")
+
+        // Nothing has reached the server yet.
+        assertEquals(null, stored()?.imageFilename, "picking a file must not upload on its own")
+
+        saveAndWait(page)
+        val filename = stored()?.imageFilename
+        assertTrue(filename != null && filename.endsWith(".png"),
+            "the extension comes from the bytes: $filename")
+        assertTrue(stored()?.lastModifiedImageDate != null,
+            "the image stamp is what lets other clients notice the change")
+
+        // And the bytes come back.
+        val status = page.evaluate(
+            "async (fn) => (await fetch('/api/recipes/images/' + fn)).status", filename)
+        assertEquals(200, status)
+        page.close()
+    }
+
+    /** Revert has to undo a staged image like any other pending edit. */
+    @Test
+    fun revertingDropsAStagedImage() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        openEditorFor(page)
+        stageImage(page, "#4a84c4")
+
+        page.locator("wa-dialog.editdlg wa-button:has-text('Revert')").first().click()
+        page.waitForFunction("() => Alpine.\$data(document.getElementById('app')).pendingImageFile === null")
+
+        assertEquals(null, stored()?.imageFilename, "a reverted image must never be uploaded")
+        page.close()
+    }
+
+    /** Clearing stages a removal; the file and the filename go on save, with a fresh stamp. */
+    @Test
+    fun clearingAnImageRemovesItOnSave() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        openEditorFor(page)
+        stageImage(page, "#c4844a")
+        saveAndWait(page)
+        val filename = stored()?.imageFilename
+        assertTrue(filename != null)
+
+        page.locator("[data-testid=clear-image]").click()
+        page.waitForFunction("() => Alpine.\$data(document.getElementById('app')).pendingImageRemoval")
+        assertEquals(filename, stored()?.imageFilename, "clearing must not delete before save")
+
+        saveAndWait(page)
+        assertEquals(null, stored()?.imageFilename, "the filename should be cleared")
+        assertTrue(stored()?.lastModifiedImageDate != null,
+            "a removal is stamped too, so other clients see it")
+        val status = page.evaluate(
+            "async (fn) => (await fetch('/api/recipes/images/' + fn)).status", filename)
+        assertEquals(404, status, "the stored file should be gone, not just unreferenced")
+        page.close()
+    }
+
+    /** A file the server would reject is refused here first, with a specific reason. */
+    @Test
+    fun aNonImageIsRefusedBeforeUploading() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        openEditorFor(page)
+        page.evaluate(
+            """() => {
+                 const input = document.getElementById('imgfile');
+                 const dt = new DataTransfer();
+                 dt.items.add(new File([new Blob(['%PDF-1.4'])], 'notes.pdf', { type: 'application/pdf' }));
+                 input.files = dt.files;
+                 input.dispatchEvent(new Event('change', { bubbles: true }));
+               }"""
+        )
+        page.waitForTimeout(400.0)
+        assertEquals(false, page.evaluate(
+            "() => Alpine.\$data(document.getElementById('app')).pendingImageFile !== null"),
+            "a PDF should never be staged")
+        page.close()
+    }
 }

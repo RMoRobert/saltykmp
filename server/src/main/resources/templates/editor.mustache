@@ -254,6 +254,10 @@
             <div class="read">
               <h2 class="read__title" x-text="current.name || 'Untitled'"></h2>
 
+              <template x-if="imageUrl">
+                <img class="read__image" :src="imageUrl" alt="" loading="lazy">
+              </template>
+
               <p class="read__meta">
                 <template x-if="courseName(current.courseId)">
                   <span><span x-text="courseName(current.courseId)"></span> · </span>
@@ -533,6 +537,41 @@
       <div class="edit">
         <wa-input class="titlefield" x-model="current.name" @input="touch()"
                   aria-label="Recipe name" size="large"></wa-input>
+
+        <wa-card class="sect">
+          <div slot="header" class="sect__head"><h3>Image</h3></div>
+          <!-- Staged, not uploaded on the spot: see chooseImage. The file input is the real one,
+               kept off-screen rather than display:none so it stays focusable, with the wa-button
+               acting as its label. -->
+          <div class="imgedit">
+            <template x-if="imageUrl">
+              <img class="imgedit__preview" :src="imageUrl" alt="Recipe image">
+            </template>
+            <template x-if="!imageUrl">
+              <div class="imgedit__empty">
+                <wa-icon name="image" class="imgedit__icon"></wa-icon>
+                <span>No image</span>
+              </div>
+            </template>
+
+            <div class="imgedit__actions">
+              <input type="file" id="imgfile" class="visually-hidden"
+                     accept="image/jpeg,image/png,image/gif" @change="chooseImage($event)">
+              <wa-button size="small" appearance="filled" data-testid="choose-image"
+                         @click="document.getElementById('imgfile').click()">
+                <wa-icon slot="start" name="arrow-up-from-bracket"></wa-icon>
+                <span x-text="imageUrl ? 'Replace…' : 'Choose Image…'"></span>
+              </wa-button>
+              <wa-button size="small" appearance="plain" data-testid="clear-image"
+                         x-show="imageUrl" @click="clearImage()">
+                <wa-icon slot="start" name="xmark"></wa-icon> Remove
+              </wa-button>
+              <span class="imgedit__hint" x-show="pendingImageFile || pendingImageRemoval"
+                    x-text="pendingImageFile ? 'New image — saves with the recipe' : 'Will be removed on save'"></span>
+            </div>
+            <p class="imgedit__note">JPEG, PNG or GIF, up to 25 MB.</p>
+          </div>
+        </wa-card>
 
         <wa-card class="sect">
           <div slot="header" class="sect__head"><h3>Details</h3></div>
