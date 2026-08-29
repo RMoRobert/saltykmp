@@ -9,6 +9,7 @@ import com.enuvro.saltykmp.db.ShoppingListRepository
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.install
+import com.enuvro.saltykmp.util.newId
 import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -57,6 +58,27 @@ fun Route.shoppingListRoutes() {
                 when (val r = ShoppingListRepository.save(call.userId(), call.receive<ServerShoppingList>())) {
                     is ShoppingListRepository.SaveResult.Saved -> call.respond(HttpStatusCode.Created, r.list)
                     is ShoppingListRepository.SaveResult.Conflict -> call.respond(HttpStatusCode.Conflict, r.current)
+                }
+            }
+            /**
+             * Conflict resolution for clients without a local snapshot (the web editor).
+             * Merges the caller's base + edit against the stored row using the same shared
+             * ShoppingListMerge the native clients run, then saves the result.
+             */
+            post("/{id}/resolve") {
+                val id = call.parameters["id"]!!
+                val body = call.receive<ResolveRequest>()
+                val result = ShoppingListResolver.resolve(
+                    userId = call.userId(),
+                    id = id,
+                    request = body,
+                    newId = { newId() },
+                )
+                when (result) {
+                    is ShoppingListResolver.Result.Resolved -> call.respond(result.response)
+                    is ShoppingListResolver.Result.NotFound -> call.respond(HttpStatusCode.NotFound)
+                    is ShoppingListResolver.Result.Raced ->
+                        call.respond(HttpStatusCode.Conflict, result.current)
                 }
             }
             put("/{id}") {
