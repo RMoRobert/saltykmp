@@ -143,6 +143,9 @@ function saltyEditor() {
     ingredients: [],
     directions: [],
     selectedId: null,
+    username: SALTY.username || "",
+    railOpen: true,
+    theme: localStorage.getItem("salty.theme") || "default",
     // Read is the default, matching the Swift and CMP apps: Edit is an action you take, not a tab.
     mode: "read",
     pane: "list",          // compact-screen pane: rail | list | detail
@@ -186,6 +189,7 @@ function saltyEditor() {
       // matchMedia rather than a resize listener seeded from innerWidth: the window can still be
       // settling when Alpine initialises (a pane that opens narrow and widens, a restored window),
       // and a stale mdUp silently skipped the auto-open below.
+      if (this.theme !== "default") this.setTheme(this.theme);
       const wide = window.matchMedia("(min-width: 900px)");
       this.mdUp = wide.matches;
       wide.addEventListener("change", e => { this.mdUp = e.matches; });
@@ -214,6 +218,17 @@ function saltyEditor() {
       } catch (e) {
         this.notify(`Couldn't load library: ${e.message}`, "danger");
       }
+    },
+
+    /**
+     * Swaps Web Awesome's theme stylesheet. Three ship with it: default, awesome, shoelace.
+     * Kept in localStorage so a reload doesn't lose the choice.
+     */
+    setTheme(name) {
+      this.theme = name;
+      localStorage.setItem("salty.theme", name);
+      const link = document.getElementById("wa-theme");
+      if (link) link.href = link.href.replace(/themes\/[a-z]+\.css/, `themes/${name}.css`);
     },
 
     setFilter(kind, id, label) {

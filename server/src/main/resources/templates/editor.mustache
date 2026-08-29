@@ -10,7 +10,12 @@
          browser can't resolve, and every component silently fails to upgrade. Version pinned —
          a floating major would be a silent redesign. -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/webawesome.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/themes/default.css">
+    <!-- Swapped live by the theme picker in the account menu. Web Awesome ships three:
+         default, awesome, shoelace. -->
+    <link id="wa-theme" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/themes/default.css">
+    <!-- Web Awesome's own utility layer. utilities/fouce.css is their flash-of-undefined-elements
+         fix and prose.css is their long-form typography — both were things I had hand-rolled. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/utilities.css">
     <link rel="stylesheet" href="/static/app/editor.css">
 
     <script type="module"
@@ -34,34 +39,46 @@
 
 <!-- No x-init: Alpine calls init() on the x-data object automatically. Declaring both runs it
      twice and races two loadList() calls. -->
-<div id="app" class="app" x-data="saltyEditor()" x-cloak :data-pane="pane">
+<div id="app" class="app" x-data="saltyEditor()" x-cloak :data-pane="pane" :data-rail="railOpen ? 'true' : 'false'">
+
+  <!-- ═══════════════ app bar ═══════════════
+       The hamburger does one thing: show/hide the sidebar. Everything else lives either in the
+       sidebar or in the account menu on the right. -->
+  <header class="appbar">
+    <wa-button appearance="plain" size="small" @click="railOpen = !railOpen"
+               :title="railOpen ? 'Hide sidebar' : 'Show sidebar'">
+      <wa-icon name="bars" :label="railOpen ? 'Hide sidebar' : 'Show sidebar'"></wa-icon>
+    </wa-button>
+
+    <span class="appbar__brand"><span aria-hidden="true">&#127858;</span> <strong>Salty</strong></span>
+
+    <wa-dropdown class="appbar__account">
+      <wa-button slot="trigger" appearance="plain" size="small" title="Account">
+        <wa-icon name="circle-user" label="Account"></wa-icon>
+      </wa-button>
+      <wa-dropdown-item disabled>Signed in as <strong x-text="username"></strong></wa-dropdown-item>
+      <wa-divider></wa-divider>
+      <wa-dropdown-item>
+        Theme
+        <wa-dropdown-item slot="submenu" @click="setTheme('default')"
+                          :checked="theme === 'default'" type="checkbox">Default</wa-dropdown-item>
+        <wa-dropdown-item slot="submenu" @click="setTheme('awesome')"
+                          :checked="theme === 'awesome'" type="checkbox">Awesome</wa-dropdown-item>
+        <wa-dropdown-item slot="submenu" @click="setTheme('shoelace')"
+                          :checked="theme === 'shoelace'" type="checkbox">Shoelace</wa-dropdown-item>
+      </wa-dropdown-item>
+      <wa-dropdown-item type="link" href="/">
+        <wa-icon slot="icon" name="table-list"></wa-icon> Classic view
+      </wa-dropdown-item>
+      <wa-divider></wa-divider>
+      <wa-dropdown-item type="link" href="/logout">
+        <wa-icon slot="icon" name="right-from-bracket"></wa-icon> Log out
+      </wa-dropdown-item>
+    </wa-dropdown>
+  </header>
 
   <!-- ═══════════════════ pane 1 · library rail ═══════════════════ -->
   <aside class="rail">
-    <div class="rail__head">
-      <span aria-hidden="true">&#127858;</span>
-      <strong>Salty</strong>
-      <wa-dropdown>
-        <wa-button slot="trigger" size="small" appearance="plain" title="Menu">
-          <wa-icon name="bars" label="Menu"></wa-icon>
-        </wa-button>
-        <wa-dropdown-item @click="createRecipe()">
-          <wa-icon slot="icon" name="plus"></wa-icon> New recipe
-        </wa-dropdown-item>
-        <wa-divider></wa-divider>
-        <wa-dropdown-item type="link" href="/shoppingLists">
-          <wa-icon slot="icon" name="basket-shopping"></wa-icon> Shopping lists
-        </wa-dropdown-item>
-        <wa-dropdown-item type="link" href="/">
-          <wa-icon slot="icon" name="table-list"></wa-icon> Classic view
-        </wa-dropdown-item>
-        <wa-divider></wa-divider>
-        <wa-dropdown-item type="link" href="/logout">
-          <wa-icon slot="icon" name="right-from-bracket"></wa-icon> Log out
-        </wa-dropdown-item>
-      </wa-dropdown>
-    </div>
-
     <nav class="rail__nav" aria-label="Library">
       <button type="button" class="railitem" :class="{ 'railitem--on': filter.kind === 'all' }"
               @click="setFilter('all', null, 'All Recipes')">
@@ -87,13 +104,21 @@
           <p class="railgroup__empty" x-show="!group.items.length">None yet</p>
         </div>
       </template>
+
+      <div class="railgroup">
+        <div class="railgroup__head"><span>Shopping</span></div>
+        <a class="railitem railitem--sub" href="/shoppingLists">
+          <span>Shopping lists</span>
+          <wa-icon name="arrow-up-right-from-square" class="railitem__ext"></wa-icon>
+        </a>
+      </div>
     </nav>
   </aside>
 
   <!-- ═══════════════════ pane 2 · recipe list ═══════════════════ -->
   <section class="list">
     <header class="list__head">
-      <wa-button class="only-compact" size="small" appearance="plain" @click="pane = 'rail'">
+      <wa-button class="only-compact" size="small" appearance="plain" @click="railOpen = true; pane = 'rail'">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Library
       </wa-button>
       <h2 class="list__title" x-text="filter.label"></h2>
