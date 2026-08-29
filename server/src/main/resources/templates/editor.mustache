@@ -6,19 +6,17 @@
     <meta name="color-scheme" content="light dark">
     <title>Salty - {{pageTitle}}</title>
 
-    <!-- Web Awesome 3 (MIT). Note dist-cdn, not dist: the dist/ build has bare module specifiers
-         that a browser can't resolve without a bundler. Version pinned deliberately — a floating
-         major would be a silent redesign. Swapping to /static/vendor later is three URL edits. -->
+    <!-- Web Awesome 3 (MIT). Note dist-cdn, not dist: the dist/ build has bare module specifiers a
+         browser can't resolve, and every component silently fails to upgrade. Version pinned —
+         a floating major would be a silent redesign. -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/webawesome.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/themes/default.css">
     <link rel="stylesheet" href="/static/app/editor.css">
 
-    <!-- The autoloader watches the DOM and fetches each <wa-*> definition on first use, so there's
-         no hand-maintained import list. -->
     <script type="module"
             src="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/webawesome.loader.js"></script>
 
-    <!-- Alpine plugins must register before Alpine itself, hence the order. -->
+    <!-- Alpine plugins register before Alpine itself, hence the order. -->
     <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/sort@3.16.3/dist/cdn.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/focus@3.16.3/dist/cdn.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.16.3/dist/cdn.min.js"></script>
@@ -27,8 +25,6 @@
 <body>
 
 <script>
-  // Handed over from the session. Every state-changing API call echoes this in X-CSRF-Token;
-  // see ApiCsrfGuard on the server.
   window.SALTY = {
     csrfToken: "{{csrfToken}}",
     username: "{{username}}",
@@ -36,63 +32,122 @@
   };
 </script>
 
-<!-- No x-init here: Alpine automatically calls init() on the x-data object. Declaring both runs
-     it twice, which raced two loadList() calls against each other. -->
-<div id="app" class="app" x-data="saltyEditor()" x-cloak>
+<!-- No x-init: Alpine calls init() on the x-data object automatically. Declaring both runs it
+     twice and races two loadList() calls. -->
+<div id="app" class="app" x-data="saltyEditor()" x-cloak :data-pane="pane">
 
-  <!-- ───────────────────────── sidebar ───────────────────────── -->
-  <aside class="sidebar" :hidden="!mdUp && current">
-    <div class="sidebar__head">
-      <div class="brand">
-        <span aria-hidden="true">&#127858;</span>
-        <strong>Salty</strong>
-        <wa-button size="small" appearance="filled" @click="createRecipe()" title="New recipe">
-          <wa-icon slot="start" name="plus" label="New recipe"></wa-icon>
-          New
+  <!-- ═══════════════════ pane 1 · library rail ═══════════════════ -->
+  <aside class="rail">
+    <div class="rail__head">
+      <span aria-hidden="true">&#127858;</span>
+      <strong>Salty</strong>
+      <wa-dropdown>
+        <wa-button slot="trigger" size="small" appearance="plain" title="Menu">
+          <wa-icon name="bars" label="Menu"></wa-icon>
         </wa-button>
-      </div>
+        <wa-dropdown-item @click="createRecipe()">
+          <wa-icon slot="icon" name="plus"></wa-icon> New recipe
+        </wa-dropdown-item>
+        <wa-divider></wa-divider>
+        <wa-dropdown-item type="link" href="/shoppingLists">
+          <wa-icon slot="icon" name="basket-shopping"></wa-icon> Shopping lists
+        </wa-dropdown-item>
+        <wa-dropdown-item type="link" href="/">
+          <wa-icon slot="icon" name="table-list"></wa-icon> Classic view
+        </wa-dropdown-item>
+        <wa-divider></wa-divider>
+        <wa-dropdown-item type="link" href="/logout">
+          <wa-icon slot="icon" name="right-from-bracket"></wa-icon> Log out
+        </wa-dropdown-item>
+      </wa-dropdown>
+    </div>
+
+    <nav class="rail__nav" aria-label="Library">
+      <button type="button" class="railitem" :class="{ 'railitem--on': filter.kind === 'all' }"
+              @click="setFilter('all', null, 'All Recipes')">
+        <wa-icon name="book-open"></wa-icon>
+        <span>All Recipes</span>
+        <span class="railitem__count" x-text="list.length"></span>
+      </button>
+
+      <template x-for="group in libraryGroups" :key="group.kind">
+        <div class="railgroup">
+          <div class="railgroup__head">
+            <span x-text="group.label"></span>
+            <span class="railgroup__count" x-text="group.items.length"></span>
+          </div>
+          <template x-for="item in group.items" :key="item.id">
+            <button type="button" class="railitem railitem--sub"
+                    :class="{ 'railitem--on': filter.kind === group.kind && filter.id === item.id }"
+                    @click="setFilter(group.kind, item.id, item.name)">
+              <span x-text="item.name || 'Untitled'"></span>
+              <span class="railitem__count" x-text="countFor(group.kind, item.id)"></span>
+            </button>
+          </template>
+          <p class="railgroup__empty" x-show="!group.items.length">None yet</p>
+        </div>
+      </template>
+    </nav>
+  </aside>
+
+  <!-- ═══════════════════ pane 2 · recipe list ═══════════════════ -->
+  <section class="list">
+    <header class="list__head">
+      <wa-button class="only-compact" size="small" appearance="plain" @click="pane = 'rail'">
+        <wa-icon slot="start" name="chevron-left"></wa-icon> Library
+      </wa-button>
+      <h2 class="list__title" x-text="filter.label"></h2>
+      <wa-button size="small" appearance="filled" @click="createRecipe()" title="New recipe">
+        <wa-icon name="plus" label="New recipe"></wa-icon>
+      </wa-button>
+    </header>
+
+    <div class="list__search">
       <wa-input size="small" placeholder="Search recipes" x-model="query" with-clear>
         <wa-icon slot="start" name="magnifying-glass"></wa-icon>
       </wa-input>
     </div>
 
-    <div class="sidebar__list" role="navigation" aria-label="Recipes">
+    <div class="list__scroll">
       <wa-spinner x-show="listLoading" class="centered"></wa-spinner>
-
-      <wa-callout variant="danger" size="small" x-show="loadError" x-transition class="m-2">
+      <wa-callout variant="danger" size="small" x-show="loadError" class="m-2">
         <span x-text="loadError"></span>
       </wa-callout>
 
-      <template x-for="r in filtered" :key="r.id">
-        <button type="button" class="rrow" :class="{ 'rrow--active': r.id === selectedId }"
+      <template x-for="r in visibleRecipes" :key="r.id">
+        <button type="button" class="rrow" :class="{ 'rrow--on': r.id === selectedId }"
                 @click="open(r.id)" :aria-current="r.id === selectedId">
           <span class="rrow__name" x-text="r.name || 'Untitled'"></span>
-          <span class="rrow__meta" x-text="relativeDate(r.lastModifiedDate)"></span>
+          <span class="rrow__meta" x-text="rowMeta(r)"></span>
         </button>
       </template>
 
-      <p class="empty" x-show="!listLoading && !filtered.length"
-         x-text="query ? 'No matches' : 'No recipes yet'"></p>
+      <p class="empty" x-show="!listLoading && !visibleRecipes.length"
+         x-text="query ? 'No matches' : 'Nothing here yet'"></p>
     </div>
-  </aside>
+  </section>
 
-  <!-- ───────────────────────── main ───────────────────────── -->
-  <main class="main" :hidden="!mdUp && !current">
-    <header class="topbar">
-      <wa-button size="small" appearance="plain" class="backbtn" @click="closeRecipe()" x-show="!mdUp">
+  <!-- ═══════════════════ pane 3 · recipe ═══════════════════ -->
+  <main class="detail">
+    <header class="detail__bar">
+      <wa-button class="only-compact" size="small" appearance="plain" @click="backToList()">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Recipes
       </wa-button>
 
-      <h1 class="topbar__title" x-text="current ? (current.name || 'Untitled') : 'Salty'"></h1>
+      <h1 class="detail__title" x-text="current ? (current.name || 'Untitled') : ''"></h1>
 
       <template x-if="current">
-        <div class="topbar__actions">
-          <wa-button-group label="View mode">
-            <wa-button size="small" :appearance="mode === 'read' ? 'filled' : 'outlined'"
-                       @click="mode = 'read'">Read</wa-button>
-            <wa-button size="small" :appearance="mode === 'edit' ? 'filled' : 'outlined'"
-                       @click="mode = 'edit'">Edit</wa-button>
-          </wa-button-group>
+        <div class="detail__actions">
+          <!-- Read is the default; Edit is an action, matching the Swift and CMP apps. -->
+          <template x-if="mode === 'read'">
+            <wa-button size="small" appearance="outlined" @click="mode = 'edit'">
+              <wa-icon slot="start" name="pen"></wa-icon> Edit
+            </wa-button>
+          </template>
+          <template x-if="mode === 'edit'">
+            <wa-button size="small" appearance="accent" variant="brand"
+                       :loading="saving" @click="saveAndClose()">Done</wa-button>
+          </template>
 
           <wa-dropdown>
             <wa-button slot="trigger" size="small" appearance="plain" title="More actions">
@@ -113,169 +168,224 @@
     <div class="doc">
       <wa-spinner x-show="loadingRecipe" class="centered"></wa-spinner>
 
-      <div class="empty-state" x-show="!current && !listLoading && !loadingRecipe">
-        <p>No recipe selected.</p>
-        <wa-button appearance="outlined" @click="createRecipe()">
-          <wa-icon slot="start" name="plus"></wa-icon> New recipe
-        </wa-button>
+      <div class="empty-state" x-show="!current && !loadingRecipe">
+        <wa-icon name="book-open" class="empty-state__icon"></wa-icon>
+        <p>Select a recipe.</p>
       </div>
 
       <template x-if="current">
-        <div class="doc__inner">
+        <article class="doc__inner">
 
-          <wa-input class="titlefield" x-model="current.name" @input="touch()"
-                    aria-label="Recipe name" size="large"></wa-input>
-          <p class="subline">
-            Modified <strong x-text="relativeDate(current.lastModifiedDate)"></strong>
-            <template x-if="current.yield">
-              <span> · Yield <strong x-text="current.yield"></strong></span>
-            </template>
-          </p>
+          <!-- ─────────── READ ─────────── -->
+          <template x-if="mode === 'read'">
+            <div class="read">
+              <h2 class="read__title" x-text="current.name || 'Untitled'"></h2>
 
-          <!-- ── ingredients ── -->
-          <wa-card class="sect">
-            <div slot="header" class="sect__head">
-              <h2>Ingredients</h2>
-              <wa-badge variant="neutral" x-text="ingCount + ' items'"></wa-badge>
-              <div class="scaler">
-                <span class="scaler__label">Scale</span>
-                <wa-button size="small" appearance="outlined" @click="bumpScale(-1)" title="Decrease scale">
-                  <wa-icon name="minus" label="Decrease scale"></wa-icon>
-                </wa-button>
-                <output x-text="scaleLabel"></output>
-                <wa-button size="small" appearance="outlined" @click="bumpScale(1)" title="Increase scale">
-                  <wa-icon name="plus" label="Increase scale"></wa-icon>
-                </wa-button>
+              <p class="read__meta">
+                <template x-if="courseName(current.courseId)">
+                  <span><span x-text="courseName(current.courseId)"></span> · </span>
+                </template>
+                <template x-if="current.yield"><span x-text="current.yield"></span></template>
+                <template x-if="current.servings">
+                  <span> · Serves <span x-text="current.servings"></span></span>
+                </template>
+                <template x-if="current.rating">
+                  <span> · <span class="stars" x-text="'★'.repeat(current.rating)"></span></span>
+                </template>
+              </p>
+
+              <template x-if="current.introduction">
+                <p class="read__intro" x-text="current.introduction"></p>
+              </template>
+
+              <div class="read__chips" x-show="chipsFor(current).length">
+                <template x-for="c in chipsFor(current)" :key="c">
+                  <wa-tag size="small" appearance="outlined" x-text="c"></wa-tag>
+                </template>
               </div>
-            </div>
 
-            <ul class="rows" x-sort="(item, pos) => reorder('ingredients', item, pos)" x-sort:config="{ handle: '.grip' }">
-              <template x-for="(row, i) in ingredients" :key="row.id">
-                <li class="row" :class="{ 'row--heading': row.isHeading, 'row--main': row.isMain }"
-                    x-sort:item="row.id">
-                  <span class="grip" x-show="mode === 'edit'" title="Drag to reorder" aria-hidden="true">
-                    <wa-icon name="grip-vertical"></wa-icon>
+              <section class="read__sect" x-show="ingredients.length">
+                <div class="read__secthead">
+                  <h3>Ingredients</h3>
+                  <div class="scaler">
+                    <wa-button size="small" appearance="plain" @click="bumpScale(-1)" title="Halve">
+                      <wa-icon name="minus" label="Decrease scale"></wa-icon>
+                    </wa-button>
+                    <output x-text="scaleLabel"></output>
+                    <wa-button size="small" appearance="plain" @click="bumpScale(1)" title="Double">
+                      <wa-icon name="plus" label="Increase scale"></wa-icon>
+                    </wa-button>
+                  </div>
+                </div>
+                <ul class="read__list">
+                  <template x-for="row in ingredients" :key="row.id">
+                    <li :class="{ 'is-heading': row.isHeading, 'is-main': row.isMain }">
+                      <span x-show="row.isHeading" x-text="row.text"></span>
+                      <span x-show="!row.isHeading" x-html="scaledHTML(row.text)"></span>
+                    </li>
+                  </template>
+                </ul>
+              </section>
+
+              <section class="read__sect" x-show="directions.length">
+                <h3>Directions</h3>
+                <!-- A <ul> with explicit numbers, not an <ol>: section headings are list items
+                     too, and an <ol> counts them, so every heading shifted the numbering. -->
+                <ul class="read__steps">
+                  <template x-for="(row, i) in directions" :key="row.id">
+                    <li :class="{ 'is-heading': row.isHeading }">
+                      <span class="stepno" x-show="!row.isHeading" x-text="stepNumber(i) + '.'"></span>
+                      <span x-text="row.text"></span>
+                    </li>
+                  </template>
+                </ul>
+              </section>
+
+              <p class="read__footer">
+                <template x-if="current.source">
+                  <span>Source: <strong x-text="current.source"></strong>
+                    <template x-if="current.sourceDetails">
+                      <span> — <span x-text="current.sourceDetails"></span></span>
+                    </template>
                   </span>
-                  <span class="row__lead" x-text="row.isHeading ? '' : '•'"></span>
+                </template>
+                <template x-if="current.lastPrepared">
+                  <span class="read__made">Last made <span x-text="relativeDate(current.lastPrepared)"></span></span>
+                </template>
+              </p>
+            </div>
+          </template>
 
-                  <div class="row__read" x-show="mode === 'read'">
-                    <span x-show="row.isHeading" x-text="row.text"></span>
-                    <span x-show="!row.isHeading" x-html="scaledHTML(row.text)"></span>
+          <!-- ─────────── EDIT ─────────── -->
+          <template x-if="mode === 'edit'">
+            <div class="edit">
+              <wa-input class="titlefield" x-model="current.name" @input="touch()"
+                        aria-label="Recipe name" size="large"></wa-input>
+
+              <wa-card class="sect">
+                <div slot="header" class="sect__head">
+                  <h3>Ingredients</h3>
+                  <wa-badge variant="neutral" x-text="ingCount + ' items'"></wa-badge>
+                </div>
+                <ul class="rows" x-sort="(item, pos) => reorder('ingredients', item, pos)"
+                    x-sort:config="{ handle: '.grip' }">
+                  <template x-for="(row, i) in ingredients" :key="row.id">
+                    <li class="row" :class="{ 'row--heading': row.isHeading, 'row--main': row.isMain }"
+                        x-sort:item="row.id">
+                      <span class="grip" title="Drag to reorder" aria-hidden="true">
+                        <wa-icon name="grip-vertical"></wa-icon>
+                      </span>
+                      <span class="row__lead" x-text="row.isHeading ? '' : '•'"></span>
+                      <wa-textarea class="row__edit" x-model="row.text" @input="touch()"
+                                   resize="auto" rows="1"
+                                   :aria-label="(row.isHeading ? 'Heading ' : 'Ingredient ') + (i + 1)"></wa-textarea>
+                      <span class="row__tools">
+                        <wa-button size="small" appearance="plain" x-show="!row.isHeading"
+                                   @click="row.isMain = !row.isMain; touch()"
+                                   :title="row.isMain ? 'Main ingredient' : 'Mark as main ingredient'">
+                          <wa-icon name="star" :variant="row.isMain ? 'solid' : 'regular'"
+                                   label="Mark as main ingredient"></wa-icon>
+                        </wa-button>
+                        <wa-button size="small" appearance="plain" @click="removeRow('ingredients', i)" title="Delete">
+                          <wa-icon name="xmark" label="Delete row"></wa-icon>
+                        </wa-button>
+                      </span>
+                    </li>
+                  </template>
+                </ul>
+                <div slot="footer" class="sect__foot">
+                  <wa-button size="small" appearance="filled" @click="addRow('ingredients', false)">
+                    <wa-icon slot="start" name="plus"></wa-icon> Ingredient
+                  </wa-button>
+                  <wa-button size="small" appearance="plain" @click="addRow('ingredients', true)">
+                    <wa-icon slot="start" name="heading"></wa-icon> Section heading
+                  </wa-button>
+                </div>
+              </wa-card>
+
+              <wa-card class="sect">
+                <div slot="header" class="sect__head">
+                  <h3>Directions</h3>
+                  <wa-badge variant="neutral" x-text="dirCount + ' steps'"></wa-badge>
+                </div>
+                <ul class="rows" x-sort="(item, pos) => reorder('directions', item, pos)"
+                    x-sort:config="{ handle: '.grip' }">
+                  <template x-for="(row, i) in directions" :key="row.id">
+                    <li class="row" :class="{ 'row--heading': row.isHeading }" x-sort:item="row.id">
+                      <span class="grip" title="Drag to reorder" aria-hidden="true">
+                        <wa-icon name="grip-vertical"></wa-icon>
+                      </span>
+                      <span class="row__lead" x-text="row.isHeading ? '' : stepNumber(i) + '.'"></span>
+                      <wa-textarea class="row__edit" x-model="row.text" @input="touch()"
+                                   resize="auto" rows="1"
+                                   :aria-label="(row.isHeading ? 'Heading ' : 'Step ') + (i + 1)"></wa-textarea>
+                      <span class="row__tools">
+                        <wa-button size="small" appearance="plain" @click="removeRow('directions', i)" title="Delete">
+                          <wa-icon name="xmark" label="Delete row"></wa-icon>
+                        </wa-button>
+                      </span>
+                    </li>
+                  </template>
+                </ul>
+                <div slot="footer" class="sect__foot">
+                  <wa-button size="small" appearance="filled" @click="addRow('directions', false)">
+                    <wa-icon slot="start" name="plus"></wa-icon> Step
+                  </wa-button>
+                  <wa-button size="small" appearance="plain" @click="addRow('directions', true)">
+                    <wa-icon slot="start" name="heading"></wa-icon> Section heading
+                  </wa-button>
+                </div>
+              </wa-card>
+
+              <wa-card class="sect">
+                <div slot="header" class="sect__head"><h3>Details</h3></div>
+                <div class="grid">
+                  <wa-input label="Yield" with-label x-model="current.yield" @input="touch()"></wa-input>
+                  <wa-input label="Servings" with-label type="number"
+                            x-model.number="current.servings" @input="touch()"></wa-input>
+                  <wa-select label="Course" with-label x-model="current.courseId" @change="touch()">
+                    <wa-option value="">None</wa-option>
+                    <template x-for="c in courses" :key="c.id">
+                      <wa-option :value="c.id" x-text="c.name"></wa-option>
+                    </template>
+                  </wa-select>
+                  <wa-select label="Difficulty" with-label x-model.number="current.difficulty" @change="touch()">
+                    <wa-option value="0">Not set</wa-option>
+                    <wa-option value="1">Easy</wa-option>
+                    <wa-option value="2">Moderate</wa-option>
+                    <wa-option value="3">Hard</wa-option>
+                  </wa-select>
+
+                  <div class="field">
+                    <label class="field__label">Rating</label>
+                    <!-- width:max-content in CSS: wa-rating is role=slider and maps click position
+                         across its element width, so a stretched box makes the last star unhittable. -->
+                    <wa-rating class="rating" label="Rating" :value="current.rating || 0"
+                               @change="current.rating = Number($event.target.value); touch()"></wa-rating>
                   </div>
 
-                  <wa-textarea x-show="mode === 'edit'" class="row__edit" x-model="row.text"
-                               @input="touch()" resize="auto" rows="1"
-                               :aria-label="(row.isHeading ? 'Heading ' : 'Ingredient ') + (i + 1)"></wa-textarea>
+                  <div class="field">
+                    <label class="field__label" for="lastPrepared">Last made on</label>
+                    <input class="native-date" type="date" id="lastPrepared"
+                           :value="dateOnly(current.lastPrepared)"
+                           @change="setLastPrepared($event.target.value)">
+                  </div>
 
-                  <span class="row__tools" x-show="mode === 'edit'">
-                    <wa-button size="small" appearance="plain" x-show="!row.isHeading"
-                               @click="row.isMain = !row.isMain; touch()"
-                               :title="row.isMain ? 'Main ingredient' : 'Mark as main ingredient'">
-                      <wa-icon :name="row.isMain ? 'star' : 'star'"
-                               :variant="row.isMain ? 'solid' : 'regular'"
-                               label="Mark as main ingredient"></wa-icon>
-                    </wa-button>
-                    <wa-button size="small" appearance="plain" @click="removeRow('ingredients', i)" title="Delete">
-                      <wa-icon name="xmark" label="Delete row"></wa-icon>
-                    </wa-button>
-                  </span>
-                </li>
-              </template>
-            </ul>
+                  <wa-input label="Source" with-label x-model="current.source" @input="touch()"></wa-input>
+                  <wa-input label="Source details" with-label x-model="current.sourceDetails" @input="touch()"></wa-input>
+                </div>
 
-            <div slot="footer" class="sect__foot" x-show="mode === 'edit'">
-              <wa-button size="small" appearance="filled" @click="addRow('ingredients', false)">
-                <wa-icon slot="start" name="plus"></wa-icon> Ingredient
-              </wa-button>
-              <wa-button size="small" appearance="plain" @click="addRow('ingredients', true)">
-                <wa-icon slot="start" name="heading"></wa-icon> Section heading
-              </wa-button>
+                <wa-textarea class="intro" label="Introduction" with-label resize="auto" rows="2"
+                             x-model="current.introduction" @input="touch()"></wa-textarea>
+              </wa-card>
             </div>
-          </wa-card>
+          </template>
 
-          <!-- ── directions ── -->
-          <wa-card class="sect">
-            <div slot="header" class="sect__head">
-              <h2>Directions</h2>
-              <wa-badge variant="neutral" x-text="dirCount + ' steps'"></wa-badge>
-            </div>
-
-            <ul class="rows" x-sort="(item, pos) => reorder('directions', item, pos)" x-sort:config="{ handle: '.grip' }">
-              <template x-for="(row, i) in directions" :key="row.id">
-                <li class="row" :class="{ 'row--heading': row.isHeading }" x-sort:item="row.id">
-                  <span class="grip" x-show="mode === 'edit'" title="Drag to reorder" aria-hidden="true">
-                    <wa-icon name="grip-vertical"></wa-icon>
-                  </span>
-                  <span class="row__lead" x-text="row.isHeading ? '' : stepNumber(i) + '.'"></span>
-
-                  <div class="row__read" x-show="mode === 'read'" x-text="row.text"></div>
-
-                  <wa-textarea x-show="mode === 'edit'" class="row__edit" x-model="row.text"
-                               @input="touch()" resize="auto" rows="1"
-                               :aria-label="(row.isHeading ? 'Heading ' : 'Step ') + (i + 1)"></wa-textarea>
-
-                  <span class="row__tools" x-show="mode === 'edit'">
-                    <wa-button size="small" appearance="plain" @click="removeRow('directions', i)" title="Delete">
-                      <wa-icon name="xmark" label="Delete row"></wa-icon>
-                    </wa-button>
-                  </span>
-                </li>
-              </template>
-            </ul>
-
-            <div slot="footer" class="sect__foot" x-show="mode === 'edit'">
-              <wa-button size="small" appearance="filled" @click="addRow('directions', false)">
-                <wa-icon slot="start" name="plus"></wa-icon> Step
-              </wa-button>
-              <wa-button size="small" appearance="plain" @click="addRow('directions', true)">
-                <wa-icon slot="start" name="heading"></wa-icon> Section heading
-              </wa-button>
-            </div>
-          </wa-card>
-
-          <!-- ── details ── -->
-          <wa-card class="sect">
-            <div slot="header" class="sect__head"><h2>Details</h2></div>
-
-            <div class="grid">
-              <wa-input label="Yield" x-model="current.yield" @input="touch()"></wa-input>
-              <wa-input label="Servings" type="number" x-model.number="current.servings" @input="touch()"></wa-input>
-
-              <wa-select label="Difficulty" x-model.number="current.difficulty" @change="touch()">
-                <wa-option value="0">Not set</wa-option>
-                <wa-option value="1">Easy</wa-option>
-                <wa-option value="2">Moderate</wa-option>
-                <wa-option value="3">Hard</wa-option>
-              </wa-select>
-
-              <div class="field">
-                <label class="field__label" for="rating">Rating</label>
-                <wa-rating id="rating" :value="current.rating || 0"
-                           @change="current.rating = $event.target.value; touch()"></wa-rating>
-              </div>
-
-              <!-- Native date input on purpose: one field, and the platform picker beats any
-                   library component. Web Awesome's date picker is Pro and unreleased anyway. -->
-              <div class="field">
-                <label class="field__label" for="lastPrepared">Last made on</label>
-                <input class="native-date" type="date" id="lastPrepared"
-                       :value="dateOnly(current.lastPrepared)"
-                       @change="setLastPrepared($event.target.value)">
-              </div>
-
-              <wa-input label="Source" x-model="current.source" @input="touch()"></wa-input>
-              <wa-input label="Source details" x-model="current.sourceDetails" @input="touch()"></wa-input>
-            </div>
-
-            <wa-textarea class="intro" label="Introduction" resize="auto" rows="2"
-                         x-model="current.introduction" @input="touch()"></wa-textarea>
-          </wa-card>
-
-        </div>
+        </article>
       </template>
     </div>
 
-    <footer class="savebar" x-show="current">
+    <footer class="savebar" x-show="current && mode === 'edit'">
       <span class="savebar__status" :class="{ 'is-dirty': dirty }"
             x-text="dirty ? 'Unsaved changes' : 'All changes saved'"></span>
       <wa-button size="small" appearance="plain" :disabled="!dirty" @click="revert()">Revert</wa-button>
@@ -284,7 +394,6 @@
     </footer>
   </main>
 
-  <!-- ───────────────────────── dialogs ───────────────────────── -->
   <wa-dialog label="Delete recipe" :open="confirmDelete" @wa-hide="confirmDelete = false">
     <p>Delete “<strong x-text="current ? current.name : ''"></strong>”? This removes it from every
        synced device and can't be undone.</p>
@@ -294,7 +403,7 @@
 
   <div class="toasts" aria-live="polite">
     <template x-for="t in toasts" :key="t.id">
-      <wa-callout :variant="t.variant" x-transition class="toast">
+      <wa-callout :variant="t.variant" class="toast">
         <wa-icon slot="icon" :name="t.variant === 'danger' ? 'circle-exclamation' : 'circle-check'"></wa-icon>
         <span x-text="t.text"></span>
       </wa-callout>

@@ -143,7 +143,13 @@ function saltyEditor() {
     ingredients: [],
     directions: [],
     selectedId: null,
-    mode: "edit",
+    // Read is the default, matching the Swift and CMP apps: Edit is an action you take, not a tab.
+    mode: "read",
+    pane: "list",          // compact-screen pane: rail | list | detail
+    courses: [],
+    categories: [],
+    tags: [],
+    filter: { kind: "all", id: null, label: "All Recipes" },
     scaleIdx: 1,
     dirty: false,
     saving: false,
@@ -156,10 +162,24 @@ function saltyEditor() {
     get scaleLabel() { return `${SCALES[this.scaleIdx]}×`; },
     get ingCount() { return this.ingredients.filter(r => !r.isHeading).length; },
     get dirCount() { return this.directions.filter(r => !r.isHeading).length; },
-    get filtered() {
+    get libraryGroups() {
+      return [
+        { kind: "course", label: "Courses", items: this.courses },
+        { kind: "category", label: "Categories", items: this.categories },
+        { kind: "tag", label: "Tags", items: this.tags },
+      ];
+    },
+
+    /** The middle pane: library filter first, then the search box on top of it. */
+    get visibleRecipes() {
+      let rows = this.list;
+      const f = this.filter;
+      if (f.kind === "course") rows = rows.filter(r => r.courseId === f.id);
+      else if (f.kind === "category") rows = rows.filter(r => (r.categoryIds || []).includes(f.id));
+      else if (f.kind === "tag") rows = rows.filter(r => (r.tagIds || []).includes(f.id));
       const q = this.query.trim().toLowerCase();
-      if (!q) return this.list;
-      return this.list.filter(r => (r.name || "").toLowerCase().includes(q));
+      if (q) rows = rows.filter(r => (r.name || "").toLowerCase().includes(q));
+      return rows;
     },
 
     async init() {
@@ -172,7 +192,70 @@ function saltyEditor() {
       window.addEventListener("beforeunload", e => {
         if (this.dirty) { e.preventDefault(); e.returnValue = ""; }
       });
-      await this.loadList();
+      await Promise.all([this.loadList(), this.loadLibrary()]);
+    },
+
+    /**
+     * Courses, categories and tags drive the rail. Loaded once alongside the recipe list; counts
+     * are computed client-side from ids the list endpoint already returns, so filtering costs no
+     * extra requests.
+     */
+    async loadLibrary() {
+      try {
+        const [courses, categories, tags] = await Promise.all([
+          api("GET", "/api/courses"),
+          api("GET", "/api/categories"),
+          api("GET", "/api/tags"),
+        ]);
+        const byName = (a, b) => String(a.name || "").localeCompare(String(b.name || ""));
+        this.courses = (courses || []).sort(byName);
+        this.categories = (categories || []).sort(byName);
+        this.tags = (tags || []).sort(byName);
+      } catch (e) {
+        this.notify(`Couldn't load library: ${e.message}`, "danger");
+      }
+    },
+
+    setFilter(kind, id, label) {
+      this.filter = { kind, id, label: label || "All Recipes" };
+      this.pane = "list";
+    },
+
+    countFor(kind, id) {
+      if (kind === "course") return this.list.filter(r => r.courseId === id).length;
+      if (kind === "category") return this.list.filter(r => (r.categoryIds || []).includes(id)).length;
+      return this.list.filter(r => (r.tagIds || []).includes(id)).length;
+    },
+
+    courseName(id) { return id ? (this.courses.find(c => c.id === id) || {}).name || "" : ""; },
+
+    /** Category and tag names for the read view's chip row. */
+    chipsFor(recipe) {
+      const cats = (recipe.categoryIds || [])
+        .map(id => (this.categories.find(c => c.id === id) || {}).name).filter(Boolean);
+      const tags = (recipe.tagIds || [])
+        .map(id => (this.tags.find(t => t.id === id) || {}).name).filter(Boolean);
+      return [...cats, ...tags];
+    },
+
+    rowMeta(r) {
+      const bits = [];
+      const course = this.courseName(r.courseId);
+      if (course) bits.push(course);
+      bits.push(this.relativeDate(r.lastModifiedDate));
+      return bits.filter(Boolean).join(" · ");
+    },
+
+    backToList() {
+      if (this.mode === "edit" && this.dirty && !window.confirm("Discard unsaved changes?")) return;
+      this.pane = "list";
+      this.mode = "read";
+    },
+
+    /** The Done button: save if there's anything to save, then drop back to reading. */
+    async saveAndClose() {
+      if (this.dirty) await this.save();
+      if (!this.dirty) this.mode = "read";
     },
 
     /* --- presentation --- */
@@ -286,6 +369,8 @@ function saltyEditor() {
           id: x.id || uuidv7(), text: x.text || "", isHeading: !!x.isHeading, isMain: false,
         }));
         this.dirty = false;
+        this.mode = "read";
+        this.pane = "detail";
       } catch (e) {
         this.notify(`Couldn't open recipe: ${e.message}`, "danger");
       } finally {
@@ -358,6 +443,7 @@ function saltyEditor() {
         });
         this.list.unshift(saved);
         await this.open(saved.id);
+        this.mode = "edit";   // a blank recipe has nothing to read
         this.notify("Recipe created");
       } catch (e) {
         this.notify(`Couldn't create recipe: ${e.message}`, "danger");
