@@ -84,42 +84,51 @@
   </header>
 
   <!-- ═══════════════ navigation · the library ═══════════════
-       Slotted into wa-page's navigation area, so below 768px it becomes a drawer for free. -->
+       A wa-tree, not hand-rolled buttons: the sidebar really is a disclosure outline (sections
+       expand and collapse), so role="tree" is accurate, and single-selection, keyboard navigation
+       and the expand/collapse chevrons all come from the component. -->
   <nav slot="navigation" class="rail" aria-label="Library">
-    <div class="rail__nav">
-      <button type="button" class="railitem" :class="{ 'railitem--on': filter.kind === 'all' }"
-              @click="setFilter('all', null, 'All Recipes')">
-        <wa-icon name="book-open"></wa-icon>
-        <span>All Recipes</span>
-        <span class="railitem__count" x-text="list.length"></span>
-      </button>
+    <p class="rail__heading">Library</p>
+
+    <wa-tree selection="single" class="railtree" @wa-selection-change="onTreeSelect($event)">
+      <wa-tree-item data-kind="all" :selected="filter.kind === 'all'">
+        <wa-icon name="book-open" class="railicon"></wa-icon> All Recipes
+        <span class="railcount" x-text="list.length"></span>
+      </wa-tree-item>
+
+      <wa-tree-item data-kind="favorites" :selected="filter.kind === 'favorites'">
+        <wa-icon name="heart" class="railicon"></wa-icon> Favorites
+        <span class="railcount" x-text="favoriteCount"></span>
+      </wa-tree-item>
+
+      <wa-tree-item data-kind="wantToMake" :selected="filter.kind === 'wantToMake'">
+        <wa-icon name="bookmark" class="railicon"></wa-icon> Want to Make
+        <span class="railcount" x-text="wantToMakeCount"></span>
+      </wa-tree-item>
 
       <template x-for="group in libraryGroups" :key="group.kind">
-        <div class="railgroup">
-          <div class="railgroup__head">
-            <span x-text="group.label"></span>
-            <span class="railgroup__count" x-text="group.items.length"></span>
-          </div>
+        <wa-tree-item :expanded="group.kind === 'category'" data-group>
+          <span x-text="group.label"></span>
+          <span class="railcount" x-text="group.items.length"></span>
+
           <template x-for="item in group.items" :key="item.id">
-            <button type="button" class="railitem railitem--sub"
-                    :class="{ 'railitem--on': filter.kind === group.kind && filter.id === item.id }"
-                    @click="setFilter(group.kind, item.id, item.name)">
+            <wa-tree-item :data-kind="group.kind" :data-id="item.id"
+                          :selected="filter.kind === group.kind && filter.id === item.id">
+              <wa-icon :name="group.icon" class="railicon"></wa-icon>
               <span x-text="item.name || 'Untitled'"></span>
-              <span class="railitem__count" x-text="countFor(group.kind, item.id)"></span>
-            </button>
+              <span class="railcount" x-text="countFor(group.kind, item.id)"></span>
+            </wa-tree-item>
           </template>
-          <p class="railgroup__empty" x-show="!group.items.length">None yet</p>
-        </div>
+        </wa-tree-item>
       </template>
 
-      <div class="railgroup">
-        <div class="railgroup__head"><span>Shopping</span></div>
-        <a class="railitem railitem--sub" href="/shoppingLists">
-          <span>Shopping lists</span>
-          <wa-icon name="arrow-up-right-from-square" class="railitem__ext"></wa-icon>
-        </a>
-      </div>
-    </div>
+      <wa-tree-item data-group>
+        <span>Shopping Lists</span>
+        <wa-tree-item data-href="/shoppingLists">
+          <wa-icon name="cart-shopping" class="railicon"></wa-icon> All Lists
+        </wa-tree-item>
+      </wa-tree-item>
+    </wa-tree>
   </nav>
 
   <!-- ═══════════════ main · recipe list + recipe ═══════════════ -->

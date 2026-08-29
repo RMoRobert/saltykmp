@@ -265,22 +265,46 @@ class EditorUiTest {
         page.close()
     }
 
-    /** Selecting a library entry filters the middle pane without a page load. */
+    /**
+     * Selecting a library entry filters the middle pane without a page load.
+     *
+     * Clicks are real, not dispatched: wa-tree drives selection from trusted pointer input, and
+     * synthetic events do not move it. That is exactly why this test earns its keep.
+     */
     @Test
     fun librarySelectionFiltersTheRecipeList() {
         val b = browserOrNull() ?: return
         val page = editorPage(b)
         assertThat(page.locator(".rrow")).hasCount(1)
 
-        page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Baking")
-        ).first().click()
-        assertThat(page.locator(".rrow")).hasCount(1)
+        page.locator("wa-tree-item[data-kind=category]").first().click()
         assertThat(page.locator(".list__title")).hasText("Baking")
+        assertThat(page.locator(".rrow")).hasCount(1)
 
-        // A course with nothing in it should empty the list rather than ignoring the filter.
-        page.evaluate("() => Alpine.\$data(document.getElementById('app')).setFilter('course','nope','Nope')")
+        // Favourites: nothing is flagged in the fixture, so the list should empty out.
+        page.locator("wa-tree-item[data-kind=favorites]").click()
+        assertThat(page.locator(".list__title")).hasText("Favorites")
         assertThat(page.locator(".rrow")).hasCount(0)
+
+        // Back to everything.
+        page.locator("wa-tree-item[data-kind=all]").click()
+        assertThat(page.locator(".rrow")).hasCount(1)
+        page.close()
+    }
+
+    /** Group rows (Categories, Courses, ...) are containers: selecting one must not filter. */
+    @Test
+    fun expandingAGroupDoesNotChangeTheFilter() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        val title = page.locator(".list__title")
+        assertThat(title).hasText("All Recipes")
+
+        // Click the group's own row, not its centre: an expanded wa-tree-item's box encloses its
+        // children, so a centre-click lands on whichever child sits in the middle.
+        page.locator("wa-tree-item[data-group]").first()
+            .click(com.microsoft.playwright.Locator.ClickOptions().setPosition(30.0, 10.0))
+        assertThat(title).hasText("All Recipes")
         page.close()
     }
 

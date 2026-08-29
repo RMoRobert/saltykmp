@@ -31,6 +31,10 @@ wa-page { height: 100dvh; }
 
 .only-compact { display: none; }
 
+/* The header slot's default padding reads as very tall for an app bar. Tightened here rather
+   than restyled — colours still come from the theme. */
+wa-page::part(header) { padding-block: var(--wa-space-2xs); padding-inline: var(--wa-space-s); }
+
 .appbar { display: flex; align-items: center; gap: var(--wa-space-s, 0.5rem); width: 100%; }
 .appbar__brand { font-size: var(--wa-font-size-s); }
 .appbar__account { margin-inline-start: auto; }
@@ -51,37 +55,24 @@ wa-page { height: 100dvh; }
 .detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 /* -------------------------------------------------------------------- rail -- */
+/* Almost nothing here now: wa-tree draws the rows, chevrons, selection and indentation. */
 
-.rail__nav { flex: 1; min-height: 0; overflow-y: auto;
-             padding: var(--wa-space-s) var(--wa-space-xs) var(--wa-space-l); }
+.rail { overflow-y: auto; padding: var(--wa-space-xs); }
 
-.railitem {
-  display: flex; align-items: center; gap: var(--wa-space-xs, 0.5rem); width: 100%;
-  border: 0; background: none; color: inherit; font: inherit; cursor: pointer;
-  text-decoration: none;
-  border-radius: var(--wa-border-radius-m);
-  padding: var(--wa-space-2xs, 0.35rem) var(--wa-space-xs, 0.55rem);
-  text-align: start; font-size: var(--wa-font-size-s);
-}
-.railitem:hover { background: var(--wa-color-neutral-fill-quiet); }
-.railitem--on { background: var(--wa-color-brand-fill-quiet); font-weight: var(--wa-font-weight-semibold); }
-.railitem--sub { padding-inline-start: var(--wa-space-m, 0.75rem); }
-.railitem > span:first-of-type { flex: 1; min-width: 0; overflow: hidden;
-                                 text-overflow: ellipsis; white-space: nowrap; }
-.railitem__count,
-.railitem__ext { font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet);
-                 font-variant-numeric: tabular-nums; }
-
-.railgroup { margin-block-start: var(--wa-space-m); }
-.railgroup__head {
-  display: flex; justify-content: space-between; align-items: baseline;
-  padding: 0 var(--wa-space-xs) var(--wa-space-3xs);
+.rail__heading {
   font-size: var(--wa-font-size-2xs, 0.7rem); font-weight: var(--wa-font-weight-bold);
   letter-spacing: 0.08em; text-transform: uppercase; color: var(--wa-color-neutral-on-quiet);
+  margin: var(--wa-space-2xs) 0 var(--wa-space-2xs) var(--wa-space-xs);
 }
-.railgroup__count { font-weight: var(--wa-font-weight-normal); }
-.railgroup__empty { font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet);
-                    padding: 0 var(--wa-space-xs); margin: 0; }
+
+/* Counts sit at the trailing edge of each row. */
+.railcount {
+  margin-inline-start: auto; padding-inline-start: var(--wa-space-xs);
+  font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet);
+  font-variant-numeric: tabular-nums;
+}
+.railtree wa-tree-item::part(label) { display: flex; align-items: center; width: 100%; }
+.railicon { margin-inline-end: var(--wa-space-xs); color: var(--wa-color-neutral-on-quiet); }
 
 /* -------------------------------------------------------------------- list -- */
 

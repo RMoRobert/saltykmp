@@ -167,17 +167,22 @@ function saltyEditor() {
     get dirCount() { return this.directions.filter(r => !r.isHeading).length; },
     get libraryGroups() {
       return [
-        { kind: "course", label: "Courses", items: this.courses },
-        { kind: "category", label: "Categories", items: this.categories },
-        { kind: "tag", label: "Tags", items: this.tags },
+        { kind: "category", label: "Categories", icon: "folder", items: this.categories },
+        { kind: "course", label: "Courses", icon: "utensils", items: this.courses },
+        { kind: "tag", label: "Tags", icon: "tag", items: this.tags },
       ];
     },
+
+    get favoriteCount() { return this.list.filter(r => r.isFavorite).length; },
+    get wantToMakeCount() { return this.list.filter(r => r.wantToMake).length; },
 
     /** The middle pane: library filter first, then the search box on top of it. */
     get visibleRecipes() {
       let rows = this.list;
       const f = this.filter;
-      if (f.kind === "course") rows = rows.filter(r => r.courseId === f.id);
+      if (f.kind === "favorites") rows = rows.filter(r => r.isFavorite);
+      else if (f.kind === "wantToMake") rows = rows.filter(r => r.wantToMake);
+      else if (f.kind === "course") rows = rows.filter(r => r.courseId === f.id);
       else if (f.kind === "category") rows = rows.filter(r => (r.categoryIds || []).includes(f.id));
       else if (f.kind === "tag") rows = rows.filter(r => (r.tagIds || []).includes(f.id));
       const q = this.query.trim().toLowerCase();
@@ -244,6 +249,24 @@ function saltyEditor() {
       } else {
         this.railOpen = !this.railOpen;
       }
+    },
+
+    /**
+     * wa-tree reports selection as elements, so map the chosen node back to a filter. Group nodes
+     * (Categories, Courses, ...) are containers, not filters -- selecting one only expands it.
+     */
+    onTreeSelect(event) {
+      const el = (event.detail && event.detail.selection || [])[0];
+      if (!el) return;
+      if (el.hasAttribute("data-href")) { window.location.href = el.getAttribute("data-href"); return; }
+      if (el.hasAttribute("data-group")) return;
+
+      const kind = el.getAttribute("data-kind");
+      if (!kind) return;
+      const id = el.getAttribute("data-id");
+      const labels = { all: "All Recipes", favorites: "Favorites", wantToMake: "Want to Make" };
+      const label = labels[kind] || (el.textContent || "").trim().replace(/\s+\d+$/, "");
+      this.setFilter(kind, id, label);
     },
 
     setFilter(kind, id, label) {
