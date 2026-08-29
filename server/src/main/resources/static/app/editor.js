@@ -158,6 +158,9 @@ function saltyEditor() {
     saving: false,
     loadingRecipe: false,
     confirmDelete: false,
+    libraryManagerOpen: false,
+    pendingClassifierDelete: null,
+    newClassifier: { category: "", course: "", tag: "" },
     toasts: [],
     _toastSeq: 0,
 
@@ -167,9 +170,11 @@ function saltyEditor() {
     get dirCount() { return this.directions.filter(r => !r.isHeading).length; },
     get libraryGroups() {
       return [
-        { kind: "category", label: "Categories", icon: "folder", items: this.categories },
-        { kind: "course", label: "Courses", icon: "utensils", items: this.courses },
-        { kind: "tag", label: "Tags", icon: "tag", items: this.tags },
+        // `singular` is explicit rather than derived: stripping a trailing "s" turns Categories
+        // into "Categorie".
+        { kind: "category", label: "Categories", singular: "category", icon: "folder", items: this.categories },
+        { kind: "course", label: "Courses", singular: "course", icon: "utensils", items: this.courses },
+        { kind: "tag", label: "Tags", singular: "tag", icon: "tag", items: this.tags },
       ];
     },
 
@@ -271,9 +276,87 @@ function saltyEditor() {
       this.setFilter(kind, id, label);
     },
 
+    /* ---------------------------------------------------- library manager -- */
+
+    /** REST path for a classifier kind. The API pluralises; our filter kinds are singular. */
+    endpointFor(kind) {
+      return { category: "/api/categories", course: "/api/courses", tag: "/api/tags" }[kind];
+    },
+
+    collectionFor(kind) {
+      return { category: "categories", course: "courses", tag: "tags" }[kind];
+    },
+
+    openLibraryManager() { this.libraryManagerOpen = true; },
+
+    async addClassifier(kind) {
+      const name = (this.newClassifier[kind] || "").trim();
+      if (!name) return;
+      try {
+        const created = await api("POST", this.endpointFor(kind), { id: uuidv7(), name });
+        this[this.collectionFor(kind)].push(created);
+        this[this.collectionFor(kind)].sort((a, b) =>
+          String(a.name || "").localeCompare(String(b.name || "")));
+        this.newClassifier[kind] = "";
+        this.notify(`Added ${name}`);
+      } catch (e) {
+        this.notify(`Couldn't add: ${e.message}`, "danger");
+      }
+    },
+
+    async renameClassifier(kind, item, name) {
+      const trimmed = (name || "").trim();
+      if (!trimmed || trimmed === item.name) return;
+      const previous = item.name;
+      item.name = trimmed;                       // optimistic: the field already shows it
+      try {
+        await api("PUT", `${this.endpointFor(kind)}/${encodeURIComponent(item.id)}`,
+                  { id: item.id, name: trimmed });
+        // A rename can change the heading of the list you're looking at.
+        if (this.filter.kind === kind && this.filter.id === item.id) this.filter.label = trimmed;
+      } catch (e) {
+        item.name = previous;
+        this.notify(`Couldn't rename: ${e.message}`, "danger");
+      }
+    },
+
+    askDeleteClassifier(kind, item) { this.pendingClassifierDelete = { kind, item }; },
+
+    async deleteClassifier() {
+      const pending = this.pendingClassifierDelete;
+      if (!pending) return;
+      const { kind, item } = pending;
+      this.pendingClassifierDelete = null;
+      try {
+        await api("DELETE", `${this.endpointFor(kind)}/${encodeURIComponent(item.id)}`);
+        const key = this.collectionFor(kind);
+        this[key] = this[key].filter(x => x.id !== item.id);
+        // Recipes keep existing but lose the association, so refresh the list rather than
+        // leaving stale ids behind in memory.
+        await this.loadList();
+        if (this.filter.kind === kind && this.filter.id === item.id) {
+          this.setFilter("all", null, "All Recipes");
+        }
+        if (this.current) {
+          this.current.categoryIds = (this.current.categoryIds || []).filter(x => x !== item.id);
+          this.current.tagIds = (this.current.tagIds || []).filter(x => x !== item.id);
+          if (this.current.courseId === item.id) this.current.courseId = null;
+        }
+        this.notify(`Deleted ${item.name}`);
+      } catch (e) {
+        this.notify(`Couldn't delete: ${e.message}`, "danger");
+      }
+    },
+
     setFilter(kind, id, label) {
       this.filter = { kind, id, label: label || "All Recipes" };
       this.pane = "list";
+    },
+
+    /** "1 recipe" / "2 recipes" — the count row read wrong at exactly one. */
+    recipeCountLabel(kind, id) {
+      const n = this.countFor(kind, id);
+      return `${n} ${n === 1 ? "recipe" : "recipes"}`;
     },
 
     countFor(kind, id) {
@@ -413,6 +496,10 @@ function saltyEditor() {
       this.loadingRecipe = true;
       try {
         const r = await api("GET", `/api/recipes/${encodeURIComponent(id)}`);
+        // wa-select multiple binds to an array; normalise so x-model always has one, and so a
+        // recipe that has never been categorised behaves like one with an empty list.
+        r.categoryIds = r.categoryIds || [];
+        r.tagIds = r.tagIds || [];
         this.current = r;
         this.selectedId = r.id;
         // Rows are held separately so Alpine's reactivity and x-sort keys stay simple; they're

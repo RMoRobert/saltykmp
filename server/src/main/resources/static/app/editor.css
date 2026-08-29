@@ -250,3 +250,16 @@ wa-page { height: 100dvh; }
   wa-page[data-pane="list"] .detail { display: none; }
   .only-compact { display: inline-flex; }
 }
+
+/* ------------------------------------------------------------ library mgr -- */
+
+.mgr { display: flex; flex-direction: column; gap: var(--wa-space-2xs); }
+.mgr__row { display: flex; align-items: center; gap: var(--wa-space-xs); }
+.mgr__row wa-input { flex: 1; min-width: 0; }
+.mgr__count { font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet);
+              white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mgr__empty { color: var(--wa-color-neutral-on-quiet); font-size: var(--wa-font-size-s); margin: 0; }
+.mgr__add { display: flex; gap: var(--wa-space-xs); margin-block-start: var(--wa-space-s);
+            padding-block-start: var(--wa-space-s);
+            border-block-start: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border); }
+.mgr__add wa-input { flex: 1; min-width: 0; }

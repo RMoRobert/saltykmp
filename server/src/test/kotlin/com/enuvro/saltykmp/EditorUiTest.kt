@@ -292,6 +292,83 @@ class EditorUiTest {
         page.close()
     }
 
+    /**
+     * Assigning a category from the editor must reach the API. The recipe list already returns
+     * categoryIds, so this also feeds the sidebar counts.
+     */
+    @Test
+    fun assigningACategoryPersists() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForFunction(
+            """() => [...document.querySelectorAll('wa-select')]
+                     .some(s => s.getAttribute('label') === 'Categories')"""
+        )
+
+        // Drive the component, then save through the app's own path.
+        page.evaluate(
+            """() => {
+                 const d = Alpine.${'$'}data(document.getElementById('app'));
+                 const cat = d.categories[0];
+                 d.current.categoryIds = [cat.id];
+                 d.touch();
+               }"""
+        )
+        page.locator("[data-testid=save]").click()
+        page.waitForFunction("() => !Alpine.${'$'}data(document.getElementById('app')).dirty")
+
+        val stored = runBlocking {
+            RecipeRepository.getById(UserRepository.findByUsername("tester")!!.id, RECIPE_ID)
+        }
+        assertEquals(listOf(CATEGORY_ID), stored?.categoryIds)
+        page.close()
+    }
+
+    /** Create, rename and delete a tag through the library manager. */
+    @Test
+    fun libraryManagerCreatesRenamesAndDeletes() {
+        val b = browserOrNull() ?: return
+        val page = editorPage(b)
+
+        page.evaluate(
+            """async () => {
+                 const d = Alpine.${'$'}data(document.getElementById('app'));
+                 d.newClassifier.tag = 'Weeknight';
+                 await d.addClassifier('tag');
+               }"""
+        )
+        page.waitForFunction("() => Alpine.${'$'}data(document.getElementById('app')).tags.some(t => t.name === 'Weeknight')")
+
+        page.evaluate(
+            """async () => {
+                 const d = Alpine.${'$'}data(document.getElementById('app'));
+                 const t = d.tags.find(x => x.name === 'Weeknight');
+                 await d.renameClassifier('tag', t, 'Weeknight Dinner');
+               }"""
+        )
+        page.waitForFunction("() => Alpine.${'$'}data(document.getElementById('app')).tags.some(t => t.name === 'Weeknight Dinner')")
+
+        val renamed = runBlocking { LibraryRepository.listTags(UserRepository.findByUsername("tester")!!.id) }
+        assertTrue(renamed.any { it.name == "Weeknight Dinner" }, "rename should have reached the API")
+
+        page.evaluate(
+            """async () => {
+                 const d = Alpine.${'$'}data(document.getElementById('app'));
+                 const t = d.tags.find(x => x.name === 'Weeknight Dinner');
+                 d.askDeleteClassifier('tag', t);
+                 await d.deleteClassifier();
+               }"""
+        )
+        page.waitForFunction("() => !Alpine.${'$'}data(document.getElementById('app')).tags.length")
+
+        val after = runBlocking { LibraryRepository.listTags(UserRepository.findByUsername("tester")!!.id) }
+        assertTrue(after.none { it.name == "Weeknight Dinner" }, "delete should have reached the API")
+        page.close()
+    }
+
     /** Group rows (Categories, Courses, ...) are containers: selecting one must not filter. */
     @Test
     fun expandingAGroupDoesNotChangeTheFilter() {

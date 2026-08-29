@@ -73,6 +73,9 @@
         <wa-dropdown-item slot="submenu" @click="setTheme('shoelace')"
                           :checked="theme === 'shoelace'" type="checkbox">Shoelace</wa-dropdown-item>
       </wa-dropdown-item>
+      <wa-dropdown-item @click="openLibraryManager()">
+        <wa-icon slot="icon" name="sliders"></wa-icon> Manage library…
+      </wa-dropdown-item>
       <wa-dropdown-item type="link" href="/">
         <wa-icon slot="icon" name="table-list"></wa-icon> Classic view
       </wa-dropdown-item>
@@ -412,6 +415,20 @@
                            @change="setLastPrepared($event.target.value)">
                   </div>
 
+                  <wa-select multiple with-clear max-options-visible="4" label="Categories" with-label
+                             x-model="current.categoryIds" @change="touch()">
+                    <template x-for="c in categories" :key="c.id">
+                      <wa-option :value="c.id" x-text="c.name"></wa-option>
+                    </template>
+                  </wa-select>
+
+                  <wa-select multiple with-clear max-options-visible="4" label="Tags" with-label
+                             x-model="current.tagIds" @change="touch()">
+                    <template x-for="t in tags" :key="t.id">
+                      <wa-option :value="t.id" x-text="t.name"></wa-option>
+                    </template>
+                  </wa-select>
+
                   <wa-input label="Source" with-label x-model="current.source" @input="touch()"></wa-input>
                   <wa-input label="Source details" with-label x-model="current.sourceDetails" @input="touch()"></wa-input>
                 </div>
@@ -436,6 +453,65 @@
   </main>
 
   </main>
+
+  <!-- Library manager: rename, add and remove courses, categories and tags. Deliberately plain --
+       merging duplicates and reassigning recipes are deeper operations that belong with the
+       existing LibraryDuplicateMerger work, not here. -->
+  <wa-dialog label="Manage library" class="managedlg" :open="libraryManagerOpen"
+             @wa-hide="libraryManagerOpen = false">
+    <wa-tab-group>
+      <template x-for="group in libraryGroups" :key="group.kind">
+        <wa-tab :panel="group.kind" slot="nav" x-text="group.label"></wa-tab>
+      </template>
+
+      <template x-for="group in libraryGroups" :key="group.kind">
+        <wa-tab-panel :name="group.kind">
+          <div class="mgr">
+            <template x-for="item in group.items" :key="item.id">
+              <div class="mgr__row">
+                <wa-input size="small" :value="item.name"
+                          @change="renameClassifier(group.kind, item, $event.target.value)"
+                          :aria-label="'Name of ' + (item.name || 'untitled')"></wa-input>
+                <span class="mgr__count" x-text="recipeCountLabel(group.kind, item.id)"></span>
+                <wa-button size="small" appearance="plain" variant="danger"
+                           @click="askDeleteClassifier(group.kind, item)"
+                           :title="'Delete ' + item.name">
+                  <wa-icon name="trash" :label="'Delete ' + item.name"></wa-icon>
+                </wa-button>
+              </div>
+            </template>
+
+            <p class="mgr__empty" x-show="!group.items.length">Nothing here yet.</p>
+
+            <form class="mgr__add" @submit.prevent="addClassifier(group.kind)">
+              <wa-input size="small" :placeholder="'New ' + group.singular"
+                        x-model="newClassifier[group.kind]"
+                        :aria-label="'New ' + group.label"></wa-input>
+              <wa-button size="small" appearance="filled" type="submit"
+                         :disabled="!(newClassifier[group.kind] || '').trim()">Add</wa-button>
+            </form>
+          </div>
+        </wa-tab-panel>
+      </template>
+    </wa-tab-group>
+
+    <wa-button slot="footer" appearance="plain" @click="libraryManagerOpen = false">Done</wa-button>
+  </wa-dialog>
+
+  <wa-dialog label="Delete from library" :open="!!pendingClassifierDelete"
+             @wa-hide="pendingClassifierDelete = null">
+    <p x-show="pendingClassifierDelete">
+      Delete “<strong x-text="pendingClassifierDelete?.item?.name"></strong>”?
+      <template x-if="pendingClassifierDelete && countFor(pendingClassifierDelete.kind, pendingClassifierDelete.item.id) > 0">
+        <span>It will be removed from
+          <strong x-text="countFor(pendingClassifierDelete.kind, pendingClassifierDelete.item.id)"></strong>
+          recipe(s). The recipes themselves are kept.</span>
+      </template>
+    </p>
+    <wa-button slot="footer" appearance="plain" @click="pendingClassifierDelete = null">Cancel</wa-button>
+    <wa-button slot="footer" variant="danger" appearance="accent"
+               @click="deleteClassifier()">Delete</wa-button>
+  </wa-dialog>
 
   <wa-dialog label="Delete recipe" :open="confirmDelete" @wa-hide="confirmDelete = false">
     <p>Delete “<strong x-text="current ? current.name : ''"></strong>”? This removes it from every
