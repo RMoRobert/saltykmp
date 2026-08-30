@@ -120,6 +120,30 @@ class SchemaOrgRecipeParserTest {
         assertEquals("2 hr", SchemaOrgRecipeParser.formatDuration("PT2H"))
         // Non-ISO input passes through untouched.
         assertEquals("about an hour", SchemaOrgRecipeParser.formatDuration("about an hour"))
+        // Seconds are dropped, so this renders to nothing at all — and then keeps its own text rather
+        // than becoming a preparation time with no time in it.
+        assertEquals("PT45S", SchemaOrgRecipeParser.formatDuration("PT45S"))
+    }
+
+    /**
+     * Recipe plugins write a numeric character reference for every fraction they print, so a WordPress
+     * ingredient list is full of them; `&frac12;` and `&nbsp;` are just as common. See [HtmlEntities].
+     */
+    @Test fun decodesNumericAndNamedCharacterReferences() {
+        val html = page(
+            """{"@type":"Recipe","name":"A","recipeIngredient":
+                 ["&#8531; cup oil","&frac12; cup honey","1&nbsp;egg","&#x2154; cup flour","2 apples &ndash; peeled"]}""",
+        )
+        assertEquals(
+            listOf("\u2153 cup oil", "\u00bd cup honey", "1 egg", "\u2154 cup flour", "2 apples \u2013 peeled"),
+            SchemaOrgRecipeParser.parse(html)[0].ingredients.map { it.text },
+        )
+    }
+
+    /** An ampersand that isn't a reference is just an ampersand, and must not eat what follows it. */
+    @Test fun leavesLoneAmpersandsAndUnknownReferencesAlone() {
+        val html = page("""{"@type":"Recipe","name":"AT&T &notarealentity; &amp; Sons"}""")
+        assertEquals("AT&T &notarealentity; & Sons", SchemaOrgRecipeParser.parse(html)[0].name)
     }
 
     @Test fun scriptTagAttributeOrderAndQuotingVary() {

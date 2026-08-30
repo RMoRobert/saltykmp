@@ -13,8 +13,14 @@ import kotlin.time.Instant
  */
 object SyncReconciler {
 
-    /** A missing timestamp should be mapped to [Instant.DISTANT_PAST] by the caller. */
-    data class Entry(val id: String, val lastModified: Instant)
+    /**
+     * A missing timestamp should be mapped to [Instant.DISTANT_PAST] by the caller.
+     *
+     * [syncedModified] is `recipe.syncedModifiedDate` (SHARED-V0005): the `lastModified` this row
+     * carried when the two sides last agreed about it, or null if they never have. Only meaningful on
+     * LOCAL entries, and only when [plan] is called with `tracksAgreement = true`.
+     */
+    data class Entry(val id: String, val lastModified: Instant, val syncedModified: Instant? = null)
 
     data class Plan(
         val toUpload: List<String> = emptyList(),       // local is new or newer → push to server
@@ -23,11 +29,30 @@ object SyncReconciler {
         val toDeleteOnServer: List<String> = emptyList(), // existed before lastSync, gone locally
     )
 
+    /**
+     * [tracksAgreement] replaces one decision — what to do with a row that exists here and not on the
+     * server — with a recorded fact instead of a guess about clocks. Pass it when the local entries
+     * carry [Entry.syncedModified] (i.e. the library has SHARED-V0005's `recipe.syncedModifiedDate`).
+     *
+     * - null stamp → never been to the server → it is NEW HERE → upload.
+     * - stamp set, row unchanged since → the server had exactly this row and deleted it → delete here.
+     * - stamp set, row CHANGED since → a real delete-vs-edit conflict, resolved the way Salty resolves
+     *   it everywhere: the edit wins → upload.
+     *
+     * No clock is consulted, which matters because the timestamp rule is wrong in two real cases: when
+     * this device's clock and the server's disagree, and for any row whose `lastModified` is genuinely
+     * old but has never been anywhere — a recipe imported from a years-old export read as "existed
+     * before the last sync, gone on the server" and was destroyed.
+     *
+     * Mirror: Swift's `RecipeSyncReconciler.plan(tracksAgreement:)` and Salty.NET's
+     * `SyncReconciler.CreatePlan(tracksAgreement:)`.
+     */
     fun plan(
         local: List<Entry>,
         server: List<Entry>,
         isFirstSync: Boolean,
         lastSyncDate: Instant?,
+        tracksAgreement: Boolean = false,
     ): Plan {
         val serverById = server.associateBy { it.id }
         val localIds = local.mapTo(mutableSetOf()) { it.id }
@@ -48,6 +73,24 @@ object SyncReconciler {
                 // equal → already in sync
             } else if (isFirstSync) {
                 toUpload += l.id
+            } else if (tracksAgreement) {
+                // Still clock-free: both values were written by THIS device (the stamp is a copy of
+                // lastModified taken at agreement time; LocalStore normalizes both to epoch millis).
+                //
+                //   null stamp          → never been to the server → new here → upload.
+                //   row changed since   → edited here after the server last had it, and the server has
+                //                         since deleted it. Delete-vs-edit is a genuine conflict, and
+                //                         everywhere in Salty an edit beats a delete → upload,
+                //                         resurrecting it WITH the edit.
+                //   row unchanged since → the server had exactly this row and deleted it → delete here.
+                //
+                // `!=` rather than `>` on purpose: any difference means "changed since agreement", so a
+                // clock that ran backwards errs toward upload — the non-destructive direction.
+                if (l.syncedModified == null || l.lastModified != l.syncedModified) {
+                    toUpload += l.id
+                } else {
+                    toDeleteLocally += l.id
+                }
             } else if (lastSyncDate != null) {
                 if (l.lastModified > lastSyncDate) toUpload += l.id else toDeleteLocally += l.id
             } else {

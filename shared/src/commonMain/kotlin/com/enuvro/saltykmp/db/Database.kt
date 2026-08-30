@@ -66,7 +66,7 @@ private val ratingAdapter = object : ColumnAdapter<Rating, Long> {
  * KMP-created `saltyRecipeDB.sqlite` as fully migrated, so the same file opens on both platforms.
  * Keep in sync with the Swift app's DatabaseMigrator (Salty/Models/Schema.swift).
  */
-private val GRDB_MIGRATIONS = listOf(
+internal val GRDB_MIGRATIONS = listOf(
     "0001: Create initial tables",
     "0002: Populate default categories, courses, and shopping lists",
     "0003: Add 'variations' column to 'recipe' table",
@@ -162,7 +162,7 @@ internal val SHARED_MIGRATIONS: List<SharedMigration> = listOf(
     // DB the Swift app already migrated. Mirror: Salty's `saltySharedMigrations` with the SAME id.
     SharedMigration("2026-06-recipe-add-lastModifiedImageDate") { driver ->
         if (!columnExists(driver, "recipe", "lastModifiedImageDate")) {
-            driver.execute(null, """ALTER TABLE "recipe" ADD COLUMN "lastModifiedImageDate" TEXT""", 0)
+            driver.execute(null, """ALTER TABLE "recipe" ADD COLUMN "lastModifiedImageDate" DATETIME""", 0)
         }
     },
     // Sync-readiness for shopping lists: every mutable table gets a lastModifiedDate. Same guarded-ALTER
@@ -170,7 +170,7 @@ internal val SHARED_MIGRATIONS: List<SharedMigration> = listOf(
     // `saltySharedMigrations` with the SAME id.
     SharedMigration("SHARED-V0002") { driver ->
         if (!columnExists(driver, "shoppingList", "lastModifiedDate")) {
-            driver.execute(null, """ALTER TABLE "shoppingList" ADD COLUMN "lastModifiedDate" TEXT""", 0)
+            driver.execute(null, """ALTER TABLE "shoppingList" ADD COLUMN "lastModifiedDate" DATETIME""", 0)
         }
     },
     // Per-row sync bookkeeping for revision-based shopping-list sync (see Schema.sq for what the
@@ -192,7 +192,35 @@ internal val SHARED_MIGRATIONS: List<SharedMigration> = listOf(
     // Mirror: Salty's `saltySharedMigrations` with the SAME id.
     SharedMigration("SHARED-V0004") { driver ->
         if (!columnExists(driver, "recipe", "lastModifiedPreparedDate")) {
-            driver.execute(null, """ALTER TABLE "recipe" ADD COLUMN "lastModifiedPreparedDate" TEXT""", 0)
+            driver.execute(null, """ALTER TABLE "recipe" ADD COLUMN "lastModifiedPreparedDate" DATETIME""", 0)
+        }
+    },
+    // Agreement bookkeeping: the `lastModifiedDate` a row carried when this library and the server last
+    // agreed about it. NULL = never agreed. It replaces the guess sync used to make about a row that
+    // exists here and not on the server — see Schema.sq and SyncReconciler.plan(tracksAgreement).
+    //
+    // Deliberately NOT backfilled from `lastModifiedDate`. Backfilling asserts an agreement that may not
+    // exist, and the cost of asserting it wrongly is that a local-only recipe is DELETED. NULL's cost is
+    // that a recipe deleted on another device is uploaded again once. Losing a recipe is worse than
+    // resurrecting one. The first sync after this lands stamps every row it agrees on, and the
+    // ambiguity is gone from then on. Mirror: Salty's `saltySharedMigrations` and Salty.NET's
+    // `SaltySchema.SharedMigrations`, with the SAME id.
+    SharedMigration("SHARED-V0005") { driver ->
+        if (!columnExists(driver, "recipe", "syncedModifiedDate")) {
+            driver.execute(null, """ALTER TABLE "recipe" ADD COLUMN "syncedModifiedDate" DATETIME""", 0)
+        }
+    },
+    // SHARED-V0005's agreement bookkeeping, extended to the library tables — retiring the last
+    // clock-vs-watermark guess in the reconciler: a category/course/tag that exists here and not on
+    // the server is now classified by its recorded stamp. Deliberately NOT backfilled, for V0005's
+    // reason: a wrong backfill deletes a row, NULL merely re-uploads one once. Columns are also in
+    // Schema.sq (fresh KMP DBs have them); DATETIME here so the ledgered ALTER is byte-identical with
+    // Salty's and Salty.NET's (SPEC SCHEMA-003). Mirror both, with the SAME id.
+    SharedMigration("SHARED-V0006") { driver ->
+        for (table in listOf("category", "course", "tag")) {
+            if (!columnExists(driver, table, "syncedModifiedDate")) {
+                driver.execute(null, """ALTER TABLE "$table" ADD COLUMN "syncedModifiedDate" DATETIME""", 0)
+            }
         }
     },
 )

@@ -50,6 +50,7 @@ import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.BookmarkAdded
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.BookmarkAdded
@@ -77,6 +78,7 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ShoppingCart
 import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material.icons.outlined.WorkspacePremium
 import androidx.compose.material.icons.outlined.ZoomIn
 import androidx.compose.material.icons.outlined.ZoomOut
 import androidx.compose.material3.DatePicker
@@ -97,6 +99,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -2684,8 +2687,8 @@ private fun RatingField(rating: Int?, onRating: (Int?) -> Unit) {
 
 // Editable ingredient/direction rows. A "heading" row is a section title (not bulleted/numbered when
 // displayed). Headings are created via the "Add heading" button; there's no per-row toggle (keeps the UI
-// clean). The flags are still carried on each row so existing headings — and the ingredient "main" flag
-// set in the SwiftUI app, which has no CMP UI yet — round-trip through a save untouched.
+// clean), so the flag is carried on each row and round-trips through a save untouched. The ingredient
+// "main" flag does have a per-row toggle — the medal in SectionRow — matching the other two clients.
 private data class IngredientRow(val id: String, val text: String = "", val isHeading: Boolean = false, val isMain: Boolean = false)
 private data class DirectionRow(val id: String, val text: String = "", val isHeading: Boolean = false)
 
@@ -2728,6 +2731,8 @@ private fun IngredientEditList(items: SnapshotStateList<IngredientRow>) {
             onMoveDown = { items.swapItems(i, i + 1) },
             onTextChange = { items[i] = item.copy(text = it) },
             onRemove = { items.removeAt(i) },
+            isMain = item.isMain,
+            onMainChange = { items[i] = item.copy(isMain = it) },
         )
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2798,7 +2803,8 @@ private fun <T> SnapshotStateList<T>.swapItems(i: Int, j: Int) {
 }
 
 /** A single ingredient/direction text field + reorder/remove controls; heading rows render bold so they
- * read as section titles even though there's no per-row toggle. [number] gutters a step number. */
+ * read as section titles even though there's no per-row toggle. [number] gutters a step number. Passing
+ * [onMainChange] adds the ingredient "main" toggle to the row; directions leave it null. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SectionRow(
@@ -2812,6 +2818,8 @@ private fun SectionRow(
     onTextChange: (String) -> Unit,
     onRemove: () -> Unit,
     number: String? = null,
+    isMain: Boolean = false,
+    onMainChange: ((Boolean) -> Unit)? = null,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (number != null) {
@@ -2831,6 +2839,23 @@ private fun SectionRow(
             textStyle = if (isHeading) LocalTextStyle.current.copy(fontWeight = FontWeight.SemiBold) else LocalTextStyle.current,
             modifier = Modifier.weight(1f),
         )
+        // Salty's "main ingredient" marker: a medal, filled once set and outlined while not, so the state
+        // reads without comparing two rows. Not a star — stars are the 1-5 rating in this app. A heading
+        // can't be a main ingredient, but it keeps the column so its field doesn't run wider than the
+        // ingredients beneath it.
+        if (onMainChange != null) {
+            if (isHeading) {
+                Spacer(Modifier.width(48.dp))
+            } else {
+                IconToggleButton(checked = isMain, onCheckedChange = onMainChange) {
+                    Icon(
+                        if (isMain) Icons.Filled.WorkspacePremium else Icons.Outlined.WorkspacePremium,
+                        contentDescription = "Main ingredient",
+                        tint = if (isMain) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    )
+                }
+            }
+        }
         // A mistyped order used to mean retyping every row below it; these move the row instead. Half-height
         // so the pair takes no more width than one icon button.
         Column {

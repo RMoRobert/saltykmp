@@ -30,10 +30,9 @@ object PreparedDates {
     @OptIn(ExperimentalTime::class)
     fun pickerMillisToWire(utcMillis: Long, zone: TimeZone = TimeZone.currentSystemDefault()): String {
         val day = Instant.fromEpochMilliseconds(utcMillis).toLocalDateTime(TimeZone.UTC).date
-        return LocalDateTime(day.year, day.month, day.day, 12, 0, 0)
-            .toInstant(zone)
-            .let { Instant.fromEpochMilliseconds(it.toEpochMilliseconds()) }
-            .toString()
+        // wireIso, not Instant.toString(): noon has a zero fraction by construction, and toString()
+        // drops a zero fraction entirely — so every stamp this minted was 19 chars, not the wire's 23.
+        return wireIso(LocalDateTime(day.year, day.month, day.day, 12, 0, 0).toInstant(zone))
     }
 
     /**

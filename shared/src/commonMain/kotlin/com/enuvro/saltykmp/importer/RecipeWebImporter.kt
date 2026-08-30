@@ -53,7 +53,12 @@ class RecipeWebImporter(engine: HttpClientEngine) {
             response.bodyAsText()
         }.getOrElse { return WebImportResult.Failed("Couldn't load that page: ${it.message ?: "network error"}") }
 
-        val recipe = SchemaOrgRecipeParser.parse(html).firstOrNull() ?: return WebImportResult.NoRecipeFound
+        val parsed = SchemaOrgRecipeParser.parse(html).firstOrNull() ?: return WebImportResult.NoRecipeFound
+
+        // Plenty of sites — AllRecipes among them — publish a Recipe with no `url` in it. The address is
+        // the one thing about an imported recipe we always know, and recording where it came from is
+        // what this field is for.
+        val recipe = if (parsed.sourceDetails.isBlank()) parsed.copy(sourceDetails = target) else parsed
 
         // The photo is a nicety: a failure here still imports the recipe.
         val imageBytes = recipe.imageUrl?.let { downloadImage(it) }

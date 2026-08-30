@@ -71,16 +71,58 @@ class DatabaseMigrationTest {
     }
 
     /**
-     * Mirrors Salty's `saltySharedMigrations`. The ids are the contract between the two apps — a
-     * mismatch means one platform re-runs a migration the other already recorded — so pin them.
-     * Update this list ONLY together with the Swift side, and never rename a shipped id.
+     * Mirrors Salty's `saltySharedMigrations` and Salty.NET's `SaltySchema.SharedMigrations`. The ids
+     * are the contract between all three clients — a mismatch means one platform re-runs a migration
+     * another already recorded — so pin them. Update this list ONLY together with the other two, and
+     * never rename a shipped id.
      */
     @Test
-    fun sharedMigrationIdsMatchTheSwiftApp() {
+    fun sharedMigrationIdsMatchTheOtherClients() {
         assertEquals(
-            listOf("2026-06-recipe-add-lastModifiedImageDate", "SHARED-V0002", "SHARED-V0003", "SHARED-V0004"),
+            listOf(
+                "2026-06-recipe-add-lastModifiedImageDate",
+                "SHARED-V0002",
+                "SHARED-V0003",
+                "SHARED-V0004",
+                "SHARED-V0005",
+                "SHARED-V0006",
+            ),
             SHARED_MIGRATIONS.map { it.id },
         )
+    }
+
+    /**
+     * SHARED-V0005 must add `syncedModifiedDate` to a database that predates it — the Swift-created and
+     * older-KMP case — and must leave it NULL on existing rows. NULL is the point: it means "this row
+     * has never been agreed with the server", which is what lets sync tell a new recipe from one the
+     * server deleted. Backfilling it from lastModifiedDate would assert an agreement that may not
+     * exist, and the cost of asserting that wrongly is a deleted recipe.
+     */
+    @Test
+    fun recipeSyncedModifiedDateIsAddedToAnOlderDatabaseAndLeftNull() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        driver.execute(
+            null,
+            """CREATE TABLE "recipe" ("id" TEXT PRIMARY KEY NOT NULL, "name" TEXT NOT NULL,
+               "lastModifiedDate" TEXT)""",
+            0,
+        )
+        driver.execute(
+            null,
+            """INSERT INTO "recipe" ("id", "name", "lastModifiedDate") VALUES ('R1', 'Bread', '2020-01-01 00:00:00.000')""",
+            0,
+        )
+
+        applySharedMigrations(driver, SHARED_MIGRATIONS.filter { it.id == "SHARED-V0005" })
+
+        assertEquals(true, columnPresent(driver, "recipe", "syncedModifiedDate"))
+        val stamped = driver.executeQuery(
+            null,
+            """SELECT COUNT(*) FROM "recipe" WHERE "syncedModifiedDate" IS NOT NULL""",
+            { cursor -> app.cash.sqldelight.db.QueryResult.Value(cursor.next().value && (cursor.getLong(0) ?: 0L) > 0L) },
+            0,
+        ).value
+        assertEquals(false, stamped)
     }
 
     /** SHARED-V0002 must add the column on a DB that predates it (the Swift-created / older-KMP case). */

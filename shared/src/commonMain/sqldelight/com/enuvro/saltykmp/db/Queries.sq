@@ -58,6 +58,18 @@ upsertRecipe {
     );
 }
 
+-- Records that a recipe now matches the server, at whatever lastModifiedDate it currently carries
+-- (SHARED-V0005). One statement covers uploads, downloads and rows that were already identical, since
+-- all three mean the same thing afterwards. Deliberately targeted: it must never touch the body.
+markRecipeAgreed:
+UPDATE recipe SET syncedModifiedDate = lastModifiedDate WHERE id = ?;
+
+-- The force-pull counterpart: every row came from the server moments ago, so the two sides agree by
+-- construction. Without this the next ordinary sync reads the whole restored library as never-agreed
+-- and uploads all of it straight back.
+markAllRecipesAgreed:
+UPDATE recipe SET syncedModifiedDate = lastModifiedDate;
+
 -- Targeted image-state update (filename + thumbnail blob + image timestamp), independent of the body.
 updateRecipeImage:
 UPDATE recipe SET imageFilename = ?, imageThumbnailData = ?, lastModifiedImageDate = ? WHERE id = ?;
@@ -90,6 +102,15 @@ deleteCourseById:
 DELETE FROM course
 WHERE id = ?;
 
+-- Records that a course now matches the server (SHARED-V0006); one statement for uploads, downloads
+-- and rows already identical — see markRecipeAgreed.
+markCourseAgreed:
+UPDATE course SET syncedModifiedDate = lastModifiedDate WHERE id = ?;
+
+-- Force-path counterpart; see markAllRecipesAgreed.
+markAllCoursesAgreed:
+UPDATE course SET syncedModifiedDate = lastModifiedDate;
+
 -- Categories
 selectAllCategories:
 SELECT *
@@ -105,6 +126,15 @@ upsertCategory {
 deleteCategoryById:
 DELETE FROM category
 WHERE id = ?;
+
+-- Records that a category now matches the server (SHARED-V0006); one statement for uploads, downloads
+-- and rows already identical — see markRecipeAgreed.
+markCategoryAgreed:
+UPDATE category SET syncedModifiedDate = lastModifiedDate WHERE id = ?;
+
+-- Force-path counterpart; see markAllRecipesAgreed.
+markAllCategoriesAgreed:
+UPDATE category SET syncedModifiedDate = lastModifiedDate;
 
 -- Tags
 selectAllTags:
@@ -122,9 +152,25 @@ deleteTagById:
 DELETE FROM tag
 WHERE id = ?;
 
+-- Records that a tag now matches the server (SHARED-V0006); one statement for uploads, downloads
+-- and rows already identical — see markRecipeAgreed.
+markTagAgreed:
+UPDATE tag SET syncedModifiedDate = lastModifiedDate WHERE id = ?;
+
+-- Force-path counterpart; see markAllRecipesAgreed.
+markAllTagsAgreed:
+UPDATE tag SET syncedModifiedDate = lastModifiedDate;
+
 -- Recipe <-> Category / Tag junctions
--- Nothing references a junction row and its id is deterministic ("<recipeId>|<otherId>"), so re-applying
--- the same set is a no-op. OR IGNORE says that without a delete.
+-- Nothing references a junction row and its id is opaque -- a fresh UUIDv7 per row, carrying no
+-- relationship to the pair it links. What keeps a membership from being stored twice is the
+-- deleteRecipeCategoriesByRecipeId / deleteRecipeTagsByRecipeId call that precedes every upsert, not
+-- the id. OR IGNORE is belt-and-braces on top of that. See ID-005 in salty-contract/SPEC.md.
+--
+-- Keep it OR IGNORE rather than an ON CONFLICT(...) upsert. A conflict target names ONE index, so a
+-- targeted clause absorbs a collision on that index and lets a violation of any OTHER unique constraint
+-- throw. Untargeted is what makes the UNIQUE (recipeId, categoryId) index this schema does not yet have
+-- (ID-006) a safe addition later rather than a mid-save exception.
 upsertRecipeCategory:
 INSERT OR IGNORE INTO recipeCategory(id, recipeId, categoryId)
 VALUES (?, ?, ?);
