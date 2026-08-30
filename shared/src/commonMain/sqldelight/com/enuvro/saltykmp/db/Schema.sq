@@ -13,13 +13,21 @@ import kotlin.collections.List;
 CREATE TABLE "course" (
     "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
     "name" TEXT,
-    "lastModifiedDate" TEXT
+    "lastModifiedDate" TEXT,
+    -- The lastModifiedDate this row carried when this library and the server last agreed about it
+    -- (SHARED-V0006) — the recipe.syncedModifiedDate mechanism, extended to the library tables so a
+    -- row that exists here and not on the server is classified by a recorded fact instead of a clock
+    -- guess. TEXT because SQLDelight's grammar rejects DATETIME; the ledgered ALTER in Database.kt
+    -- says DATETIME, matching Salty and Salty.NET (declared type is out of contract, values identical).
+    "syncedModifiedDate" TEXT
 );
 
 CREATE TABLE "category" (
     "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
     "name" TEXT,
-    "lastModifiedDate" TEXT
+    "lastModifiedDate" TEXT,
+    -- SHARED-V0006 agreement stamp; see course.
+    "syncedModifiedDate" TEXT
 );
 
 -- NOT NULL DEFAULTs mirror the Swift app's non-optional Recipe columns (Salty/Models/Schema.swift): the
@@ -66,7 +74,16 @@ CREATE TABLE "recipe" (
     -- prepared-date pass, mirroring the image pass). NULL = lastPrepared has never been set through a
     -- prepared-date-aware client. Appended at the end for the other platform's SELECT *; added to
     -- existing DBs by SHARED-V0004 (Database.kt).
-    "lastModifiedPreparedDate" TEXT
+    "lastModifiedPreparedDate" TEXT,
+    -- The value of `lastModifiedDate` this row carried the last time this library and the server agreed
+    -- about it. NULL = they never have, and that distinction is the whole point: it lets sync tell a
+    -- recipe that is NEW HERE apart from one the server has DELETED, without comparing any clock. The
+    -- old rule compared the row's timestamp to the sync watermark, which is wrong whenever the device
+    -- and server clocks disagree, and wrong for any row whose timestamp is genuinely old but has never
+    -- been anywhere — a recipe imported from a years-old export read as "deleted on the server" and was
+    -- destroyed. Appended at the end for the other platforms' SELECT *; added to existing DBs by
+    -- SHARED-V0005 (Database.kt). Mirror: Salty's `syncedModifiedDate`, Salty.NET's same column.
+    "syncedModifiedDate" TEXT
  );
 
 CREATE TABLE "recipeCategory" (
@@ -86,7 +103,9 @@ CREATE INDEX recipeCategory_on_categoryId ON recipeCategory(categoryId);
 CREATE TABLE "tag" (
     "id" TEXT PRIMARY KEY ON CONFLICT REPLACE NOT NULL,
     "name" TEXT,
-    "lastModifiedDate" TEXT
+    "lastModifiedDate" TEXT,
+    -- SHARED-V0006 agreement stamp; see course.
+    "syncedModifiedDate" TEXT
  );
 
 CREATE TABLE "recipeTag" (

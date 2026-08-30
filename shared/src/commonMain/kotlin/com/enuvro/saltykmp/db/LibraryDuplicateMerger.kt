@@ -3,6 +3,7 @@ package com.enuvro.saltykmp.db
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
+import com.enuvro.saltykmp.util.newId
 
 /** Which of the three classifier tables a duplicate group belongs to. */
 enum class LibraryClassifier { CATEGORY, COURSE, TAG }
@@ -219,16 +220,16 @@ class LibraryDuplicateMerger(private val db: AppDatabase) {
      * Moves everything referencing [duplicateId] onto [survivorId], then deletes the duplicate row.
      * Returns the ids of the recipes that referenced the duplicate.
      *
-     * The junction cases are insert-then-delete rather than an `UPDATE … SET categoryId`, so the
-     * surviving row always carries the canonical "<recipeId>|<otherId>" junction id, and so a recipe
-     * already filed under BOTH rows ends up with one link rather than two — there is no unique index on
-     * (recipeId, categoryId) to catch that.
+     * The junction cases are insert-then-delete rather than an `UPDATE … SET categoryId`, because a
+     * recipe already filed under BOTH rows must end up with one link rather than two and there is no
+     * unique index on (recipeId, categoryId) to catch that. The `IfAbsent` queries carry the pair guard
+     * that does catch it; the junction id itself is opaque (a fresh UUIDv7) and guards nothing.
      */
     private fun fold(kind: LibraryClassifier, duplicateId: String, survivorId: String): List<String> = when (kind) {
         LibraryClassifier.CATEGORY -> {
             val recipeIds = q.selectRecipeIdsForCategory(duplicateId).executeAsList()
             recipeIds.forEach {
-                q.insertRecipeCategoryIfAbsent(id = junctionId(it, survivorId), recipeId = it, categoryId = survivorId)
+                q.insertRecipeCategoryIfAbsent(id = newId(), recipeId = it, categoryId = survivorId)
             }
             q.deleteRecipeCategoriesByCategoryId(duplicateId)
             q.deleteCategoryById(duplicateId)
@@ -238,7 +239,7 @@ class LibraryDuplicateMerger(private val db: AppDatabase) {
         LibraryClassifier.TAG -> {
             val recipeIds = q.selectRecipeIdsForTag(duplicateId).executeAsList()
             recipeIds.forEach {
-                q.insertRecipeTagIfAbsent(id = junctionId(it, survivorId), recipeId = it, tagId = survivorId)
+                q.insertRecipeTagIfAbsent(id = newId(), recipeId = it, tagId = survivorId)
             }
             q.deleteRecipeTagsByTagId(duplicateId)
             q.deleteTagById(duplicateId)
@@ -255,7 +256,6 @@ class LibraryDuplicateMerger(private val db: AppDatabase) {
         }
     }
 
-    private fun junctionId(recipeId: String, otherId: String) = "$recipeId|$otherId"
 
     companion object {
         // Same pair as LocalStore's private helpers: millisecond precision (the wire contract) written

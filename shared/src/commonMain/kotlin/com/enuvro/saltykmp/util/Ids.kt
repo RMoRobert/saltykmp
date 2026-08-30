@@ -20,6 +20,25 @@ fun newId(): String = uuidV7(
 )
 
 /**
+ * Canonical form for an id that arrived from outside — an import, a wire payload. Anything that is not
+ * a canonical-form UUID passes through UNTOUCHED: these columns are plain TEXT and no client may start
+ * rejecting ids its peers accept.
+ *
+ * Defensive, not load-bearing. No path in SaltyKMP currently feeds it a foreign id — there is no
+ * `.saltyRecipe` importer here, and wire ids originate from a client that already produced them in this
+ * shape. It exists so a future import path that DOES preserve ids cannot introduce a casing mismatch.
+ * See ID-004 in `salty-contract/SPEC.md`.
+ *
+ * Only the hyphenated 8-4-4-4-12 form is recognised, matching Swift's `UUID(uuidString:)`. A bare
+ * 32-digit hex string is NOT a UUID here, so that all three clients agree on what counts.
+ */
+fun normalizeId(id: String): String =
+    if (UUID_FORM.matches(id)) id.uppercase() else id
+
+private val UUID_FORM =
+    Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+/**
  * Pure RFC 9562 UUIDv7 assembly — [millis] in the top 48 bits, version nibble 7, 12 random bits,
  * variant bits `10`, 62 random bits. Split from [newId] so tests can pin the inputs.
  */

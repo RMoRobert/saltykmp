@@ -217,22 +217,19 @@ object SchemaOrgRecipeParser {
     private fun JsonArray?.orEmpty(): List<JsonElement> = this ?: emptyList()
 
     /**
-     * Trims, decodes the HTML entities that routinely survive into JSON-LD, and clamps the length so one
-     * oversized field from an untrusted page can't blow up the editor. `&amp;` is decoded LAST so an
-     * already-escaped `&amp;lt;` resolves to the literal `&lt;` rather than being double-decoded into `<`.
-     * Matches the Swift importer's `decodeHTMLEntities`.
+     * Decodes the HTML character references that survive into JSON-LD, trims, and clamps the length so
+     * one oversized field from an untrusted page can't blow up the editor.
+     *
+     * See [HtmlEntities] for why this is one real pass over the text rather than the chain of `replace`
+     * calls it used to be: the chain could only decode the entities it listed, and every recipe plugin
+     * writes its fractions as `&#8531;`.
+     *
+     * A decoded `&nbsp;` becomes an ordinary space rather than U+00A0 — an invisible character that a
+     * search for "1 cup" would not match is not what the page meant to say — and the trim comes AFTER
+     * decoding, so a field that is nothing but `&nbsp;` ends up empty rather than blank-looking.
      */
     private fun clean(raw: String): String {
-        val decoded = raw.trim()
-            .replace("&apos;", "'")
-            .replace("&#39;", "'")
-            .replace("&#x27;", "'")
-            .replace("&quot;", "\"")
-            .replace("&#34;", "\"")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&nbsp;", " ")
-            .replace("&amp;", "&")
+        val decoded = HtmlEntities.decode(raw).replace('\u00A0', ' ').trim()
         return if (decoded.length > Limits.MAX_FIELD_LENGTH) decoded.take(Limits.MAX_FIELD_LENGTH) else decoded
     }
 }

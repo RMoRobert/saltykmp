@@ -187,6 +187,12 @@ class SyncService(
                 }
             }
         }
+        // Every recipe here came from the server moments ago, so the two sides agree by construction.
+        // Recording that stops the next ordinary sync from reading the whole restored library as
+        // never-agreed and uploading all of it straight back (SHARED-V0005).
+        local.markAllRecipesAgreed()
+        local.markAllClassifiersAgreed()
+
         // The server can hold same-named rows of its own, so the restored library gets the same fold an
         // ordinary sync ends with. Salty tidies after its force restore for the same reason.
         report(SyncPhase.FINISHING, stoppable = false)
@@ -277,8 +283,14 @@ class SyncService(
         val localListIds = shoppingLists.mapTo(mutableSetOf()) { it.id }
         serverLists.filter { it.id !in localListIds }.forEach { api.deleteShoppingList(it.id) }
 
-        // The server now mirrors local exactly — any pending local deletions are moot.
+        // The server now mirrors local exactly — any pending local deletions are moot, and every row
+        // is agreed by construction (recipeForUpload returns null only for a row deleted mid-loop,
+        // whose stamp UPDATE then matches nothing). Stamping stops the next ordinary sync from
+        // re-uploading every never-agreed row — and from resurrecting a recipe deleted elsewhere
+        // between this push and that sync (SHARED-V0005).
         local.clearRecipeTombstones(local.tombstonedRecipeIds())
+        local.markAllRecipesAgreed()
+        local.markAllClassifiersAgreed()
 
         api.completeSync(deviceId)
         return SyncResult(
@@ -308,7 +320,10 @@ class SyncService(
         val deltaById = delta.associateBy { it.id }
 
         val serverEntries = manifest.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) }
-        val plan = SyncReconciler.plan(local.recipeEntries(), serverEntries, isFirstSync, lastSync)
+        val localEntries = local.recipeEntries()
+        // The column is guaranteed present: applySharedMigrations runs on every open, and SQLDelight's
+        // generated row for `SELECT * FROM recipe` requires it. See SHARED-V0005 in Database.kt.
+        val plan = SyncReconciler.plan(localEntries, serverEntries, isFirstSync, lastSync, tracksAgreement = true)
 
         // Bodies only — image bytes are reconciled separately below, keyed on lastModifiedImageDate, so a
         // text-only change never moves an image and an image-only change never re-sends the body.
@@ -336,6 +351,20 @@ class SyncService(
             }
         }
         if (plan.toDeleteOnServer.isNotEmpty()) api.deleteRecipesOnServer(deviceId, plan.toDeleteOnServer)
+
+        // Record what this pass agreed on, so the next one needn't guess (SHARED-V0005). Three groups
+        // mean the same thing afterwards — the server's copy matches this row as it stands: what went
+        // up, what came down, and what was already identical on both sides. Anything just deleted is
+        // excluded, including deletions the guard refused, since those rows are still local-only.
+        val manifestIds = manifest.mapTo(mutableSetOf()) { it.id }
+        val agreed = localEntries.mapTo(mutableSetOf()) { it.id }
+            .apply { retainAll(manifestIds) }
+            .apply {
+                addAll(plan.toUpload)
+                addAll(plan.toDownload)
+                removeAll(plan.toDeleteLocally.toSet())
+            }
+        local.markRecipesAgreed(agreed)
 
         val (imagesUp, imagesDown) = syncImages(manifest, tombstones)
         val (preparedUp, preparedDown) = syncPreparedDates(manifest, plan, tombstones)
@@ -657,10 +686,14 @@ class SyncService(
         val server = api.fetchCourses()
         val serverById = server.associateBy { it.id }
         val localById = local.courses().associateBy { it.id }
+        // Agreement-tracked (SHARED-V0006), exactly like recipes: a row that exists here and not on
+        // the server is classified by its recorded stamp, never by comparing clocks to the watermark.
+        val localEntries = local.courseEntries()
         val plan = SyncReconciler.plan(
-            local = localById.values.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
+            local = localEntries,
             server = server.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
             isFirstSync = isFirstSync, lastSyncDate = lastSync,
+            tracksAgreement = true,
         )
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadCourse(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertCourse(it) } }
@@ -686,6 +719,18 @@ class SyncService(
                 }
             }
         }
+        // Record what this pass agreed on (SHARED-V0006); see the recipe pass for why these three
+        // groups are one statement, and why anything just deleted — including deletions the guard
+        // refused — must stay unstamped.
+        val agreed = localEntries.mapTo(mutableSetOf()) { it.id }
+            .apply {
+                retainAll(serverById.keys)
+                addAll(plan.toUpload)
+                addAll(plan.toDownload)
+                removeAll(plan.toDeleteLocally.toSet())
+            }
+        local.markCoursesAgreed(agreed)
+
         return plan.counts().copy(
             down = plan.toDownload.size + conflictDownloads,
             deletedLocal = deletedLocally,
@@ -698,10 +743,14 @@ class SyncService(
         val server = api.fetchCategories()
         val serverById = server.associateBy { it.id }
         val localById = local.categories().associateBy { it.id }
+        // Agreement-tracked (SHARED-V0006), exactly like recipes: a row that exists here and not on
+        // the server is classified by its recorded stamp, never by comparing clocks to the watermark.
+        val localEntries = local.categoryEntries()
         val plan = SyncReconciler.plan(
-            local = localById.values.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
+            local = localEntries,
             server = server.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
             isFirstSync = isFirstSync, lastSyncDate = lastSync,
+            tracksAgreement = true,
         )
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadCategory(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertCategory(it) } }
@@ -726,6 +775,18 @@ class SyncService(
                 }
             }
         }
+        // Record what this pass agreed on (SHARED-V0006); see the recipe pass for why these three
+        // groups are one statement, and why anything just deleted — including deletions the guard
+        // refused — must stay unstamped.
+        val agreed = localEntries.mapTo(mutableSetOf()) { it.id }
+            .apply {
+                retainAll(serverById.keys)
+                addAll(plan.toUpload)
+                addAll(plan.toDownload)
+                removeAll(plan.toDeleteLocally.toSet())
+            }
+        local.markCategoriesAgreed(agreed)
+
         return plan.counts().copy(
             down = plan.toDownload.size + conflictDownloads,
             deletedLocal = deletedLocally,
@@ -738,10 +799,14 @@ class SyncService(
         val server = api.fetchTags()
         val serverById = server.associateBy { it.id }
         val localById = local.tags().associateBy { it.id }
+        // Agreement-tracked (SHARED-V0006), exactly like recipes: a row that exists here and not on
+        // the server is classified by its recorded stamp, never by comparing clocks to the watermark.
+        val localEntries = local.tagEntries()
         val plan = SyncReconciler.plan(
-            local = localById.values.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
+            local = localEntries,
             server = server.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
             isFirstSync = isFirstSync, lastSyncDate = lastSync,
+            tracksAgreement = true,
         )
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadTag(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertTag(it) } }
@@ -766,6 +831,18 @@ class SyncService(
                 }
             }
         }
+        // Record what this pass agreed on (SHARED-V0006); see the recipe pass for why these three
+        // groups are one statement, and why anything just deleted — including deletions the guard
+        // refused — must stay unstamped.
+        val agreed = localEntries.mapTo(mutableSetOf()) { it.id }
+            .apply {
+                retainAll(serverById.keys)
+                addAll(plan.toUpload)
+                addAll(plan.toDownload)
+                removeAll(plan.toDeleteLocally.toSet())
+            }
+        local.markTagsAgreed(agreed)
+
         return plan.counts().copy(
             down = plan.toDownload.size + conflictDownloads,
             deletedLocal = deletedLocally,

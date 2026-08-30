@@ -50,6 +50,35 @@ kotlin {
     }
 }
 
+// The conformance corpus lives outside this repo (see salty-contract/README.md), so there is no reliable
+// relative path to it. Resolved from the SALTY_CORPUS_DIR environment variable, or from a
+// `salty.corpusDir=` line in local.properties -- which is already this repo's home for machine-specific
+// paths (sdk.dir) and is already gitignored, so no absolute path is ever checked in. Everything goes
+// through `providers` to stay configuration-cache safe.
+//
+// When salty-contract becomes its own repo checked out beside this one, ContractCorpusTest's walk-up
+// finds it unaided and this block can go.
+val saltyCorpusDir: String? = providers.environmentVariable("SALTY_CORPUS_DIR")
+    .orElse(
+        providers.fileContents(rootProject.layout.projectDirectory.file("local.properties")).asText
+            .map { text ->
+                text.lineSequence()
+                    .map(String::trim)
+                    .firstOrNull { it.startsWith("salty.corpusDir=") }
+                    ?.substringAfter('=')?.trim()
+                    .orEmpty()
+            }
+    )
+    .orNull?.takeIf { it.isNotBlank() }
+
+tasks.withType<Test>().configureEach {
+    saltyCorpusDir?.let { environment("SALTY_CORPUS_DIR", it) }
+    testLogging {
+        showStandardStreams = true // the corpus runner prints its waiver list and per-suite tallies
+        events("passed", "failed", "skipped")
+    }
+}
+
 sqldelight {
     databases {
         create("AppDatabase") {

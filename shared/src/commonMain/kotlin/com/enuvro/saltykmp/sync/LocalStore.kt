@@ -11,7 +11,8 @@ import com.enuvro.saltykmp.db.LibraryDuplicateMerger
 import com.enuvro.saltykmp.db.LibraryMergeSummary
 import com.enuvro.saltykmp.db.model.Difficulty
 import com.enuvro.saltykmp.db.model.Rating
-import kotlin.time.Clock
+import com.enuvro.saltykmp.util.newId
+import com.enuvro.saltykmp.util.nowWireIso
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
@@ -26,8 +27,32 @@ class LocalStore(private val db: AppDatabase) {
 
     // ---- Recipes ----
 
+    /**
+     * Every local recipe, with the SHARED-V0005 agreement stamp the reconciler needs. A null stamp means
+     * the row has never been agreed with the server, which is what lets `SyncReconciler.plan` tell a new
+     * recipe from one the server deleted without comparing any clock.
+     */
     fun recipeEntries(): List<SyncReconciler.Entry> =
-        q.selectAllRecipes().executeAsList().map { SyncReconciler.Entry(it.id, parseOrPast(dbToWireDate(it.lastModifiedDate))) }
+        q.selectAllRecipes().executeAsList().map {
+            SyncReconciler.Entry(
+                it.id,
+                parseOrPast(dbToWireDate(it.lastModifiedDate)),
+                parseOrNull(dbToWireDate(it.syncedModifiedDate)),
+            )
+        }
+
+    /**
+     * Records that these recipes now match the server. Call it only for recipes that actually made it:
+     * stamping one that never reached the server would tell the next sync the server has a copy it does
+     * not, and that row would be deleted locally instead of retried.
+     */
+    fun markRecipesAgreed(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        db.transaction { ids.forEach { q.markRecipeAgreed(it) } }
+    }
+
+    /** Force-pull counterpart: the whole library came from the server, so all of it agrees. */
+    fun markAllRecipesAgreed() = q.markAllRecipesAgreed()
 
     /** Per-recipe image state for the independent image-sync pass: id + filename + image timestamp (wire form). */
     data class ImageEntry(val id: String, val imageFilename: String?, val lastModifiedImageDate: String?)
@@ -135,13 +160,13 @@ class LocalStore(private val db: AppDatabase) {
                 q.deleteRecipeCategoriesByRecipeId(s.id)
                 val known = q.selectAllCategories().executeAsList().mapTo(mutableSetOf()) { it.id }
                 ids.distinct().filter { it in known }
-                    .forEach { catId -> q.upsertRecipeCategory(idFor(s.id, catId), s.id, catId) }
+                    .forEach { catId -> q.upsertRecipeCategory(newId(), s.id, catId) }
             }
             s.tagIds?.let { ids ->
                 q.deleteRecipeTagsByRecipeId(s.id)
                 val known = q.selectAllTags().executeAsList().mapTo(mutableSetOf()) { it.id }
                 ids.distinct().filter { it in known }
-                    .forEach { tagId -> q.upsertRecipeTag(idFor(s.id, tagId), s.id, tagId) }
+                    .forEach { tagId -> q.upsertRecipeTag(newId(), s.id, tagId) }
             }
         }
     }
@@ -190,6 +215,47 @@ class LocalStore(private val db: AppDatabase) {
         q.selectAllCategories().executeAsList().map { ServerCategory(it.id, it.name, dbToWireDate(it.lastModifiedDate)) }
     fun tags(): List<ServerTag> =
         q.selectAllTags().executeAsList().map { ServerTag(it.id, it.name, dbToWireDate(it.lastModifiedDate)) }
+
+    // ---- Classifier agreement (SHARED-V0006): the recipe pattern, applied to the library tables ----
+
+    /** Course entries with the agreement stamp the reconciler needs; see [recipeEntries]. */
+    fun courseEntries(): List<SyncReconciler.Entry> =
+        q.selectAllCourses().executeAsList().map {
+            SyncReconciler.Entry(it.id, parseOrPast(dbToWireDate(it.lastModifiedDate)), parseOrNull(dbToWireDate(it.syncedModifiedDate)))
+        }
+
+    fun categoryEntries(): List<SyncReconciler.Entry> =
+        q.selectAllCategories().executeAsList().map {
+            SyncReconciler.Entry(it.id, parseOrPast(dbToWireDate(it.lastModifiedDate)), parseOrNull(dbToWireDate(it.syncedModifiedDate)))
+        }
+
+    fun tagEntries(): List<SyncReconciler.Entry> =
+        q.selectAllTags().executeAsList().map {
+            SyncReconciler.Entry(it.id, parseOrPast(dbToWireDate(it.lastModifiedDate)), parseOrNull(dbToWireDate(it.syncedModifiedDate)))
+        }
+
+    /** See [markRecipesAgreed] — same rule: only rows that actually made it. */
+    fun markCoursesAgreed(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        db.transaction { ids.forEach { q.markCourseAgreed(it) } }
+    }
+
+    fun markCategoriesAgreed(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        db.transaction { ids.forEach { q.markCategoryAgreed(it) } }
+    }
+
+    fun markTagsAgreed(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        db.transaction { ids.forEach { q.markTagAgreed(it) } }
+    }
+
+    /** Force-path counterpart of [markAllRecipesAgreed] for the three library tables. */
+    fun markAllClassifiersAgreed() {
+        q.markAllCoursesAgreed()
+        q.markAllCategoriesAgreed()
+        q.markAllTagsAgreed()
+    }
 
     // Named arguments throughout: the upserts are grouped statements (UPDATE + INSERT OR IGNORE), so
     // SQLDelight derives the parameter ORDER from first appearance in the SQL, not from the column list.
@@ -314,12 +380,8 @@ class LocalStore(private val db: AppDatabase) {
                 ?.let { runCatching { Instant.parse(it) }.getOrNull() }
                 ?.let { Instant.fromEpochMilliseconds(it.toEpochMilliseconds()) }
 
-        private fun idFor(recipeId: String, otherId: String) = "$recipeId|$otherId"
-
-        /** Current time at millisecond precision, matching the wire contract (no nanoseconds). */
-        @OptIn(ExperimentalTime::class)
-        private fun nowIso(): String =
-            Clock.System.now().let { Instant.fromEpochMilliseconds(it.toEpochMilliseconds()) }.toString()
+        /** Current time in the strict wire shape — ms precision, fraction always present. See [nowWireIso]. */
+        internal fun nowIso(): String = nowWireIso()
 
         private fun nowDbDate(): String = wireToDbDate(nowIso())!!
 
@@ -330,11 +392,13 @@ class LocalStore(private val db: AppDatabase) {
             s?.takeIf { it.isNotBlank() }?.removeSuffix("Z")?.replace('T', ' ')
 
         fun dbToWireDate(s: String?): String? {
-            val v = s?.takeIf { it.isNotBlank() } ?: return null
-            return when {
-                v.contains('T') -> if (v.endsWith("Z")) v else "${v}Z"
-                else -> "${v.replace(' ', 'T')}Z"
-            }
+            // Trim, and drop a trailing Z BEFORE choosing a branch. A database value carrying one
+            // (alpha-era rows do -- Salty.NET's SaltyDates documents the same) has no 'T', so it used to
+            // take the else branch and come back "...ZZ". Instant.parse rejects that, parseOrPast then
+            // returned DISTANT_PAST, and the row lost every timestamp comparison in the reconciler --
+            // so the server silently overwrote local edits to it. Pinned by corpus DATE-PARSE-003.
+            val v = s?.trim()?.removeSuffix("Z")?.takeIf { it.isNotBlank() } ?: return null
+            return if (v.contains('T')) "${v}Z" else "${v.replace(' ', 'T')}Z"
         }
     }
 }
