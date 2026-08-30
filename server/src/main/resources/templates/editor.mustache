@@ -59,7 +59,9 @@
 <wa-page id="app" x-data="saltyEditor()" x-cloak mobile-breakpoint="768px"
          :data-pane="pane">
 
-  <header slot="header" class="appbar">
+  <!-- wa-split does the layout (brand at one end, account at the other); the stylesheet only
+       supplies the inset, since wa-page's header part has no padding of its own. -->
+  <header slot="header" class="appbar wa-split wa-align-items-center">
     <!-- No hamburger here on purpose. wa-page renders its own navigation toggle and owns the
          drawer; a second hand-rolled button is what produced two of them side by side, and every
          workaround after that (data-toggle-nav, a !important override) was papering over it. -->
@@ -98,12 +100,12 @@
       </wa-tree-item>
 
       <wa-tree-item data-kind="favorites" :selected="filter.kind === 'favorites'">
-        <wa-icon name="heart" :variant="filter.kind === 'favorites' ? 'solid' : 'regular'"></wa-icon>
+        <wa-icon name="heart" variant="regular"></wa-icon>
         Favorites
       </wa-tree-item>
 
       <wa-tree-item data-kind="wantToMake" :selected="filter.kind === 'wantToMake'">
-        <wa-icon name="bookmark" :variant="filter.kind === 'wantToMake' ? 'solid' : 'regular'"></wa-icon>
+        <wa-icon name="bookmark" variant="regular"></wa-icon>
         Want to Make
       </wa-tree-item>
 
@@ -115,9 +117,7 @@
           <template x-for="item in group.items" :key="item.id">
             <wa-tree-item :data-kind="group.kind" :data-id="item.id"
                           :selected="filter.kind === group.kind && filter.id === item.id">
-              <wa-icon :name="group.icon"
-                       :variant="group.outline && !(filter.kind === group.kind && filter.id === item.id)
-                                 ? 'regular' : 'solid'"></wa-icon>
+              <wa-icon :name="group.icon" :variant="group.outline ? 'regular' : 'solid'"></wa-icon>
               <span x-text="item.name || 'Untitled'"></span>
             </wa-tree-item>
           </template>
@@ -136,7 +136,7 @@
        unlabelled landmarks at once. -->
   <main class="panes" id="main-content">
   <section class="list" aria-label="Recipes" x-show="section === 'recipes'">
-    <header class="list__head">
+    <header class="list__head wa-split wa-align-items-center">
       <wa-button class="only-compact" size="small" appearance="plain" @click="showLibrary()">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Library
       </wa-button>
@@ -159,10 +159,40 @@
       </wa-callout>
 
       <template x-for="r in visibleRecipes" :key="r.id">
+        <!-- wa-flank puts the thumbnail beside the text, wa-frame crops it to a square without
+             distorting it, and wa-stack spaces the lines: all Web Awesome layout utilities, so the
+             only thing left for the stylesheet is the flank width and the row's own hit area. -->
         <button type="button" class="rrow" :class="{ 'rrow--on': r.id === selectedId }"
                 @click="open(r.id)" :aria-current="r.id === selectedId">
-          <span class="rrow__name" x-text="r.name || 'Untitled'"></span>
-          <span class="rrow__meta" x-text="rowMeta(r)"></span>
+          <!-- The flank sits on a span inside the button rather than on the button itself: flex
+               layout on a <button> has a long history of engine quirks, and a plain element is what
+               the utility expects. (The row's height comes from .rrow in the stylesheet, which
+               undoes the form-control height Web Awesome gives every bare button.) -->
+          <span class="rrow__inner wa-flank wa-gap-s">
+          <span class="rrow__thumb wa-frame:square">
+            <template x-if="thumbUrl(r)">
+              <img :src="thumbUrl(r)" alt="" loading="lazy" decoding="async">
+            </template>
+            <template x-if="!thumbUrl(r)">
+              <wa-icon name="book-open" class="rrow__noimage"></wa-icon>
+            </template>
+          </span>
+
+          <span class="rrow__text wa-stack wa-gap-3xs">
+            <span class="rrow__name" x-text="r.name || 'Untitled'"></span>
+            <template x-if="rowSubtitle(r)">
+              <span class="rrow__sub" x-text="rowSubtitle(r)"></span>
+            </template>
+            <span class="rrow__marks wa-cluster wa-gap-2xs"
+                  x-show="r.rating || r.isFavorite">
+              <!-- readonly: the row is a link to the recipe, not a place to re-rate it. -->
+              <wa-rating x-show="r.rating" readonly size="small" :value="r.rating || 0"
+                         :label="(r.rating || 0) + ' out of 5'"></wa-rating>
+              <wa-icon x-show="r.isFavorite" class="rrow__fav" name="heart" variant="solid"
+                       label="Favorite"></wa-icon>
+            </span>
+          </span>
+          </span>
         </button>
       </template>
 
@@ -174,7 +204,7 @@
   <!-- The same middle column, showing shopping lists. Mirrors the Swift client, where the content
        column lists the shopping lists and the detail column shows the one that's selected. -->
   <section class="list" aria-label="Shopping lists" x-show="section === 'shopping'">
-    <header class="list__head">
+    <header class="list__head wa-split wa-align-items-center">
       <wa-button class="only-compact" size="small" appearance="plain" @click="showLibrary()">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Library
       </wa-button>
@@ -199,7 +229,7 @@
 
   <!-- ═══════════════════ pane 3 · recipe ═══════════════════ -->
   <section class="detail" aria-label="Recipe" x-show="section === 'recipes'">
-    <header class="detail__bar">
+    <header class="detail__bar wa-split wa-align-items-center">
       <wa-button class="only-compact" size="small" appearance="plain" @click="backToList()">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Recipes
       </wa-button>
@@ -207,7 +237,7 @@
       <h1 class="detail__title" x-text="current ? (current.name || 'Untitled') : ''"></h1>
 
       <template x-if="current">
-        <div class="detail__actions">
+        <div class="detail__actions wa-cluster wa-gap-2xs">
           <!-- Read is the default; Edit is an action, matching the Swift and CMP apps. -->
           <template x-if="mode === 'read'">
             <wa-button data-testid="edit" size="small" appearance="outlined" @click="mode = 'edit'">
@@ -316,7 +346,7 @@
               <template x-if="(current.preparationTimes || []).length">
                 <section class="read__sect">
                   <h3>Times</h3>
-                  <dl class="read__pairs">
+                  <dl class="read__pairs wa-grid">
                     <template x-for="t in current.preparationTimes" :key="t.id">
                       <div class="read__pair">
                         <dt x-text="t.type"></dt>
@@ -354,7 +384,7 @@
               <template x-if="hasNutrition">
                 <section class="read__sect">
                   <h3>Nutrition</h3>
-                  <dl class="read__pairs">
+                  <dl class="read__pairs wa-grid">
                     <template x-for="row in nutritionRows" :key="row.label">
                       <div class="read__pair">
                         <dt x-text="row.label"></dt>
@@ -390,7 +420,7 @@
        composed, and autosaves as items are ticked (see touchList). That's also what makes
        concurrent edits ordinary here rather than rare, hence the merge on 409. -->
   <section class="detail" aria-label="Shopping list" x-show="section === 'shopping'">
-    <header class="detail__bar">
+    <header class="detail__bar wa-split wa-align-items-center">
       <wa-button class="only-compact" size="small" appearance="plain" @click="pane = 'list'">
         <wa-icon slot="start" name="chevron-left"></wa-icon> Lists
       </wa-button>
@@ -398,7 +428,7 @@
       <h1 class="detail__title" x-text="currentList ? (currentList.name || 'Untitled') : ''"></h1>
 
       <template x-if="currentList">
-        <div class="detail__actions">
+        <div class="detail__actions wa-cluster wa-gap-2xs">
           <span class="savebar__status" :class="{ 'is-dirty': listDirty }"
                 x-text="listSaving ? 'Saving…' : (listDirty ? 'Unsaved changes' : 'All changes saved')"></span>
           <wa-dropdown>
@@ -443,7 +473,7 @@
             <div>
               <!-- Enter is handled on the input rather than by form submission: wa-input keeps its
                    real <input> in shadow DOM, so a form never sees the implicit submit. -->
-              <div class="slist__add">
+              <div class="slist__add wa-cluster wa-gap-xs">
                 <wa-input size="small" placeholder="Add an item" x-model="newItemText"
                           aria-label="Add an item" @keydown.enter.prevent="addItem()">
                   <wa-icon slot="start" name="plus"></wa-icon>
@@ -455,9 +485,9 @@
               <p class="slist__count" x-show="currentList.contentsForList.length"
                  x-text="openItemCount + (openItemCount === 1 ? ' item left' : ' items left')"></p>
 
-              <ul class="slist__rows">
+              <ul class="slist__rows wa-stack wa-gap-3xs">
                 <template x-for="item in sortedItems" :key="item.id">
-                  <li class="sitem" :class="{ 'sitem--done': item.isCompleted && !item.isHeading,
+                  <li class="sitem wa-cluster wa-gap-xs" :class="{ 'sitem--done': item.isCompleted && !item.isHeading,
                                               'sitem--heading': item.isHeading }">
                     <template x-if="!item.isHeading">
                       <wa-checkbox :checked="item.isCompleted"
@@ -532,11 +562,11 @@
                   aria-label="Recipe name" size="large"></wa-input>
 
         <wa-card class="sect">
-          <div slot="header" class="sect__head"><h3>Image</h3></div>
+          <div slot="header" class="sect__head wa-split wa-align-items-center"><h3>Image</h3></div>
           <!-- Staged, not uploaded on the spot: see chooseImage. The file input is the real one,
                kept off-screen rather than display:none so it stays focusable, with the wa-button
                acting as its label. -->
-          <div class="imgedit">
+          <div class="imgedit wa-stack wa-gap-s">
             <template x-if="imageUrl">
               <img class="imgedit__preview" :src="imageUrl" alt="Recipe image">
             </template>
@@ -547,8 +577,8 @@
               </div>
             </template>
 
-            <div class="imgedit__actions">
-              <input type="file" id="imgfile" class="visually-hidden" aria-label="Recipe image file"
+            <div class="imgedit__actions wa-cluster wa-gap-xs">
+              <input type="file" id="imgfile" class="wa-visually-hidden" aria-label="Recipe image file"
                      accept="image/jpeg,image/png,image/gif" @change="chooseImage($event)">
               <wa-button size="small" appearance="filled" data-testid="choose-image"
                          @click="document.getElementById('imgfile').click()">
@@ -567,12 +597,12 @@
         </wa-card>
 
         <wa-card class="sect">
-          <div slot="header" class="sect__head"><h3>Details</h3></div>
+          <div slot="header" class="sect__head wa-split wa-align-items-center"><h3>Details</h3></div>
 
           <!-- Grouped into lines that belong together rather than one auto-fitting grid, which
                reflowed fields into arbitrary neighbours at every width. Each .fieldrow still wraps
                on a narrow screen, so this is grouping, not a fixed column count. -->
-          <div class="fieldrow">
+          <div class="fieldrow wa-grid">
             <wa-input label="Source" with-label x-model="current.source" @input="touch()"></wa-input>
             <wa-input label="Source details" with-label x-model="current.sourceDetails"
                       @input="touch()"></wa-input>
@@ -581,7 +611,7 @@
           <wa-textarea class="intro" label="Introduction" with-label resize="auto" rows="3"
                        x-model="current.introduction" @input="touch()"></wa-textarea>
 
-          <div class="fieldrow">
+          <div class="fieldrow wa-grid">
             <wa-input label="Yield" with-label x-model="current.yield" @input="touch()"></wa-input>
             <wa-input label="Servings" with-label type="number" step="1" min="0"
                       x-model.number="current.servings" @input="touch()"></wa-input>
@@ -593,7 +623,7 @@
             </wa-select>
           </div>
 
-          <div class="fieldrow">
+          <div class="fieldrow wa-grid">
             <wa-select label="Difficulty" with-label :value="String(current.difficulty ?? 0)"
                        @change="current.difficulty = Number($event.target.value); touch()">
               <wa-option value="0">(not set)</wa-option>
@@ -615,7 +645,7 @@
 
           <!-- Both flags were settable everywhere except the editor, which is the one place you'd
                expect to set them while writing the recipe down. -->
-          <div class="fieldrow fieldrow--flags">
+          <div class="fieldrow fieldrow--flags wa-cluster wa-gap-m">
             <wa-checkbox :checked="!!current.isFavorite"
                          @change="current.isFavorite = $event.target.checked; touch()">
               Favorite
@@ -626,7 +656,7 @@
             </wa-checkbox>
           </div>
 
-          <div class="fieldrow">
+          <div class="fieldrow wa-grid">
             <wa-select multiple with-clear max-options-visible="4" label="Categories" with-label
                        x-model="current.categoryIds" @change="touch()">
               <template x-for="c in categories" :key="c.id">
@@ -636,7 +666,7 @@
 
             <div class="field">
               <label class="field__label">Tags</label>
-              <div class="tagfield">
+              <div class="tagfield wa-cluster wa-gap-2xs">
                 <wa-select multiple with-clear max-options-visible="4" aria-label="Tags"
                            x-model="current.tagIds" @change="touch()">
                   <template x-for="t in tags" :key="t.id">
@@ -653,7 +683,7 @@
             </div>
           </div>
 
-          <div class="fieldrow fieldrow--narrow">
+          <div class="fieldrow fieldrow--narrow wa-grid">
             <div class="field">
               <label class="field__label" for="lastPrepared">Last Prepared</label>
               <input class="native-date" type="date" id="lastPrepared"
@@ -664,7 +694,7 @@
         </wa-card>
 
         <wa-card class="sect">
-          <div slot="header" class="sect__head">
+          <div slot="header" class="sect__head wa-split wa-align-items-center">
             <h3>Ingredients</h3>
           </div>
           <ul class="rows rows--plain" x-sort="(item, pos) => reorder('ingredients', item, pos)"
@@ -702,7 +732,7 @@
               </li>
             </template>
           </ul>
-          <div slot="footer" class="sect__foot">
+          <div slot="footer" class="sect__foot wa-cluster wa-gap-xs">
             <wa-button size="small" appearance="filled" @click="addRow('ingredients', false)">
               <wa-icon slot="start" name="plus"></wa-icon> Ingredient
             </wa-button>
@@ -713,7 +743,7 @@
         </wa-card>
 
         <wa-card class="sect">
-          <div slot="header" class="sect__head">
+          <div slot="header" class="sect__head wa-split wa-align-items-center">
             <h3>Directions</h3>
           </div>
           <ul class="rows" x-sort="(item, pos) => reorder('directions', item, pos)"
@@ -745,7 +775,7 @@
               </li>
             </template>
           </ul>
-          <div slot="footer" class="sect__foot">
+          <div slot="footer" class="sect__foot wa-cluster wa-gap-xs">
             <wa-button size="small" appearance="filled" @click="addRow('directions', false)">
               <wa-icon slot="start" name="plus"></wa-icon> Step
             </wa-button>
@@ -762,7 +792,7 @@
         <wa-details class="subsect" data-testid="details-times"
                     :summary="'Preparation Times' + (current.preparationTimes.length ? ' (' + current.preparationTimes.length + ')' : '')">
           <template x-for="row in current.preparationTimes" :key="row.id">
-            <div class="subrow">
+            <div class="subrow wa-cluster wa-gap-xs">
               <wa-input size="small" placeholder='Type (e.g., "Bake")' aria-label="Time type"
                         x-model="row.type" @input="touch()"></wa-input>
               <wa-input size="small" placeholder='Time (e.g., "1 hr, 30 min")' aria-label="Time"
@@ -783,7 +813,7 @@
                     :summary="'Notes' + (current.notes.length ? ' (' + current.notes.length + ')' : '')">
           <template x-for="row in current.notes" :key="row.id">
             <div class="subblock">
-              <div class="subblock__head">
+              <div class="subblock__head wa-cluster wa-gap-xs">
                 <wa-input size="small" placeholder="Note Title" aria-label="Note title"
                           x-model="row.title" @input="touch()"></wa-input>
                 <wa-button size="small" appearance="plain" title="Remove"
@@ -805,7 +835,7 @@
                     :summary="'Variations' + (current.variations.length ? ' (' + current.variations.length + ')' : '')">
           <template x-for="row in current.variations" :key="row.id">
             <div class="subblock">
-              <div class="subblock__head">
+              <div class="subblock__head wa-cluster wa-gap-xs">
                 <wa-input size="small" placeholder="Variation Name" aria-label="Variation name"
                           x-model="row.variationName" @input="touch()"></wa-input>
                 <wa-button size="small" appearance="plain" title="Remove"
@@ -830,7 +860,7 @@
           <template x-for="g in nutritionGroups" :key="g.group">
             <div class="nutgroup">
               <h4 class="nutgroup__head" x-text="g.group"></h4>
-              <div class="nutgrid">
+              <div class="nutgrid wa-grid">
                 <template x-for="f in g.fields" :key="f.key">
                   <wa-input size="small" with-label
                             :label="f.label + (f.unit ? ' (' + f.unit + ')' : '')"
@@ -851,7 +881,7 @@
          which offered three exits for two intentions: Revert discarded AND closed (so it was
          Cancel by another name), while Save and Done differed only in whether the dialog stayed
          open -- a distinction nobody asked for. -->
-    <div slot="footer" class="savebar savebar--dialog">
+    <div slot="footer" class="savebar savebar--dialog wa-cluster wa-gap-xs">
       <span class="savebar__status" :class="{ 'is-dirty': dirty }"
             x-text="dirty ? 'Unsaved changes' : 'All changes saved'"></span>
       <wa-button data-testid="cancel" size="small" appearance="plain"

@@ -35,16 +35,16 @@ wa-page { height: 100dvh; }
 
 .only-compact { display: none; }
 
-/* wa-page's header part has no padding of its own — measured at 0. The height came from Web
-   Awesome styling a bare <header> as a document header (16px all round), which is right for prose
-   and wrong for an app bar. Zeroing it on our own element rather than overriding the component:
-   78px -> 46px, which is just the button height. Everything else stays WA's default. */
+/* Layout is wa-split's job (brand one end, account the other). wa-page's header part has no
+   padding at all, and Web Awesome styles a bare <header> as a DOCUMENT header — 16px all round,
+   right for prose and wrong for an app bar, which is what made this 78px tall. So: block padding
+   trimmed to sit on the button height, inline padding kept so the brand isn't jammed into the
+   window corner, and everything else left to WA. */
 .appbar {
-  display: flex; align-items: center; gap: var(--wa-space-s, 0.5rem);
-  width: 100%; padding: 0;
+  padding-block: var(--wa-space-2xs);
+  padding-inline: var(--wa-space-m);
+  gap: var(--wa-space-s);
 }
-.appbar__brand { font-size: var(--wa-font-size-s); }
-.appbar__account { margin-inline-start: auto; }
 
 .rail   { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .list   { display: flex; flex-direction: column; min-height: 0;
@@ -57,15 +57,9 @@ wa-page { height: 100dvh; }
 
 .rail { overflow-y: auto; padding: var(--wa-space-xs); }
 
-.rail__heading {
-  font-size: var(--wa-font-size-2xs, 0.7rem); font-weight: var(--wa-font-weight-bold);
-  letter-spacing: 0.08em; text-transform: uppercase; color: var(--wa-color-neutral-on-quiet);
-  margin: var(--wa-space-2xs) 0 var(--wa-space-2xs) var(--wa-space-xs);
-}
-
 /* -------------------------------------------------------------------- list -- */
 
-.list__head { display: flex; align-items: center; gap: var(--wa-space-xs);
+.list__head { gap: var(--wa-space-xs);
               padding: var(--wa-space-s) var(--wa-space-s) var(--wa-space-2xs); }
 .list__title { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-bold); margin: 0;
                margin-inline-end: auto; overflow: hidden; text-overflow: ellipsis;
@@ -75,10 +69,14 @@ wa-page { height: 100dvh; }
                 padding: 0 var(--wa-space-xs) var(--wa-space-l); }
 
 .rrow {
-  display: flex; flex-direction: column; gap: 2px;
-  /* align-items, not just text-align: a column flex container centres its children by default. */
-  align-items: flex-start;
-  width: 100%; text-align: start; cursor: pointer;
+  /* Web Awesome's native.css themes every bare <button> as a form control, including
+     `height: var(--wa-form-control-height)`. A list row is not a form control, and that fixed
+     height clipped the row to less than its own thumbnail. native.css lives in a cascade layer, so
+     this unlayered declaration beats it without needing specificity or !important -- which is
+     exactly what layers are for, and why this stays safe across upgrades.
+     The arrangement inside is wa-flank's, on .rrow__inner. */
+  height: auto;
+  display: block; width: 100%; text-align: start; cursor: pointer;
   border: 0; border-radius: var(--wa-border-radius-m);
   padding: var(--wa-space-xs) var(--wa-space-s);
   background: none; color: inherit; font: inherit;
@@ -86,7 +84,27 @@ wa-page { height: 100dvh; }
 .rrow:hover { background: var(--wa-color-neutral-fill-quiet); }
 .rrow--on { background: var(--wa-color-brand-fill-quiet); }
 .rrow__name { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-medium); }
-.rrow__meta { font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet); }
+
+/* --flank-size is wa-flank's own knob for the fixed side. */
+.rrow__inner { --flank-size: 3rem; }
+.rrow__thumb { --flank-size: 3rem; flex: 0 0 3rem; block-size: 3rem;
+               border-radius: var(--wa-border-radius-m);
+               background: var(--wa-color-neutral-fill-quiet); }
+.rrow__noimage { color: var(--wa-color-neutral-on-quiet); font-size: 1.1rem; }
+
+/* The text column must be allowed to shrink, or a long introduction pushes the row wider than the
+   pane instead of ellipsing. */
+.rrow__text { min-width: 0; }
+.rrow__sub {
+  font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet);
+  /* One line: these are introductions, and a paragraph per row would bury the names. */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The marks line spans the row so the two readings sit at opposite ends: rating on the left where
+   the eye is already scanning names, favourite on the right as a flag rather than a fourth thing
+   crowding the stars. */
+.rrow__marks { width: 100%; }
+.rrow__fav { margin-inline-start: auto; color: var(--wa-color-danger-fill-loud); }
 
 .empty { color: var(--wa-color-neutral-on-quiet); font-size: var(--wa-font-size-s);
          padding: var(--wa-space-xs) var(--wa-space-s); }
@@ -95,13 +113,13 @@ wa-page { height: 100dvh; }
 
 /* ------------------------------------------------------------------ detail -- */
 
-.detail__bar { display: flex; align-items: center; gap: var(--wa-space-s);
+.detail__bar { gap: var(--wa-space-s);
                padding: var(--wa-space-xs) var(--wa-space-m);
                border-block-end: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border); }
 .detail__title { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-semibold);
                  margin: 0; margin-inline-end: auto; overflow: hidden; text-overflow: ellipsis;
                  white-space: nowrap; min-width: 0; }
-.detail__actions { display: flex; align-items: center; gap: var(--wa-space-2xs); }
+
 
 .doc { flex: 1; min-height: 0; overflow-y: auto;
        padding: var(--wa-space-l) var(--wa-space-m) var(--wa-space-3xl); }
@@ -147,10 +165,10 @@ wa-page { height: 100dvh; }
 /* --------------------------------------------------------------- edit view -- */
 
 .sect { margin-block-end: var(--wa-space-m); }
-.sect__head { display: flex; align-items: center; gap: var(--wa-space-xs); }
+
 .sect__head h3 { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-bold);
                  margin: 0; margin-inline-end: auto; }
-.sect__foot { display: flex; gap: var(--wa-space-xs); flex-wrap: wrap; }
+
 
 .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .row { display: grid; grid-template-columns: auto 1.1rem 1fr auto; align-items: start;
@@ -220,7 +238,7 @@ wa-page { height: 100dvh; }
 }
 .native-date:focus-visible { outline: var(--wa-focus-ring); outline-offset: var(--wa-focus-ring-offset); }
 
-.savebar { display: flex; align-items: center; gap: var(--wa-space-xs);
+.savebar { gap: var(--wa-space-xs);
            padding: var(--wa-space-xs) var(--wa-space-m);
            border-block-start: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border);
            background: var(--wa-color-surface-lowered); }
@@ -267,18 +285,15 @@ wa-page { height: 100dvh; }
 
 /* ---------------------------------------------------------- shopping lists -- */
 
-.slist__add { display: flex; gap: var(--wa-space-xs); align-items: end;
-              margin-block-end: var(--wa-space-m); }
-.slist__add wa-input { flex: 1; }
+.slist__add { margin-block-end: var(--wa-space-m); }
+.slist__add wa-input { flex: 1; min-width: 0; }
 
 .slist__count { font-size: var(--wa-font-size-s); color: var(--wa-color-neutral-on-quiet);
                 margin-block: 0 var(--wa-space-xs); }
 
-.slist__rows { list-style: none; margin: 0; padding: 0;
-               display: flex; flex-direction: column; gap: var(--wa-space-3xs); }
+.slist__rows { list-style: none; margin: 0; padding: 0; }
 
-.sitem { display: flex; align-items: center; gap: var(--wa-space-xs); }
-.sitem__text { flex: 1; }
+.sitem__text { flex: 1; min-width: 0; }
 
 /* Completed items stay legible but clearly settled -- they sink to the bottom of the list too. */
 .sitem--done .sitem__text { opacity: 0.55; text-decoration: line-through; }
@@ -294,15 +309,12 @@ wa-page { height: 100dvh; }
 
 /* Fields grouped by what belongs together, rather than one auto-fitting grid that reflowed
    arbitrary neighbours onto the same line at every width. Still wraps when there isn't room. */
-.fieldrow { display: flex; flex-wrap: wrap; gap: var(--wa-space-s);
-            margin-block-end: var(--wa-space-m); }
-.fieldrow > * { flex: 1 1 11rem; min-width: 0; }
-.fieldrow--flags { align-items: center; }
-.fieldrow--flags > * { flex: 0 0 auto; }
+/* wa-grid does the columns; --min-column-size is its own knob for when they wrap. */
+.fieldrow { --min-column-size: 11rem; margin-block-end: var(--wa-space-m); gap: var(--wa-space-s); }
+.fieldrow--flags { margin-block-end: var(--wa-space-m); }
 /* A row holding one field shouldn't stretch it the full width of the dialog. */
-.fieldrow--narrow > * { flex: 0 1 14rem; }
+.fieldrow--narrow { --min-column-size: 14rem; grid-template-columns: minmax(0, 14rem); }
 
-.tagfield { display: flex; align-items: center; gap: var(--wa-space-2xs); }
 .tagfield wa-select { flex: 1; min-width: 0; }
 
 /* Ingredient rows carry no bullet in the editor -- the reading view still has them. Directions
@@ -311,8 +323,7 @@ wa-page { height: 100dvh; }
 
 /* ------------------------------------------------------ read-view extras -- */
 
-.read__pairs { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-               gap: var(--wa-space-2xs) var(--wa-space-m); margin: 0; }
+.read__pairs { --min-column-size: 13rem; gap: var(--wa-space-2xs) var(--wa-space-m); margin: 0; }
 .read__pair { display: flex; justify-content: space-between; gap: var(--wa-space-s);
               padding-block: var(--wa-space-3xs);
               border-block-end: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border); }
@@ -328,30 +339,22 @@ wa-page { height: 100dvh; }
 .subsect { margin-block-end: var(--wa-space-s); }
 
 /* One line per preparation time: type, the time itself, and a way to remove it. */
-.subrow { display: flex; gap: var(--wa-space-xs); align-items: center;
-          margin-block-end: var(--wa-space-xs); }
+.subrow { margin-block-end: var(--wa-space-xs); }
 .subrow > wa-input { flex: 1; min-width: 0; }
 
 /* Notes and variations are a heading plus prose, so they stack rather than sit on one line. */
 .subblock { margin-block-end: var(--wa-space-m); }
-.subblock__head { display: flex; gap: var(--wa-space-xs); align-items: center;
-                  margin-block-end: var(--wa-space-2xs); }
+.subblock__head { margin-block-end: var(--wa-space-2xs); }
 .subblock__head > wa-input { flex: 1; min-width: 0; }
 
 .nutgroup { margin-block-end: var(--wa-space-m); }
 .nutgroup__head { margin: 0 0 var(--wa-space-2xs);
                   font-size: var(--wa-font-size-s); color: var(--wa-color-neutral-on-quiet); }
-.nutgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-           gap: var(--wa-space-xs); }
+.nutgrid { --min-column-size: 10rem; gap: var(--wa-space-xs); }
 
 /* --------------------------------------------------------------- images -- */
 
-/* Off-screen rather than display:none, so the real file input keeps its place in the tab order and
-   the button that opens it can stay a plain button. */
-.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px;
-                   padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-
-.imgedit { display: flex; flex-direction: column; gap: var(--wa-space-s); align-items: start; }
+.imgedit { align-items: start; }
 .imgedit__preview { max-width: min(22rem, 100%); max-height: 14rem; object-fit: contain;
                     border-radius: var(--wa-border-radius-m);
                     border: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border); }
@@ -361,7 +364,7 @@ wa-page { height: 100dvh; }
                   border: var(--wa-border-width-s, 1px) dashed var(--wa-color-surface-border);
                   border-radius: var(--wa-border-radius-m); }
 .imgedit__icon { font-size: 1.75rem; }
-.imgedit__actions { display: flex; align-items: center; gap: var(--wa-space-xs); flex-wrap: wrap; }
+
 .imgedit__hint { font-size: var(--wa-font-size-s); color: var(--wa-color-brand-on-quiet); }
 .imgedit__note { margin: 0; font-size: var(--wa-font-size-s);
                  color: var(--wa-color-neutral-on-quiet); }

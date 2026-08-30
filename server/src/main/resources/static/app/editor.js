@@ -198,6 +198,8 @@ function saltyEditor() {
     categories: [],
     tags: [],
     filter: { kind: "all", id: null, label: "All Recipes" },
+    /** One of `recipeSorters`. No picker in the UI yet; the table is there for when there is one. */
+    sortBy: "name",
     section: "recipes",        // which thing the middle and right panes are showing
     shoppingLists: [],
     shoppingListsLoading: false,
@@ -249,7 +251,7 @@ function saltyEditor() {
         { kind: "course", label: "Courses", singular: "course", icon: "utensils",
           outline: false, items: this.courses },
         { kind: "tag", label: "Tags", singular: "tag", icon: "tag",
-          outline: false, items: this.tags },
+          outline: true, items: this.tags },
       ];
     },
 
@@ -282,11 +284,31 @@ function saltyEditor() {
     get wantToMakeCount() { return this.list.filter(r => r.wantToMake).length; },
 
     /** The middle pane: library filter first, then the search box on top of it. */
+    /**
+     * How the middle column is ordered. Written as a table rather than a hard-coded comparator so
+     * adding a picker later is a template change and nothing else -- the names below are already
+     * the option list.
+     *
+     * localeCompare, not `<`: "Éclair" and "eclair" have to sort where a reader expects, and
+     * `numeric` keeps "Chili 2" after "Chili 10" from being the other way round.
+     */
+    get recipeSorters() {
+      const byName = (a, b) =>
+        (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" });
+      return {
+        name: byName,
+        recent: (a, b) =>
+          String(b.lastModifiedDate || "").localeCompare(String(a.lastModifiedDate || "")) || byName(a, b),
+        rating: (a, b) => (b.rating || 0) - (a.rating || 0) || byName(a, b),
+      };
+    },
+
     get visibleRecipes() {
+      // .filter always returns a new array, so sorting here cannot disturb `list` itself.
       let rows = this.list.filter(r => this.matchesFilter(r));
       const q = this.query.trim().toLowerCase();
       if (q) rows = rows.filter(r => (r.name || "").toLowerCase().includes(q));
-      return rows;
+      return rows.sort(this.recipeSorters[this.sortBy] || this.recipeSorters.name);
     },
 
     async init() {
@@ -807,12 +829,22 @@ function saltyEditor() {
       return [...cats, ...tags];
     },
 
-    rowMeta(r) {
-      const bits = [];
-      const course = this.courseName(r.courseId);
-      if (course) bits.push(course);
-      bits.push(this.relativeDate(r.lastModifiedDate));
-      return bits.filter(Boolean).join(" · ");
+    /**
+     * The one line under a recipe's name: its introduction, or failing that where it came from.
+     * Whichever is present tells you what the recipe IS, which a modified-date never did.
+     */
+    rowSubtitle(r) {
+      return (r.introduction || r.source || r.sourceDetails || "").trim();
+    },
+
+    /**
+     * The list asks for thumbnails, not full images: the server generates and caches those, so a
+     * hundred rows cost a hundred small requests rather than a hundred full-size photos.
+     */
+    thumbUrl(r) {
+      return r.imageFilename
+        ? `/api/recipes/images/${encodeURIComponent(r.imageFilename)}/thumbnail`
+        : null;
     },
 
     backToList() {
