@@ -6,6 +6,7 @@ import com.enuvro.saltykmp.db.LibraryDuplicateMerger
 import com.enuvro.saltykmp.di.ImageFiles
 import com.enuvro.saltykmp.di.KeyValueStore
 import com.enuvro.saltykmp.di.SECRET_KEY_PASSWORD
+import com.enuvro.saltykmp.di.SECRET_KEY_SYNC_TOKEN
 import com.enuvro.saltykmp.di.SecretStore
 import com.enuvro.saltykmp.di.createSecretStore
 import com.enuvro.saltykmp.di.createDatabase
@@ -57,6 +58,17 @@ class SettingsState(
         set(value) {
             if (value.isEmpty()) secrets.clear(SECRET_KEY_PASSWORD)
             else secrets.put(SECRET_KEY_PASSWORD, value, account = username)
+        }
+
+    /**
+     * The per-device sync token, once enrolled. Replaces [password] as the thing this device keeps:
+     * it can only sync, so it is safe to leave on the device in a way a password never was.
+     */
+    var syncToken: String
+        get() = secrets.get(SECRET_KEY_SYNC_TOKEN).orEmpty()
+        set(value) {
+            if (value.isEmpty()) secrets.clear(SECRET_KEY_SYNC_TOKEN)
+            else secrets.put(SECRET_KEY_SYNC_TOKEN, value, account = username)
         }
 
     /** Where [password] is kept, for the Settings caption, e.g. "Windows Credential Manager". */
@@ -133,6 +145,12 @@ class SettingsState(
             return id
         }
 }
+
+/**
+ * How this client identifies itself in the account's devices list. Shared by enrolment and sync
+ * registration so one device is one row. Renaming it there is the way to tell two installs apart.
+ */
+private const val SYNC_DEVICE_NAME = "KMP App"
 
 /** Longest-side pixel size for cached recipe thumbnails (matches the Swift app's 300×300). */
 private const val THUMBNAIL_MAX_PX = 300
@@ -270,13 +288,48 @@ class AppModule {
     suspend fun forceFullResyncFromLocal(): SyncResult =
         withSyncService { it.pushEverythingToServer() }
 
+    /**
+     * Gets the connection authenticated, preferring the device sync token.
+     *
+     * The password is only used to enrol — the first sync after signing in — and is deleted once a
+     * token comes back, which is the entire point: from then on this device holds a credential that
+     * can sync and nothing else.
+     *
+     * A rejected token (revoked from the devices page, or invalidated by a password change) falls
+     * back to the password if the user has entered one again, and otherwise says plainly what to do.
+     * A network failure is NOT treated as rejection, so a flaky connection never discards a token
+     * that is still perfectly good.
+     */
+    private suspend fun authenticate(api: SaltyApiClient) {
+        val token = settings.syncToken
+        if (token.isNotEmpty()) {
+            if (api.loginWithDeviceToken(token) != null) return
+            settings.syncToken = ""   // the server disowned it; fall through to the password
+        }
+
+        if (settings.password.isEmpty()) {
+            throw SyncException(
+                "This device is no longer authorised to sync. Enter your password in Settings to sign in again.",
+            )
+        }
+
+        val auth = api.login(settings.username, settings.password, settings.deviceId, SYNC_DEVICE_NAME)
+        val issued = auth.deviceToken
+        if (issued != null) {
+            settings.syncToken = issued
+            // Only now, once a working replacement is stored: the password stops living on this
+            // device. A server that predates device tokens returns none, and nothing changes.
+            settings.password = ""
+        }
+    }
+
     private suspend fun <T> withSyncService(block: suspend (SyncService) -> T): T {
         val api = SaltyApiClient(settings.serverUrl.trimEnd('/'), tokenStore, httpEngine)
         try {
-            api.login(settings.username, settings.password)
+            authenticate(api)
             return block(
                 SyncService(
-                    api, localStore, settings.deviceId, deviceName = "KMP App",
+                    api, localStore, settings.deviceId, deviceName = SYNC_DEVICE_NAME,
                     // Persist the full image, then cache a 300px thumbnail blob in the DB (like the Swift app's GRDB).
                     imageSink = { recipeId, filename, bytes, imageDate ->
                         imageFiles.save(filename, bytes)

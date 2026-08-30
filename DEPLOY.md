@@ -33,6 +33,10 @@ Edit the `CHANGE_ME_*` values in `docker-compose.yml`:
 > `SALTY_DEFAULT_USER`/`PASSWORD` seed a login **only on first run** (empty users table). The default
 > `SALTY_JWT_SECRET` placeholder is forgeable — you must change it.
 
+Optional: `SALTY_JWT_MINUTES` sets the JWT lifetime (default 90). Clients enrolled with a device
+sync token re-mint expired JWTs silently, so the short default costs them nothing — raise it only
+while older clients that still log in with a password are in use.
+
 ## 3. Run
 
 ```bash

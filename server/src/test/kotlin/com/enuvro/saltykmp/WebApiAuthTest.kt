@@ -8,6 +8,7 @@ import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.db.Categories
 import com.enuvro.saltykmp.db.Courses
 import com.enuvro.saltykmp.db.DatabaseFactory
+import com.enuvro.saltykmp.db.DeviceRepository
 import com.enuvro.saltykmp.db.DeviceSyncs
 import com.enuvro.saltykmp.db.RecipeCategories
 import com.enuvro.saltykmp.db.RecipeRepository
@@ -248,5 +249,29 @@ class WebApiAuthTest {
 
         assertEquals(HttpStatusCode.Unauthorized, client.get("/api/recipes").status,
             "the cookie must stop working the moment the account is gone")
+    }
+
+    /**
+     * The device-management API is cookie-authenticated, so its writes need the same CSRF proof as
+     * every other session-reachable JSON write. revoke-all is the case worth pinning: it takes no
+     * body, which is exactly the shape a cross-site form POST can produce.
+     */
+    @Test
+    fun deviceManagementWritesNeedTheCsrfHeaderToo() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
+        runBlocking { DeviceRepository.issueToken(uid, "phone", "Phone", "a".repeat(64)) }
+
+        val web = jsonCookieClient()
+        val csrf = webLogin(web)
+
+        val blocked = web.post("/api/auth/devices/revoke-all")
+        assertEquals(HttpStatusCode.Forbidden, blocked.status, "a cookie write without the header must be refused")
+        assertTrue(runBlocking { DeviceRepository.listForUser(uid).single().hasToken },
+            "the refused revoke-all must not have run")
+
+        val allowed = web.post("/api/auth/devices/revoke-all") { header(CSRF_HEADER, csrf) }
+        assertEquals(HttpStatusCode.OK, allowed.status, "the same write with the header must go through")
+        assertEquals(false, runBlocking { DeviceRepository.listForUser(uid).single().hasToken })
     }
 }

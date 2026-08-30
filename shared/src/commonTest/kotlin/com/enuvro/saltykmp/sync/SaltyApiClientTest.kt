@@ -187,4 +187,97 @@ class SaltyApiClientTest {
         val all = api.fetchRecipeDelta(modifiedSince = "2026-01-01T00:00:00.000Z")
         assertEquals(listOf("a", "b", "c"), all.map { it.id })
     }
+
+    /* ------------------------------------------------------------ device sync tokens -- */
+
+    /** Enrolment: sending a deviceId asks for a token, and the server's reply carries one. */
+    @Test
+    fun loginWithADeviceIdSendsItAndReturnsTheToken() = runTest {
+        var sentBody: String? = null
+        val engine = MockEngine { request ->
+            sentBody = (request.body as io.ktor.http.content.TextContent).text
+            respond(
+                apiJson.encodeToString(AuthResponse("jwt-1", "tester", 1000, deviceToken = "salty_abc")),
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
+        val auth = api.login("tester", "pw", deviceId = "dev-1", deviceName = "Test Device")
+
+        assertEquals("salty_abc", auth.deviceToken)
+        assertTrue(sentBody!!.contains("dev-1"), "the deviceId must reach the server: $sentBody")
+        assertTrue(sentBody!!.contains("Test Device"))
+    }
+
+    /** An unmodified client sends no device fields and is not enrolled behind its back. */
+    @Test
+    fun loginWithoutADeviceIdAsksForNoToken() = runTest {
+        var sentBody: String? = null
+        val engine = MockEngine { request ->
+            sentBody = (request.body as io.ktor.http.content.TextContent).text
+            respond(
+                apiJson.encodeToString(AuthResponse("jwt-1", "tester", 1000)),
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
+        assertEquals(null, api.login("tester", "pw").deviceToken)
+        assertTrue(!sentBody!!.contains("deviceId"), "no device fields should be sent: $sentBody")
+    }
+
+    /** The ordinary path once enrolled: token in, JWT out, and it is used for later calls. */
+    @Test
+    fun aDeviceTokenMintsAJwtThatIsThenUsed() = runTest {
+        var mintAuth: String? = null
+        var manifestAuth: String? = null
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/auth/token" -> {
+                    mintAuth = request.headers[HttpHeaders.Authorization]
+                    respond(
+                        apiJson.encodeToString(AuthResponse("jwt-fresh", "tester", 1000)),
+                        HttpStatusCode.OK,
+                        headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+                else -> {
+                    manifestAuth = request.headers[HttpHeaders.Authorization]
+                    respond(apiJson.encodeToString(emptyList<RecipeManifestEntry>()),
+                        HttpStatusCode.OK, jsonAnd("X-Total-Count" to "0"))
+                }
+            }
+        }
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
+        val auth = api.loginWithDeviceToken("salty_abc")
+
+        assertEquals("jwt-fresh", auth?.token)
+        assertEquals("Bearer salty_abc", mintAuth, "the token itself authenticates the mint call")
+        api.fetchManifest()
+        assertEquals("Bearer jwt-fresh", manifestAuth, "later calls use the minted JWT")
+    }
+
+    /**
+     * A revoked token is a normal state, reported as null so the caller can ask for the password.
+     * Distinguishing it from a transport failure is the point of the next test.
+     */
+    @Test
+    fun aRejectedDeviceTokenReturnsNullRatherThanThrowing() = runTest {
+        val engine = MockEngine { respond("", HttpStatusCode.Unauthorized) }
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
+        assertEquals(null, api.loginWithDeviceToken("salty_revoked"))
+    }
+
+    /**
+     * A server error must NOT look like revocation: the caller discards the token when it is told
+     * the token is dead, so a 500 or an outage mistaken for rejection would sign a working device
+     * out and demand a password for no reason.
+     */
+    @Test
+    fun aServerFailureIsNotMistakenForRevocation() = runTest {
+        val engine = MockEngine { respond("upstream exploded", HttpStatusCode.InternalServerError) }
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
+        assertFailsWith<SyncException> { api.loginWithDeviceToken("salty_still_good") }
+    }
 }

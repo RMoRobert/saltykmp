@@ -63,6 +63,9 @@ services:
       # Separate secret for the web-UI session cookie's MAC (key separation from the JWT signer). REQUIRED
       # and distinct: generate its own value, e.g.  openssl rand -hex 32
       SALTY_SESSION_SECRET: "CHANGE_ME_long_random_session_secret"
+      # Optional: JWT lifetime in minutes (default 90). Device-token clients re-mint expired JWTs
+      # silently; raise this only while older password-login clients that can't are still in use.
+      # SALTY_JWT_MINUTES: "90"
       # Seeded ONLY on first run, when the users table is empty. Also refused if left as a placeholder.
       SALTY_DEFAULT_USER: "admin"
       SALTY_DEFAULT_PASSWORD: "CHANGE_ME_admin_password"

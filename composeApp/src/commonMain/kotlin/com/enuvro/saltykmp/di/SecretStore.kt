@@ -40,6 +40,15 @@ interface SecretStore {
 const val SECRET_KEY_PASSWORD = "password"
 
 /**
+ * Key under which the per-device sync token is stored.
+ *
+ * It lives in the same vault as the password but replaces it: once enrolled, this is the only
+ * credential the app keeps, and unlike a password it can do nothing but sync — so a device holding
+ * it cannot change the account's password or revoke other devices.
+ */
+const val SECRET_KEY_SYNC_TOKEN = "syncToken"
+
+/**
  * The fallback for platforms with no reachable OS vault: XOR obfuscation in the ordinary settings store.
  * Not real protection (the key ships in the app) — it only keeps the password from sitting in the prefs
  * file as plaintext.

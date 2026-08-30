@@ -227,6 +227,8 @@ fun Route.authRoutes(
      */
     authenticate(WEB_API_AUTH) {
         install(RequirePasswordAuth)
+        // Browser callers arrive with the session cookie; guard their writes against CSRF.
+        install(ApiCsrfGuard)
 
         route("/api/auth/devices") {
             get {

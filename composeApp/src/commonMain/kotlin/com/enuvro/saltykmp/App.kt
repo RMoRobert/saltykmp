@@ -3626,6 +3626,9 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
     var url by remember { mutableStateOf(module.settings.serverUrl) }
     var user by remember { mutableStateOf(module.settings.username) }
     var pass by remember { mutableStateOf(module.settings.password) }
+    // Recomputed per recomposition rather than remembered: enrolment happens during a sync, so this
+    // has to reflect a change made while the screen is open.
+    val enrolled = module.settings.syncToken.isNotEmpty()
     // In-progress text ("Syncing…") and the long linked-folder error detail stay inline — a snackbar is
     // the wrong shape for both. Everything else is announced via [notify].
     var status by remember { mutableStateOf("") }
@@ -3732,10 +3735,20 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                         pass, { pass = it }, label = { Text("Password") }, singleLine = true,
                         visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
                     )
-                    // Named rather than described, so a user who wants to revoke the saved password knows which
-                    // OS tool to open (and so "it's in Credential Manager" is verifiable, not a claim).
+                    // Named rather than described, so a user who wants to revoke the saved credential knows
+                    // which OS tool to open (and so "it's in Credential Manager" is verifiable, not a claim).
+                    //
+                    // Which credential is stored changes after the first sync: the password is used once to
+                    // enrol this device and is then deleted in favour of a token that can only sync. Saying
+                    // so is what stops an emptied password field looking like a bug.
                     Text(
-                        "Password saved in: ${module.settings.passwordStoreName}",
+                        if (enrolled) {
+                            "This device syncs with its own key, saved in ${module.settings.passwordStoreName}. " +
+                                "Your password is not stored here. Revoke this device from Devices on the server."
+                        } else {
+                            "Password saved in: ${module.settings.passwordStoreName}. " +
+                                "After the first sync it is replaced by a key that can only sync."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -3764,6 +3777,10 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                                     } finally {
                                         busy = false
                                         stoppableSync = null
+                                        // Follow the stored value rather than holding what was typed: enrolling
+                                        // deletes the saved password, and without this the next press would write
+                                        // it straight back from this field and undo that.
+                                        pass = module.settings.password
                                     }
                                     status = ""
                                     notify(message)
@@ -3940,6 +3957,7 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                     "$label failed: ${e.message}"
                 } finally {
                     busy = false
+                    pass = module.settings.password   // see the note on the ordinary sync path
                 }
                 status = ""
                 notify(message)

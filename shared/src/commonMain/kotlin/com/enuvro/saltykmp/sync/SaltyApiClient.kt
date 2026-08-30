@@ -133,12 +133,40 @@ class SaltyApiClient(
 
     // ---- Auth ----
 
-    suspend fun login(username: String, password: String): AuthResponse {
+    /**
+     * Signs in with the password.
+     *
+     * Passing [deviceId] asks the server to enrol this device and hand back a sync token in
+     * [AuthResponse.deviceToken] — after which the password is not needed again and should not be
+     * kept. Omitting it preserves the old behaviour exactly.
+     */
+    suspend fun login(
+        username: String,
+        password: String,
+        deviceId: String? = null,
+        deviceName: String? = null,
+    ): AuthResponse {
         val resp = client.post("$baseUrl/api/auth/login") {
             contentType(ContentType.Application.Json)
-            setBody(AuthRequest(username, password))
+            setBody(AuthRequest(username, password, deviceId, deviceName))
         }.ensureOk()
         val auth: AuthResponse = resp.body()
+        tokenStore.token = auth.token
+        return auth
+    }
+
+    /**
+     * Trades a device sync token for a fresh JWT — the ordinary path once enrolled.
+     *
+     * Returns null when the server rejects the token (revoked from the devices page, or invalidated
+     * by a password change), because that is a normal state the caller must handle by asking for
+     * the password again — not a transport failure. Anything else still throws, so a flaky network
+     * is never mistaken for a revoked device and does not throw away a token that is still good.
+     */
+    suspend fun loginWithDeviceToken(deviceToken: String): AuthResponse? {
+        val resp = client.post("$baseUrl/api/auth/token") { bearerAuth(deviceToken) }
+        if (resp.status == HttpStatusCode.Unauthorized) return null
+        val auth: AuthResponse = resp.ensureOk().body()
         tokenStore.token = auth.token
         return auth
     }

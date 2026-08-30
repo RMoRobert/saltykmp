@@ -150,15 +150,13 @@ fun Application.module() {
         secret = System.getenv("SALTY_JWT_SECRET") ?: "dev-secret-change-me",
         issuer = "salty",
         audience = "salty-app",
-        // 90 minutes, not 8 days. The old figure was long because re-minting cost the user a
-        // password prompt; a device token re-mints silently, so the window a stolen JWT is useful
-        // for can shrink by two orders of magnitude at no cost to anyone.
-        //
-        // SALTY_JWT_DAYS is still honoured so a deployment whose clients have not been updated yet
-        // can hold the old behaviour: those clients cannot re-mint, and would face a login prompt
-        // every 90 minutes.
-        validityMs = System.getenv("SALTY_JWT_DAYS")?.toLongOrNull()?.let { it * 24 * 60 * 60 * 1000 }
-            ?: ((System.getenv("SALTY_JWT_MINUTES") ?: "90").toLong() * 60 * 1000),
+        // 90 minutes, not days. A long lifetime was only ever compensation for re-minting costing
+        // the user a password prompt; a device token re-mints silently, so the window a stolen JWT
+        // is useful for can shrink by two orders of magnitude at no cost to anyone. A client too old
+        // to re-mint faces a login prompt every 90 minutes — set SALTY_JWT_MINUTES higher until
+        // every client is converted. An unparseable value falls back to the default rather than
+        // refusing to start: a wrong token lifetime is recoverable, a server that is down is not.
+        validityMs = (System.getenv("SALTY_JWT_MINUTES")?.toLongOrNull() ?: 90) * 60 * 1000,
     )
     // Pair the image store with the DB profile: the throwaway H2 sandbox gets its own folder so it
     // doesn't inherit the Postgres deployment's leftover image files. Those would make the client's
