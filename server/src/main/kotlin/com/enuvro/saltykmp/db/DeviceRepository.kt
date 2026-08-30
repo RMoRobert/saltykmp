@@ -63,4 +63,86 @@ object DeviceRepository {
         }
         Unit
     }
+
+    /* ------------------------------------------------------------- device sync tokens -- */
+
+    /**
+     * Stores the hash of a freshly minted token against a device, replacing any previous one.
+     *
+     * The row is created if this device has never synced, so enrolment does not depend on the
+     * client having registered first. One token per device by construction: re-enrolling the same
+     * device invalidates the old token rather than accumulating credentials nobody can see.
+     */
+    suspend fun issueToken(userId: String, deviceId: String, deviceName: String?, tokenHash: String) = dbQuery {
+        val now = WireDate.nowUtc()
+        val updated = DeviceSyncs.update({ (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) }) {
+            it[DeviceSyncs.tokenHash] = tokenHash
+            it[tokenIssuedAt] = now
+            it[tokenLastUsed] = null
+            if (deviceName != null) it[DeviceSyncs.deviceName] = deviceName
+        }
+        if (updated == 0) {
+            DeviceSyncs.insert {
+                it[DeviceSyncs.userId] = userId
+                it[DeviceSyncs.deviceId] = deviceId
+                it[DeviceSyncs.deviceName] = deviceName
+                it[firstSyncDate] = now
+                it[DeviceSyncs.tokenHash] = tokenHash
+                it[tokenIssuedAt] = now
+            }
+        }
+        Unit
+    }
+
+    /**
+     * Resolves a presented token's hash to the device that owns it, or null.
+     *
+     * Rejects a token issued before the user's last password change even if revocation somehow
+     * missed it — the same freshness rule the JWT validator applies to `iat`, so "change your
+     * password" reliably means "sign everything out" whichever credential a client holds.
+     */
+    suspend fun findByTokenHash(tokenHash: String): DeviceTokenOwner? = dbQuery {
+        val row = DeviceSyncs.selectAll()
+            .where { DeviceSyncs.tokenHash eq tokenHash }
+            .limit(1).singleOrNull() ?: return@dbQuery null
+
+        val userId = row[DeviceSyncs.userId]
+        val issued = row[DeviceSyncs.tokenIssuedAt]
+        val changedAt = Users.selectAll().where { Users.id eq userId }.limit(1)
+            .singleOrNull()?.get(Users.passwordChangedAt)
+        if (issued == null) return@dbQuery null
+        if (changedAt != null && issued.isBefore(changedAt)) return@dbQuery null
+
+        DeviceTokenOwner(userId = userId, deviceId = row[DeviceSyncs.deviceId])
+    }
+
+    /** Records that a token was used. Best-effort: it drives the devices page, not authorisation. */
+    suspend fun touchTokenUse(userId: String, deviceId: String) = dbQuery {
+        DeviceSyncs.update({ (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) }) {
+            it[tokenLastUsed] = WireDate.nowUtc()
+        }
+        Unit
+    }
+
+    /**
+     * Revokes one device. Nulls the hash rather than deleting the row, so first/last sync dates
+     * survive: a revoked device that later re-enrols is recognisably the same device.
+     */
+    suspend fun revokeToken(userId: String, deviceId: String): Boolean = dbQuery {
+        DeviceSyncs.update({ (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) }) {
+            it[tokenHash] = null
+            it[tokenIssuedAt] = null
+        } > 0
+    }
+
+    /** Revokes every device for a user. Called on password change, and from "revoke all". */
+    suspend fun revokeAllTokens(userId: String): Int = dbQuery {
+        DeviceSyncs.update({ DeviceSyncs.userId eq userId }) {
+            it[tokenHash] = null
+            it[tokenIssuedAt] = null
+        }
+    }
 }
+
+/** The device a valid token belongs to. */
+data class DeviceTokenOwner(val userId: String, val deviceId: String)

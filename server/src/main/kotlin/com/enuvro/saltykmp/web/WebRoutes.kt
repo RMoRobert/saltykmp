@@ -9,6 +9,7 @@ import com.enuvro.saltykmp.auth.MIN_PASSWORD_LENGTH
 import com.enuvro.saltykmp.db.LibraryRepository
 import com.enuvro.saltykmp.db.RecipeRepository
 import com.enuvro.saltykmp.db.ShoppingListRepository
+import com.enuvro.saltykmp.db.DeviceRepository
 import com.enuvro.saltykmp.db.UserRepository
 import java.time.Instant
 import com.enuvro.saltykmp.db.UserRow
@@ -445,6 +446,11 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
                 password.length < MIN_PASSWORD_LENGTH -> call.respondRedirect("/users?error=weak")
                 else -> {
                     UserRepository.changePassword(id, password)
+                    // Changing a password means "sign everything out". Explicit revocation, on top of
+                    // the passwordChangedAt check in findByTokenHash -- belt and braces, because the
+                    // check alone would leave dead hashes sitting in the table looking like live
+                    // devices on the devices page.
+                    DeviceRepository.revokeAllTokens(id)
                     call.respondRedirect("/users?msg=password")
                 }
             }

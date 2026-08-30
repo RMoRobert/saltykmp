@@ -4,6 +4,7 @@ import com.enuvro.saltykmp.auth.AccountLockout
 import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.auth.LoginThrottle
 import com.enuvro.saltykmp.auth.authRoutes
+import com.enuvro.saltykmp.auth.DeviceTokenService
 import com.enuvro.saltykmp.auth.configureAuth
 import com.enuvro.saltykmp.dev.DevSeed
 import com.enuvro.saltykmp.auth.revalidateSession
@@ -178,6 +179,12 @@ fun Application.module() {
     installSalty(
         jwtService,
         imageStore,
+        // Keyed on the JWT secret by default so deploying device tokens needs no new configuration.
+        // Rotating either secret invalidates every device token -- the same blast radius rotating
+        // the JWT secret already has, and a reasonable emergency lever.
+        deviceTokens = DeviceTokenService(
+            System.getenv("SALTY_TOKEN_SECRET") ?: System.getenv("SALTY_JWT_SECRET") ?: "dev-secret-change-me",
+        ),
         // Key separation: the web session cookie's MAC uses its own secret, distinct from the JWT signer.
         // Required (enforced in enforceSecrets); its own long random value, e.g. `openssl rand -hex 32`.
         sessionSecret = System.getenv("SALTY_SESSION_SECRET") ?: "dev-secret-change-me",
@@ -193,6 +200,10 @@ fun Application.module() {
 fun Application.installSalty(
     jwtService: JwtService,
     imageStore: ImageStore,
+    // Injected like jwtService rather than read from the environment here: a test needs to hash a
+    // token with the same key the server verifies it against, and reaching for System.getenv from
+    // inside would make that impossible to arrange.
+    deviceTokens: DeviceTokenService = DeviceTokenService("dev-secret-change-me"),
     sessionSecret: String = "dev-session-secret-change-me",
     secureCookies: Boolean = false,
     trustProxy: Boolean = false,
@@ -237,7 +248,10 @@ fun Application.installSalty(
         }
     }
     // JWT for the API (Bearer) + a session provider for the web UI (cookie → redirect to /login).
-    configureAuth(jwtService) {
+    // Keyed on the JWT secret by default so deploying this needs no new configuration. Rotating
+    // either secret invalidates every device token — the same blast radius rotating the JWT secret
+    // already has, and a reasonable emergency lever.
+    configureAuth(jwtService, deviceTokens) {
         session<UserSession>(WEB_AUTH) {
             validate { revalidateSession(it) }
             challenge { call.respondRedirect("/login") }

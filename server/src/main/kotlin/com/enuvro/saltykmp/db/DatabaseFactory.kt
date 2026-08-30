@@ -40,6 +40,13 @@ object DatabaseFactory {
             // Nullable with no default: NULL means "no prepared-date agreement recorded yet", which the
             // merge in RecipeRepository.upsert treats as "always lose to an incoming stamp".
             exec("ALTER TABLE recipe ADD COLUMN IF NOT EXISTS last_modified_prepared_date TIMESTAMP")
+            // Device sync tokens. Nullable with no default: NULL means "this device has no token",
+            // which is both the pre-migration state and the revoked state -- deliberately the same
+            // thing, so an existing deployment starts with every device simply un-enrolled.
+            exec("ALTER TABLE device_sync ADD COLUMN IF NOT EXISTS token_hash VARCHAR(64)")
+            exec("ALTER TABLE device_sync ADD COLUMN IF NOT EXISTS token_issued_at TIMESTAMP")
+            exec("ALTER TABLE device_sync ADD COLUMN IF NOT EXISTS token_last_used TIMESTAMP")
+            exec("CREATE INDEX IF NOT EXISTS idx_device_sync_token_hash ON device_sync (token_hash)")
         }
     }
 

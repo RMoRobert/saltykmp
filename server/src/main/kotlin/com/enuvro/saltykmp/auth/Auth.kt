@@ -4,6 +4,7 @@ import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import com.enuvro.saltykmp.api.AuthRequest
 import com.enuvro.saltykmp.api.AuthResponse
+import com.enuvro.saltykmp.db.DeviceRepository
 import com.enuvro.saltykmp.db.UserRepository
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
@@ -11,6 +12,7 @@ import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
 import io.ktor.server.auth.Authentication
 import io.ktor.server.auth.authentication
+import io.ktor.server.auth.bearer
 import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.auth.jwt.jwt
 import io.ktor.server.auth.principal
@@ -66,6 +68,7 @@ class JwtService(
 
 fun Application.configureAuth(
     jwtService: JwtService,
+    deviceTokens: DeviceTokenService,
     extra: io.ktor.server.auth.AuthenticationConfig.() -> Unit = {},
 ) {
     install(Authentication) {
@@ -90,6 +93,28 @@ fun Application.configureAuth(
                 JWTPrincipal(credential.payload)
             }
         }
+        /**
+         * Per-device sync tokens, presented the same way a JWT is.
+         *
+         * Declining a non-`salty_` token by returning null (rather than failing) is what lets both
+         * credential types share the Authorization header: Ktor moves on to the next provider, so a
+         * JWT is still handled by the jwt provider above whichever order they are listed in.
+         *
+         * This provider is deliberately NOT attached to every authenticated route. Scope is enforced
+         * by omission: a device token can only authenticate where sync happens, because that is the
+         * only place this provider is listed. See recipeRoutes/libraryRoutes/shoppingListRoutes.
+         */
+        bearer(DEVICE_TOKEN_AUTH) {
+            authenticate { credential ->
+                val presented = credential.token
+                if (!deviceTokens.looksLikeToken(presented)) return@authenticate null
+                val owner = DeviceRepository.findByTokenHash(deviceTokens.hash(presented))
+                    ?: return@authenticate null
+                // Best-effort, and after validation: this drives the devices page, not access.
+                DeviceRepository.touchTokenUse(owner.userId, owner.deviceId)
+                DeviceTokenPrincipal(owner.userId, owner.deviceId)
+            }
+        }
         extra()
     }
 }
@@ -104,6 +129,7 @@ fun Application.configureAuth(
  */
 fun ApplicationCall.userId(): String {
     principal<JWTPrincipal>()?.let { return it.payload.getClaim("uid").asString() }
+    principal<DeviceTokenPrincipal>()?.let { return it.userId }
     principal<UserSession>()?.let { return it.userId }
     error("userId() called outside an authenticated route")
 }

@@ -4,6 +4,7 @@ import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.auth.ApiCsrfGuard
+import com.enuvro.saltykmp.auth.DEVICE_TOKEN_AUTH
 import com.enuvro.saltykmp.auth.JWT_AUTH
 import com.enuvro.saltykmp.auth.WEB_API_AUTH
 import com.enuvro.saltykmp.auth.userId
@@ -21,7 +22,10 @@ import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 
 fun Route.libraryRoutes() {
-    authenticate(JWT_AUTH, WEB_API_AUTH) {
+    // DEVICE_TOKEN_AUTH is listed HERE and nowhere else. That omission is the scope
+    // enforcement: a device sync token cannot authenticate against account or admin
+    // routes because the provider that understands it is not mounted on them.
+    authenticate(JWT_AUTH, DEVICE_TOKEN_AUTH, WEB_API_AUTH) {
         // Browser callers arrive with the session cookie; guard their writes against CSRF.
         install(ApiCsrfGuard)
 

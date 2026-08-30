@@ -117,6 +117,21 @@ object DeviceSyncs : Table("device_sync") {
     val deviceName = varchar("device_name", 255).nullable()
     val firstSyncDate = datetime("first_sync_date").nullable()
     val lastSyncDate = datetime("last_sync_date").nullable()
+
+    // --- device sync tokens -------------------------------------------------------------------
+    // A client authenticates once with a password and is handed a token that can ONLY sync, so it
+    // never has to store the password -- the one credential that could also change the password.
+    //
+    // HMAC-SHA256 of the token, hex. Indexed because a presented token is looked up by hash alone,
+    // with no user in hand yet. NULL means revoked or never enrolled, which is what makes revoking
+    // a single device a one-column write that keeps the row's sync history intact.
+    val tokenHash = varchar("token_hash", 64).nullable().index()
+    // Compared against the user's passwordChangedAt, exactly as the JWT validator compares `iat`,
+    // so a token that predates a password change cannot be used even if revocation missed it.
+    val tokenIssuedAt = datetime("token_issued_at").nullable()
+    // What makes the devices page worth reading: "last synced 11 months ago" is a revoke decision
+    // you can make without thinking. Tokens never expire, so this is the only staleness signal.
+    val tokenLastUsed = datetime("token_last_used").nullable()
     // Composite (user_id, device_id): device ids are client-supplied, so scoping the key by user lets two
     // users present the same device id without a primary-key collision (which used to 500 the second user's
     // sync registration). user_id leads so it also covers user-scoped lookups (e.g. delete-all-for-user).
