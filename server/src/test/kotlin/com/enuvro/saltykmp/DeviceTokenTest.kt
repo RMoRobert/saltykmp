@@ -345,6 +345,78 @@ class DeviceTokenTest {
             "the minted JWT must actually work")
     }
 
+    /* --------------------------------------------------------------------- self-revoke -- */
+
+    /**
+     * "Forget this device" in a client: the device ends its own access, so signing out is not merely
+     * a local gesture that leaves a live credential behind on the server.
+     */
+    @Test
+    fun aDeviceCanRevokeItsOwnToken() = testApplication {
+        application { installSalty(jwt, imageStore, deviceTokens = tokens) }
+        val token = issue()
+
+        val resp = client.post("/api/auth/token/revoke") { header(HttpHeaders.Authorization, "Bearer $token") }
+        assertEquals(HttpStatusCode.NoContent, resp.status)
+
+        assertEquals(HttpStatusCode.Unauthorized,
+            client.get("/api/recipes") { header(HttpHeaders.Authorization, "Bearer $token") }.status,
+            "the token must be dead the moment its own device revokes it")
+        assertEquals(HttpStatusCode.Unauthorized,
+            client.post("/api/auth/token") { header(HttpHeaders.Authorization, "Bearer $token") }.status,
+            "and it must not be able to mint its way back")
+    }
+
+    /**
+     * The assertion the whole design rests on. Self-revoke is safe *because* it cannot aim anywhere
+     * else — it takes no deviceId. If that ever changed, a stolen phone could lock out every other
+     * device, which is exactly what [RequirePasswordAuth] exists to prevent.
+     */
+    @Test
+    fun revokingItselfLeavesEveryOtherDeviceAlone() = testApplication {
+        application { installSalty(jwt, imageStore, deviceTokens = tokens) }
+        val phone = issue("phone", "Phone")
+        val tablet = issue("tablet", "Tablet")
+
+        assertEquals(HttpStatusCode.NoContent,
+            client.post("/api/auth/token/revoke") { header(HttpHeaders.Authorization, "Bearer $phone") }.status)
+
+        assertEquals(HttpStatusCode.Unauthorized,
+            client.get("/api/recipes") { header(HttpHeaders.Authorization, "Bearer $phone") }.status)
+        assertEquals(HttpStatusCode.OK,
+            client.get("/api/recipes") { header(HttpHeaders.Authorization, "Bearer $tablet") }.status,
+            "revoking oneself must never reach another device")
+    }
+
+    /** Self-revoke keeps the row, exactly as an admin revoke does, so the history survives. */
+    @Test
+    fun revokingItselfKeepsTheDeviceRow() = testApplication {
+        application { installSalty(jwt, imageStore, deviceTokens = tokens) }
+        val token = issue("phone", "My Phone")
+
+        client.post("/api/auth/token/revoke") { header(HttpHeaders.Authorization, "Bearer $token") }
+
+        val info = runBlocking { DeviceRepository.get(uid(), "phone") }
+        assertTrue(info != null, "revoking must not delete the device")
+        assertEquals(false, runBlocking { DeviceRepository.listForUser(uid()).single().hasToken })
+    }
+
+    /** An unauthenticated caller cannot revoke anything by guessing at the route. */
+    @Test
+    fun revokingNeedsALiveTokenOfItsOwn() = testApplication {
+        application { installSalty(jwt, imageStore, deviceTokens = tokens) }
+        val token = issue()
+
+        assertEquals(HttpStatusCode.Unauthorized,
+            client.post("/api/auth/token/revoke").status,
+            "no credential at all must not revoke")
+        assertEquals(HttpStatusCode.Unauthorized,
+            client.post("/api/auth/token/revoke") { header(HttpHeaders.Authorization, "Bearer salty_not-a-real-token") }.status)
+        assertTrue(runBlocking { DeviceRepository.listForUser(uid()).single().hasToken },
+            "the real device's token must have survived those attempts")
+        assertTrue(token.isNotBlank())
+    }
+
     @Test
     fun aRevokedTokenCannotMintAJwt() = testApplication {
         application { installSalty(jwt, imageStore, deviceTokens = tokens) }

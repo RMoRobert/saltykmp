@@ -554,12 +554,56 @@ class SyncIntegrationTest {
         // …but the delete is refused because the row just changed (If-Match mismatch on the server).
         server.deleteConflictsOnce = true
 
+        // A list on both sides, already agreed, so nothing about it moves. It is here only to keep the
+        // local collection non-empty: SYNC-016 withholds server deletions entirely when it is empty,
+        // and this case is about the If-Match conflict, not about that guard.
+        val agreed = ServerShoppingList(
+            id = "K", name = "Untouched", isFreeform = true, contentsForFreeform = "kept",
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        )
+        server.saveShoppingList(agreed)
+        local.insertLocalShoppingList(agreed.copy(revision = null))
+
         val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
         val result = SyncService(api, local, deviceId = "d", deviceName = "Test").syncNow()
 
-        assertEquals("still wanted", local.shoppingLists().single().contentsForFreeform, "refused delete → download")
+        assertEquals(
+            "still wanted",
+            local.shoppingLists().single { it.id == "L" }.contentsForFreeform,
+            "refused delete → download",
+        )
         assertEquals(1, result.libraryDown)
         assertTrue(server.shoppingLists.containsKey("L"), "row survives on the server too")
+    }
+
+    /**
+     * SYNC-016, the direction that was missing: an empty local collection must not be read as "every
+     * one of these was deleted here" and pushed at the server.
+     *
+     * A library is empty for the same kinds of reason a server list is — restored from an older
+     * backup, recreated at the old path, or opened before a file sync finished bringing it down. This
+     * direction loses the shared copy rather than one device's.
+     */
+    @Test
+    fun anEmptyLibraryDoesNotAskTheServerToDeleteEverything() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.registered = true // not a first sync
+        server.lastSyncDate = "2026-08-10T00:00:00.000Z"
+        server.saveShoppingList(ServerShoppingList(
+            id = "L", name = "Only on the server", isFreeform = true, contentsForFreeform = "kept",
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        ))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        val result = SyncService(api, local, deviceId = "d", deviceName = "Test").syncNow()
+
+        assertTrue(server.shoppingLists.containsKey("L"), "the server keeps what an empty library cannot vouch for")
+        assertTrue(
+            result.warnings.any { "Delete Server, Push from Local" in it },
+            "withholding silently looks identical to having synced: ${result.warnings}",
+        )
     }
 
     @Test

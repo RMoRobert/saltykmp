@@ -47,6 +47,29 @@ object SyncReconciler {
      * Mirror: Swift's `RecipeSyncReconciler.plan(tracksAgreement:)` and Salty.NET's
      * `SyncReconciler.CreatePlan(tracksAgreement:)`.
      */
+    /**
+     * SYNC-016. Whether deletions inferred from a side's absence may be applied, given how many rows
+     * that side actually returned.
+     *
+     * The plan says what the timestamps and stamps *imply*; this says whether the evidence behind an
+     * inferred deletion is worth acting on. It is not when the side the absence was observed on came
+     * back completely empty — a server list that is `[]` because a proxy answered, or a library that is
+     * empty because it was restored from an older backup or opened mid-download. "Everything is
+     * missing" is far more often a bad fetch than a real mass deletion.
+     *
+     * Lives here, on the pure type, so both directions and all three clients consult one predicate: the
+     * local half existed for a long time while the server half did not, which is the kind of drift a
+     * shared function prevents and six separate call sites do not. Applying it stays the caller's job —
+     * see SYNC-016 — and the caller is what must also report the refusal.
+     *
+     * Emptiness, not proportion: one row left and inference proceeds normally.
+     *
+     * Mirror: Swift's `RecipeSyncReconciler.allowsDeletions` and Salty.NET's
+     * `SyncReconciler.AllowsDeletions`. Pinned by corpus GUARD-001..GUARD-006.
+     */
+    fun allowsDeletions(sideCount: Int, pendingDeletions: Int): Boolean =
+        !(sideCount == 0 && pendingDeletions > 0)
+
     fun plan(
         local: List<Entry>,
         server: List<Entry>,

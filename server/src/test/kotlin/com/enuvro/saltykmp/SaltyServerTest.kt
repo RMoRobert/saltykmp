@@ -65,6 +65,8 @@ import javax.imageio.ImageIO
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -920,23 +922,64 @@ class SaltyServerTest {
         }
     }
 
+    /**
+     * What flips `isFirstSync` is COMPLETING a sync, not registering.
+     *
+     * It used to be registering, back when that was the only thing that created a `device_sync` row.
+     * Enrolment creates one too now, so the old rule called a client that had merely signed in a
+     * returning device — with no watermark to return to, which is the exact input SYNC-006 exists to
+     * keep away from deletion inference. Registering twice is the same situation in miniature and is
+     * pinned here alongside it: a client whose first sync died before `/complete` must get the same
+     * protection on its retry.
+     */
     @Test
     fun deviceRegistrationTracksFirstSync() = testApplication {
         application { installSalty(jwt, imageStore) }
         val client = jsonClient()
-        runBlocking {
-            val token = login(client)
-            val first = client.post("/api/recipes/sync/device") {
-                bearerAuth(token); contentType(ContentType.Application.Json)
-                setBody(DeviceRegisterRequest("device-1", "Test Phone"))
-            }.body<DeviceSyncInfo>()
-            assertTrue(first.isFirstSync)
 
-            val second = client.post("/api/recipes/sync/device") {
-                bearerAuth(token); contentType(ContentType.Application.Json)
-                setBody(DeviceRegisterRequest("device-1", "Test Phone"))
+        suspend fun register() = client.post("/api/recipes/sync/device") {
+            bearerAuth(login(client)); contentType(ContentType.Application.Json)
+            setBody(DeviceRegisterRequest("device-1", "Test Phone"))
+        }.body<DeviceSyncInfo>()
+
+        runBlocking {
+            assertTrue(register().isFirstSync)
+
+            val second = register()
+            assertTrue(second.isFirstSync, "registering again is not syncing; nothing has been agreed yet")
+            assertNull(second.lastSyncDate, "and the flag must agree with the watermark it stands for")
+
+            client.post("/api/recipes/sync/device/device-1/complete") { bearerAuth(login(client)) }
+
+            val afterSync = register()
+            assertFalse(afterSync.isFirstSync, "a finished sync is what makes the device a returning one")
+            assertNotNull(afterSync.lastSyncDate)
+        }
+    }
+
+    /**
+     * The regression device sync tokens introduced, end to end: enrolling writes the token into the
+     * same `device_sync` row that carries the watermark, so the row exists before the client has
+     * synced anything. The server must still call that a first sync.
+     */
+    @Test
+    fun enrolmentDoesNotMakeADeviceLookLikeItHasAlreadySynced() = testApplication {
+        application { installSalty(jwt, imageStore) }
+        val client = jsonClient()
+        runBlocking {
+            val auth = client.post("/api/auth/login") {
+                contentType(ContentType.Application.Json)
+                setBody(AuthRequest("tester", "pw", deviceId = "device-enrolled", deviceName = "Laptop"))
+            }.body<AuthResponse>()
+            assertNotNull(auth.deviceToken, "the sign-in enrolled, which is what creates the row early")
+
+            val info = client.post("/api/recipes/sync/device") {
+                bearerAuth(auth.token); contentType(ContentType.Application.Json)
+                setBody(DeviceRegisterRequest("device-enrolled", "Laptop"))
             }.body<DeviceSyncInfo>()
-            assertTrue(!second.isFirstSync)
+
+            assertTrue(info.isFirstSync, "enrolling is not syncing: this device has agreed nothing yet")
+            assertNull(info.lastSyncDate)
         }
     }
 

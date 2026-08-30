@@ -12,7 +12,28 @@ import org.jetbrains.exposed.v1.jdbc.update
 
 object DeviceRepository {
 
-    /** Registers the device if new (isFirstSync=true), else returns existing sync state. */
+    /**
+     * Registers the device if new, else returns its existing sync state.
+     *
+     * `isFirstSync` answers "has this device ever FINISHED a sync?", which is `lastSyncDate == null`
+     * — not "did this row already exist?". The two used to be the same thing, back when registration
+     * was the only way a `device_sync` row came into being. They are not any more: enrolment issues a
+     * device sync token into this same row (see [issueToken]), so by the time a newly signed-in client
+     * registers, the row is already there and the old test called it a returning device with no
+     * watermark to return to.
+     *
+     * That distinction is load-bearing. SYNC-006 makes `isFirstSync` the thing that suppresses
+     * deletion inference, so getting it wrong means a device that has never synced applies the
+     * agreement rules in SYNC-007 — deleting every stamped, unmodified row this server does not have.
+     * A stamp records agreement with *the server*, and a device that has never synced with this one
+     * cannot know the stamps in a shared library refer to it.
+     *
+     * Fixing it here rather than in each client is what makes the flag mean what its name says for
+     * any client, including ones not written yet; the three that exist also guard it themselves.
+     *
+     * Note this was reachable before device tokens too, just rarely: a client whose very first sync
+     * failed after registering but before [completeSync] got exactly the same answer on its retry.
+     */
     suspend fun getOrCreate(userId: String, deviceId: String, deviceName: String?): DeviceSyncInfo = dbQuery {
         val existing = DeviceSyncs.selectAll()
             .where { (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) }
@@ -23,7 +44,7 @@ object DeviceRepository {
                 deviceName = existing[DeviceSyncs.deviceName],
                 lastSyncDate = WireDate.format(existing[DeviceSyncs.lastSyncDate]),
                 firstSyncDate = WireDate.format(existing[DeviceSyncs.firstSyncDate]),
-                isFirstSync = false,
+                isFirstSync = existing[DeviceSyncs.lastSyncDate] == null,
             )
         } else {
             val now = WireDate.nowUtc()
@@ -44,6 +65,7 @@ object DeviceRepository {
         }
     }
 
+    /** The read-only sibling of [getOrCreate]; `isFirstSync` means the same thing here. */
     suspend fun get(userId: String, deviceId: String): DeviceSyncInfo? = dbQuery {
         DeviceSyncs.selectAll()
             .where { (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) }
@@ -53,7 +75,7 @@ object DeviceRepository {
                     deviceName = it[DeviceSyncs.deviceName],
                     lastSyncDate = WireDate.format(it[DeviceSyncs.lastSyncDate]),
                     firstSyncDate = WireDate.format(it[DeviceSyncs.firstSyncDate]),
-                    isFirstSync = false,
+                    isFirstSync = it[DeviceSyncs.lastSyncDate] == null,
                 )
             }
     }
@@ -117,7 +139,7 @@ object DeviceRepository {
         DeviceTokenOwner(userId = userId, deviceId = row[DeviceSyncs.deviceId])
     }
 
-    /** Records that a token was used. Best-effort: it drives the devices page, not authorisation. */
+    /** Records that a token was used. Best-effort: it shows on user's devices page, not used authorization, etc. */
     suspend fun touchTokenUse(userId: String, deviceId: String) = dbQuery {
         DeviceSyncs.update({ (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) }) {
             it[tokenLastUsed] = WireDate.nowUtc()
@@ -126,7 +148,7 @@ object DeviceRepository {
     }
 
     /**
-     * Revokes one device. Nulls the hash rather than deleting the row, so first/last sync dates
+     * Revokes a specific device. Nulls the hash rather than deleting the row, so first/last sync dates
      * survive: a revoked device that later re-enrols is recognisably the same device.
      */
     suspend fun revokeToken(userId: String, deviceId: String): Boolean = dbQuery {

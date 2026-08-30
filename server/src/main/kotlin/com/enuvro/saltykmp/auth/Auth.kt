@@ -218,12 +218,37 @@ fun Route.authRoutes(
             val jwt = jwtService.generate(user.id, user.username, fromDeviceToken = true)
             call.respond(AuthResponse(token = jwt, username = user.username, expiresIn = jwtService.validityMs))
         }
+
+        /**
+         * A device revoking its own token — what "forget this device" does in a client, so signing
+         * out of a device actually ends its access rather than merely forgetting it locally.
+         *
+         * Reachable by DEVICE_TOKEN_AUTH while /api/auth/devices deliberately is not, and the
+         * difference is the entire security argument: this route can only destroy the credential
+         * that authenticated the call. There is no deviceId parameter to aim somewhere else, so a
+         * stolen device can revoke itself and nothing whatsoever besides — de-escalation, not the
+         * escalation [RequirePasswordAuth] exists to stop. A thief using this only logs themselves
+         * out, which is a strictly better outcome than the alternative.
+         *
+         * Answers 204 whether or not a row was updated: the caller is un-enrolling either way, and
+         * the only way to reach here at all is to have presented a live token.
+         */
+        post("/api/auth/token/revoke") {
+            val principal = call.principal<DeviceTokenPrincipal>()
+                ?: return@post call.respond(HttpStatusCode.Unauthorized)
+            DeviceRepository.revokeToken(principal.userId, principal.deviceId)
+            call.respond(HttpStatusCode.NoContent)
+        }
     }
 
     /**
-     * Managing devices. Session only, deliberately: revoking is how a stolen device is removed, so
-     * it must not be reachable by a credential that device holds. [RequirePasswordAuth] enforces
-     * the same rule a second way, in case this mount list gains JWT_AUTH later.
+     * Managing devices — listing, renaming, and revoking devices *other than* the caller. Session
+     * only, deliberately: revoking is how a stolen device is removed, so it must not be reachable by
+     * a credential that device holds. [RequirePasswordAuth] enforces the same rule a second way, in
+     * case this mount list gains JWT_AUTH later.
+     *
+     * The exception is /api/auth/token/revoke above, which takes no deviceId and so can only revoke
+     * the caller itself. Revoking anyone else stays here, behind a password.
      */
     authenticate(WEB_API_AUTH) {
         install(RequirePasswordAuth)

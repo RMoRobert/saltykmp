@@ -73,8 +73,19 @@ class SyncService(
     suspend fun syncNow(): SyncResult {
         report(SyncPhase.CONNECTING)
         val device = api.registerDevice(deviceId, deviceName)
-        val isFirstSync = device.isFirstSync
         val lastSync = LocalStore.parseOrNull(device.lastSyncDate)
+
+        // A device with no lastSyncDate has never FINISHED a sync, whatever the flag says — and since
+        // device sync tokens landed, the flag says otherwise. Enrolment issues the token into the same
+        // device_sync row that carries the watermark, so the row already exists by the time this call
+        // is made, and the server's "is this device new?" test is only whether the row is there.
+        //
+        // Not cosmetic. isFirstSync is what suppresses deletion inference (SYNC-006), and a stamp
+        // records agreement with "the server" — a device that has never synced with THIS one has no
+        // basis to assume the stamps in a shared library refer to it. Trusting them deletes every
+        // stamped, unmodified row the server does not have. SYNC-008's tie-breaker settles the
+        // direction: losing a recipe is worse than resurrecting one.
+        val isFirstSync = device.isFirstSync || lastSync == null
 
         report(SyncPhase.LIBRARY)
         val classifiers = syncCourses(isFirstSync, lastSync) +
@@ -106,8 +117,8 @@ class SyncService(
      * Folds same-named courses/categories/tags into one row each, at the end of a sync.
      *
      * Those three tables are reconciled by id, never by name, so two devices that each created "Vegan"
-     * — or two libraries that each ran the default seed and minted their own ids for "Breads", "Main",
-     * … — would otherwise replicate both rows to each other forever. Salty runs the same pass as its
+     * (or two libraries that each ran the default seed and minted their own ids for "Breads", "Main", etc.)
+     * would otherwise replicate both rows to each other forever. Salty runs the same pass as its
      * step 6b; see [LibraryDuplicateMerger] for how a survivor is chosen and why the deletion converges
      * on the following sync.
      *
@@ -138,12 +149,36 @@ class SyncService(
      * The X-Total-Count check in [SaltyApiClient] covers the partial-response case.
      */
     private fun allowsLocalDeletions(serverItemCount: Int, pendingLocalDeletions: Int, entity: String): String? =
-        if (serverItemCount == 0 && pendingLocalDeletions > 0) {
+        if (SyncReconciler.allowsDeletions(serverItemCount, pendingLocalDeletions)) {
+            null
+        } else {
             "Kept $pendingLocalDeletions local $entity${if (pendingLocalDeletions == 1) "" else "s"} the server no longer " +
                 "lists, because it returned an empty list; if the server really is empty, use " +
-                "\"Replace this library with the server's\"."
-        } else {
+                "\"Delete Local, Pull from Server\"."
+        }
+
+    /**
+     * The mirror of [allowsLocalDeletions], and the half that was missing: refuses to delete on the
+     * SERVER when the LOCAL collection came back empty. Returns null when the deletions may proceed,
+     * or the warning to report when they may not.
+     *
+     * Deletion inference is symmetric — "present there, absent here, unchanged since the last sync"
+     * deletes on the server — so an empty local library with a live watermark asked the server to drop
+     * everything it had, and nothing stopped it. A library is empty for the same kinds of reason a
+     * server list is: restored from a backup that predates the recipes, recreated at the old path after
+     * being moved, or opened before a file sync finished bringing it down. This direction loses the
+     * shared copy rather than one device's.
+     *
+     * Nothing legitimate is blocked: a recipe deleted on purpose travels as a tombstone on its own
+     * path, and emptying a collection outright is what "Delete Server, Push from Local" is for.
+     */
+    private fun allowsServerDeletions(localItemCount: Int, pendingServerDeletions: Int, entity: String): String? =
+        if (SyncReconciler.allowsDeletions(localItemCount, pendingServerDeletions)) {
             null
+        } else {
+            "Left $pendingServerDeletions $entity${if (pendingServerDeletions == 1) "" else "s"} on the server that this " +
+                "library no longer has, because the library is empty; if you meant to clear the server, use " +
+                "\"Delete Server, Push from Local\"."
         }
 
     /**
@@ -350,7 +385,16 @@ class SyncService(
                 deletedLocally++
             }
         }
-        if (plan.toDeleteOnServer.isNotEmpty()) api.deleteRecipesOnServer(deviceId, plan.toDeleteOnServer)
+        // The same protection in the other direction: an empty library must not ask the server to
+        // delete everything it has (SYNC-016).
+        var deletedOnServer = 0
+        val serverRefusal = allowsServerDeletions(localEntries.size, plan.toDeleteOnServer.size, "recipe")
+        if (serverRefusal != null) {
+            warnings += serverRefusal
+        } else if (plan.toDeleteOnServer.isNotEmpty()) {
+            api.deleteRecipesOnServer(deviceId, plan.toDeleteOnServer)
+            deletedOnServer = plan.toDeleteOnServer.size
+        }
 
         // Record what this pass agreed on, so the next one needn't guess (SHARED-V0005). Three groups
         // mean the same thing afterwards — the server's copy matches this row as it stands: what went
@@ -373,7 +417,7 @@ class SyncService(
             // Prepared-date transfers fold into the recipe counts: they move real recipe data, just not a
             // body edit. Keeping them out entirely would report "0 recipes" for a sync that changed rows.
             up = plan.toUpload.size + preparedUp, down = plan.toDownload.size + preparedDown,
-            deletedLocal = deletedLocally, deletedServer = plan.toDeleteOnServer.size,
+            deletedLocal = deletedLocally, deletedServer = deletedOnServer,
             imagesUp = imagesUp, imagesDown = imagesDown,
             warnings = warnings,
         )
@@ -548,14 +592,35 @@ class SyncService(
             }
         }
 
+        // Server-only rows are classified before any is applied, because the delete direction needs its
+        // total up front to be guarded the way the local direction above is (SYNC-016).
+        //
+        // Server-only row: new to us, or deleted here. No tombstones for lists, so the watermark
+        // decides — except a failed If-Match delete proves the row changed, and change wins.
+        val serverOnlyDownloads = mutableListOf<ServerShoppingList>()
+        val serverOnlyDeletes = mutableListOf<ServerShoppingList>()
         for (s in server) {
             if (s.id in localIds) continue
-            // Server-only row: new to us, or deleted here. No tombstones for lists, so the watermark
-            // decides — except a failed If-Match delete proves the row changed, and change wins.
-            counts += if (isFirstSync || lastSync == null || LocalStore.parseOrPast(s.lastModifiedDate) > lastSync) {
-                local.upsertShoppingList(s)
-                Counts(down = 1)
-            } else when (val out = api.deleteShoppingList(s.id, expectedRevision = s.revision)) {
+            if (isFirstSync || lastSync == null || LocalStore.parseOrPast(s.lastModifiedDate) > lastSync) {
+                serverOnlyDownloads += s
+            } else {
+                serverOnlyDeletes += s
+            }
+        }
+
+        val serverRefusal = allowsServerDeletions(locals.size, serverOnlyDeletes.size, "shopping list")
+        if (serverRefusal != null) {
+            counts += Counts(warnings = listOf(serverRefusal))
+            serverOnlyDeletes.clear()
+        }
+
+        for (s in serverOnlyDownloads) {
+            local.upsertShoppingList(s)
+            counts += Counts(down = 1)
+        }
+
+        for (s in serverOnlyDeletes) {
+            counts += when (val out = api.deleteShoppingList(s.id, expectedRevision = s.revision)) {
                 is SaltyApiClient.ShoppingListDeleteOutcome.Deleted -> Counts(deletedServer = 1)
                 is SaltyApiClient.ShoppingListDeleteOutcome.Conflict -> {
                     local.upsertShoppingList(out.current)
@@ -710,7 +775,10 @@ class SyncService(
         // changed after our fetch (e.g. a web rename racing this sync) is downloaded, not deleted.
         var deletedOnServer = 0
         var conflictDownloads = 0
-        plan.toDeleteOnServer.forEach { id ->
+        // And the mirror: an empty local collection must not ask the server to drop its own (SYNC-016).
+        val serverRefusal = allowsServerDeletions(localEntries.size, plan.toDeleteOnServer.size, "course")
+        if (serverRefusal != null) warnings += serverRefusal
+        (if (serverRefusal != null) emptyList() else plan.toDeleteOnServer).forEach { id ->
             when (val out = api.deleteCourse(id, expectedLastModified = serverById[id]?.lastModifiedDate)) {
                 SaltyApiClient.LibraryDeleteOutcome.Deleted -> deletedOnServer++
                 is SaltyApiClient.LibraryDeleteOutcome.Conflict -> {
@@ -766,7 +834,10 @@ class SyncService(
         // Conditional server deletes — see syncCourses.
         var deletedOnServer = 0
         var conflictDownloads = 0
-        plan.toDeleteOnServer.forEach { id ->
+        // And the mirror: an empty local collection must not ask the server to drop its own (SYNC-016).
+        val serverRefusal = allowsServerDeletions(localEntries.size, plan.toDeleteOnServer.size, "category")
+        if (serverRefusal != null) warnings += serverRefusal
+        (if (serverRefusal != null) emptyList() else plan.toDeleteOnServer).forEach { id ->
             when (val out = api.deleteCategory(id, expectedLastModified = serverById[id]?.lastModifiedDate)) {
                 SaltyApiClient.LibraryDeleteOutcome.Deleted -> deletedOnServer++
                 is SaltyApiClient.LibraryDeleteOutcome.Conflict -> {
@@ -822,7 +893,10 @@ class SyncService(
         // Conditional server deletes — see syncCourses.
         var deletedOnServer = 0
         var conflictDownloads = 0
-        plan.toDeleteOnServer.forEach { id ->
+        // And the mirror: an empty local collection must not ask the server to drop its own (SYNC-016).
+        val serverRefusal = allowsServerDeletions(localEntries.size, plan.toDeleteOnServer.size, "tag")
+        if (serverRefusal != null) warnings += serverRefusal
+        (if (serverRefusal != null) emptyList() else plan.toDeleteOnServer).forEach { id ->
             when (val out = api.deleteTag(id, expectedLastModified = serverById[id]?.lastModifiedDate)) {
                 SaltyApiClient.LibraryDeleteOutcome.Deleted -> deletedOnServer++
                 is SaltyApiClient.LibraryDeleteOutcome.Conflict -> {

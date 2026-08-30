@@ -17,6 +17,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -173,6 +174,8 @@ class ContractCorpusTest {
 
             "reconcile" -> assertReconcile(c)
 
+            "deletion_guard" -> assertDeletionGuard(c)
+
             else -> fail(
                 "Unmapped corpus op '${c.op}' in ${c.id}.\n" +
                     "    Map it to a function in `shared` here, or remove the case from the corpus."
@@ -261,6 +264,24 @@ class ContractCorpusTest {
         assertEquals(c.ids("to_delete_on_server"), plan.toDeleteOnServer.toSet(), "${c.because}\n    [toDeleteOnServer]")
     }
 
+    /**
+     * SYNC-016: whether deletions inferred from a side's absence may be applied at all.
+     *
+     * The predicate only. That a client consults it on BOTH directions of EVERY collection is wiring
+     * rather than a value, so it cannot be seen from here and each client pins it with its own tests.
+     * What this stops is the three drifting on the rule itself — which is what happened when the local
+     * half existed and the server half did not.
+     */
+    private fun assertDeletionGuard(c: CorpusCase) {
+        val input = json.decodeFromJsonElement(DeletionGuardInput.serializer(), c.input)
+
+        assertEquals(
+            c.expect.jsonObject["allows"]!!.jsonPrimitive.boolean,
+            SyncReconciler.allowsDeletions(input.sideCount, input.pendingDeletions),
+            c.because,
+        )
+    }
+
     // ---- corpus value helpers ------------------------------------------------------------------
 
     private fun JsonElement.stringOrNull(): String? = (this as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
@@ -291,6 +312,12 @@ class ContractCorpusTest {
         @SerialName("is_first_sync") val isFirstSync: Boolean = false,
         @SerialName("last_sync_ms") val lastSyncMs: Long? = null,
         @SerialName("tracks_agreement") val tracksAgreement: Boolean = false,
+    )
+
+    @Serializable
+    private data class DeletionGuardInput(
+        @SerialName("side_count") val sideCount: Int,
+        @SerialName("pending_deletions") val pendingDeletions: Int,
     )
 
     private companion object {

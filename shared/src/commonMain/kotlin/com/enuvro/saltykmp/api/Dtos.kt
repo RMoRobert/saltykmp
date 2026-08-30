@@ -134,6 +134,14 @@ data class DeviceSyncInfo(
     val deviceName: String? = null,
     val lastSyncDate: String? = null,
     val firstSyncDate: String? = null,
+    /**
+     * Whether this device has ever FINISHED a sync — equivalently, whether [lastSyncDate] is null.
+     * It is not "the server has never seen this device": enrolment creates the row, so a client that
+     * has only just signed in has a row and no watermark.
+     *
+     * SYNC-006 makes this the flag that suppresses deletion inference, so a client that treats it as
+     * "returning device" without a watermark deletes data. See `DeviceRepository.getOrCreate`.
+     */
     val isFirstSync: Boolean = false,
 )
 
