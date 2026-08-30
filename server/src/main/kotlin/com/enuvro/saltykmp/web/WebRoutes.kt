@@ -11,6 +11,7 @@ import com.enuvro.saltykmp.db.RecipeRepository
 import com.enuvro.saltykmp.db.ShoppingListRepository
 import com.enuvro.saltykmp.db.DeviceRepository
 import com.enuvro.saltykmp.db.UserRepository
+import java.time.format.DateTimeFormatter
 import java.time.Instant
 import com.enuvro.saltykmp.db.UserRow
 import com.enuvro.saltykmp.db.model.NutritionInformation
@@ -405,6 +406,36 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
         }
 
         // ---- User management (admin only). Each user has an isolated set of recipes/library. ----
+        get("/devices") {
+            val session = call.principal<UserSession>()!!
+            val notice = call.request.queryParameters["msg"]?.let(::deviceNotice)
+            call.respond(MustacheContent("devices.mustache", devicesModel(session, notice)))
+        }
+        post("/devices/{deviceId}/rename") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            val name = params["deviceName"].orEmpty().trim()
+            if (name.isNotEmpty()) {
+                DeviceRepository.renameDevice(session.userId, call.parameters["deviceId"]!!, name)
+            }
+            call.respondRedirect("/devices?msg=renamed")
+        }
+        post("/devices/{deviceId}/revoke") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            DeviceRepository.revokeToken(session.userId, call.parameters["deviceId"]!!)
+            call.respondRedirect("/devices?msg=revoked")
+        }
+        post("/devices/revoke-all") {
+            val session = call.principal<UserSession>()!!
+            val params = call.receiveParameters()
+            if (!call.checkCsrf(params)) return@post
+            DeviceRepository.revokeAllTokens(session.userId)
+            call.respondRedirect("/devices?msg=revokedAll")
+        }
+
         get("/users") {
             val session = call.requireAdmin() ?: return@get
             val users = UserRepository.listAll()
@@ -626,6 +657,46 @@ private fun aboutModel(session: UserSession?): Map<String, Any?> =
         put("version", BuildInfo.version)
         put("buildTime", BuildInfo.buildTime)
     }
+
+private fun deviceNotice(code: String): String? = when (code) {
+    "renamed" -> "Device renamed."
+    "revoked" -> "Device revoked. It will stop syncing until it signs in again."
+    "revokedAll" -> "Every device was revoked."
+    else -> null
+}
+
+/**
+ * A device's name as a person would read it, never blank: an unnamed row is still a row you may
+ * need to revoke, and "(unnamed device)" is at least actionable where an empty cell is not.
+ */
+private fun deviceDisplayName(name: String?, deviceId: String): String =
+    name?.takeIf { it.isNotBlank() } ?: "(unnamed device — ${deviceId.take(8)})"
+
+/** Wire stamps are for machines; this page is for a person deciding whether to revoke something. */
+private fun friendlyDate(wire: String?): String {
+    val parsed = WireDate.parse(wire) ?: return "Never"
+    return DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm").format(parsed) + " UTC"
+}
+
+private suspend fun devicesModel(session: UserSession, notice: String?): Map<String, Any?> {
+    val devices = DeviceRepository.listForUser(session.userId)
+    return chrome("Devices", session).apply {
+        put("notice", notice)
+        put("csrfToken", session.csrfToken)
+        put("hasDevices", devices.isNotEmpty())
+        put("devices", devices.map { d ->
+            mapOf(
+                "deviceId" to d.deviceId,
+                "deviceName" to (d.deviceName ?: ""),
+                "displayName" to deviceDisplayName(d.deviceName, d.deviceId),
+                "hasToken" to d.hasToken,
+                // Prefer token use over sync date: it is the freshest evidence the device is alive.
+                "lastSyncedLabel" to friendlyDate(d.tokenLastUsed ?: d.lastSyncDate),
+                "firstSyncedLabel" to friendlyDate(d.firstSyncDate),
+            )
+        })
+    }
+}
 
 private fun usersModel(session: UserSession, users: List<UserRow>, notice: String?, error: String?): Map<String, Any?> =
     chrome("Users", session).apply {

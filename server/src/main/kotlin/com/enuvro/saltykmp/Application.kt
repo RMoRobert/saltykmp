@@ -150,7 +150,15 @@ fun Application.module() {
         secret = System.getenv("SALTY_JWT_SECRET") ?: "dev-secret-change-me",
         issuer = "salty",
         audience = "salty-app",
-        validityMs = (System.getenv("SALTY_JWT_DAYS") ?: "8").toLong() * 24 * 60 * 60 * 1000,
+        // 90 minutes, not 8 days. The old figure was long because re-minting cost the user a
+        // password prompt; a device token re-mints silently, so the window a stolen JWT is useful
+        // for can shrink by two orders of magnitude at no cost to anyone.
+        //
+        // SALTY_JWT_DAYS is still honoured so a deployment whose clients have not been updated yet
+        // can hold the old behaviour: those clients cannot re-mint, and would face a login prompt
+        // every 90 minutes.
+        validityMs = System.getenv("SALTY_JWT_DAYS")?.toLongOrNull()?.let { it * 24 * 60 * 60 * 1000 }
+            ?: ((System.getenv("SALTY_JWT_MINUTES") ?: "90").toLong() * 60 * 1000),
     )
     // Pair the image store with the DB profile: the throwaway H2 sandbox gets its own folder so it
     // doesn't inherit the Postgres deployment's leftover image files. Those would make the client's
@@ -283,7 +291,7 @@ fun Application.installSalty(
         get("/health") { call.respondText("OK") }
         // Static assets for the web UI (e.g. /static/salty.css) from resources/static/.
         staticResources("/static", "static")
-        authRoutes(jwtService, loginThrottle, accountLockout)
+        authRoutes(jwtService, deviceTokens, loginThrottle, accountLockout)
         recipeRoutes(imageStore)
         libraryRoutes()
         shoppingListRoutes()

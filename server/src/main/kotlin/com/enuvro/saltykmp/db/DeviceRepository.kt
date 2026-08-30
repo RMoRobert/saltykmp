@@ -1,5 +1,6 @@
 package com.enuvro.saltykmp.db
 
+import com.enuvro.saltykmp.api.DeviceListEntry
 import com.enuvro.saltykmp.api.DeviceSyncInfo
 import com.enuvro.saltykmp.db.DatabaseFactory.dbQuery
 import com.enuvro.saltykmp.util.WireDate
@@ -132,6 +133,35 @@ object DeviceRepository {
         DeviceSyncs.update({ (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) }) {
             it[tokenHash] = null
             it[tokenIssuedAt] = null
+        } > 0
+    }
+
+    /**
+     * Every device for a user, for the devices page.
+     *
+     * Returns names and dates only — never the hash. `hasToken` distinguishes a device that can
+     * currently sync from one that has been revoked but whose history is worth keeping visible.
+     */
+    suspend fun listForUser(userId: String): List<DeviceListEntry> = dbQuery {
+        DeviceSyncs.selectAll()
+            .where { DeviceSyncs.userId eq userId }
+            .map { row ->
+                DeviceListEntry(
+                    deviceId = row[DeviceSyncs.deviceId],
+                    deviceName = row[DeviceSyncs.deviceName],
+                    firstSyncDate = WireDate.format(row[DeviceSyncs.firstSyncDate]),
+                    lastSyncDate = WireDate.format(row[DeviceSyncs.lastSyncDate]),
+                    tokenLastUsed = WireDate.format(row[DeviceSyncs.tokenLastUsed]),
+                    hasToken = row[DeviceSyncs.tokenHash] != null,
+                )
+            }
+            .sortedWith(compareByDescending<DeviceListEntry> { it.tokenLastUsed ?: it.lastSyncDate ?: "" })
+    }
+
+    /** Renames a device. Names are for humans; the id remains the identity. */
+    suspend fun renameDevice(userId: String, deviceId: String, name: String): Boolean = dbQuery {
+        DeviceSyncs.update({ (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) }) {
+            it[deviceName] = name
         } > 0
     }
 

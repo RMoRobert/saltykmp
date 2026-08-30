@@ -3,6 +3,7 @@ package com.enuvro.saltykmp.auth
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import com.enuvro.saltykmp.api.AuthRequest
+import com.enuvro.saltykmp.api.DeviceRenameRequest
 import com.enuvro.saltykmp.api.AuthResponse
 import com.enuvro.saltykmp.db.DeviceRepository
 import com.enuvro.saltykmp.db.UserRepository
@@ -11,6 +12,7 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
 import io.ktor.server.auth.Authentication
+import io.ktor.server.auth.authenticate
 import io.ktor.server.auth.authentication
 import io.ktor.server.auth.bearer
 import io.ktor.server.auth.jwt.JWTPrincipal
@@ -22,6 +24,9 @@ import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
+import io.ktor.server.routing.delete
+import io.ktor.server.routing.patch
+import io.ktor.server.routing.route
 import io.ktor.server.routing.post
 import java.time.ZoneOffset
 import java.util.Date
@@ -42,6 +47,11 @@ const val WEB_API_AUTH = "auth-web-api"
 /** Minimum length enforced when an admin sets/resets a user's password via the web UI. */
 const val MIN_PASSWORD_LENGTH = 8
 
+/** How a JWT was obtained. See [JwtService.generate]. */
+const val CLAIM_SOURCE = "src"
+const val SOURCE_PASSWORD = "pw"
+const val SOURCE_DEVICE_TOKEN = "dev"
+
 class JwtService(
     private val secret: String,
     private val issuer: String,
@@ -52,13 +62,21 @@ class JwtService(
 
     val verifier = JWT.require(algorithm).withIssuer(issuer).withAudience(audience).build()
 
-    fun generate(userId: String, username: String): String {
+    /**
+     * @param fromDeviceToken records that this JWT was minted by a sync token rather than by a
+     *   password. Nothing rejects it today — a JWT already reaches only the sync routes, so the
+     *   exchange grants nothing new — but without the claim the two are indistinguishable, and any
+     *   future route that accepts JWTs would silently become reachable by every enrolled device.
+     *   Stamping it now is what lets [RequirePasswordAuth] be strict later.
+     */
+    fun generate(userId: String, username: String, fromDeviceToken: Boolean = false): String {
         val now = System.currentTimeMillis()
         return JWT.create()
             .withIssuer(issuer)
             .withAudience(audience)
             .withClaim("uid", userId)
             .withClaim("username", username)
+            .withClaim(CLAIM_SOURCE, if (fromDeviceToken) SOURCE_DEVICE_TOKEN else SOURCE_PASSWORD)
             // issuedAt lets the server invalidate tokens minted before a password change (see configureAuth).
             .withIssuedAt(Date(now))
             .withExpiresAt(Date(now + validityMs))
@@ -134,7 +152,12 @@ fun ApplicationCall.userId(): String {
     error("userId() called outside an authenticated route")
 }
 
-fun Route.authRoutes(jwtService: JwtService, throttle: LoginThrottle, accountLockout: AccountLockout) {
+fun Route.authRoutes(
+    jwtService: JwtService,
+    deviceTokens: DeviceTokenService,
+    throttle: LoginThrottle,
+    accountLockout: AccountLockout,
+) {
     post("/api/auth/login") {
         val req = call.receive<AuthRequest>()
         val ip = call.request.origin.remoteHost
@@ -159,7 +182,74 @@ fun Route.authRoutes(jwtService: JwtService, throttle: LoginThrottle, accountLoc
         throttle.recordSuccess(ip, req.username)
         accountLockout.recordSuccess(req.username)
         val token = jwtService.generate(user.id, user.username)
-        call.respond(AuthResponse(token = token, username = user.username, expiresIn = jwtService.validityMs))
+
+        // Enrolment rides on the login the client already performs: send a deviceId and get a sync
+        // token back, once. A client that sends nothing gets exactly the response it always did.
+        val deviceToken = req.deviceId?.takeIf { it.isNotBlank() }?.let { deviceId ->
+            val minted = deviceTokens.generate()
+            DeviceRepository.issueToken(user.id, deviceId, req.deviceName, deviceTokens.hash(minted))
+            minted
+        }
+        call.respond(
+            AuthResponse(
+                token = token,
+                username = user.username,
+                expiresIn = jwtService.validityMs,
+                deviceToken = deviceToken,
+            ),
+        )
+    }
+
+    /**
+     * Trades a device sync token for a fresh JWT — the one call a client makes for the rest of its
+     * life, and the reason it never needs the password again.
+     *
+     * Not an escalation: JWT_AUTH is mounted on the same three sync route groups DEVICE_TOKEN_AUTH
+     * is and nowhere else, so the JWT handed back reaches exactly what the token already reached.
+     * The minted JWT is stamped as device-sourced anyway, so a route that later accepts JWTs cannot
+     * silently widen that.
+     */
+    authenticate(DEVICE_TOKEN_AUTH) {
+        post("/api/auth/token") {
+            val principal = call.principal<DeviceTokenPrincipal>()
+                ?: return@post call.respond(HttpStatusCode.Unauthorized)
+            val user = UserRepository.findById(principal.userId)
+                ?: return@post call.respond(HttpStatusCode.Unauthorized)
+            val jwt = jwtService.generate(user.id, user.username, fromDeviceToken = true)
+            call.respond(AuthResponse(token = jwt, username = user.username, expiresIn = jwtService.validityMs))
+        }
+    }
+
+    /**
+     * Managing devices. Session only, deliberately: revoking is how a stolen device is removed, so
+     * it must not be reachable by a credential that device holds. [RequirePasswordAuth] enforces
+     * the same rule a second way, in case this mount list gains JWT_AUTH later.
+     */
+    authenticate(WEB_API_AUTH) {
+        install(RequirePasswordAuth)
+
+        route("/api/auth/devices") {
+            get {
+                call.respond(DeviceRepository.listForUser(call.userId()))
+            }
+            patch("/{deviceId}") {
+                val name = call.receive<DeviceRenameRequest>().deviceName.trim()
+                if (name.isEmpty()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "A device needs a name"))
+                    return@patch
+                }
+                val renamed = DeviceRepository.renameDevice(call.userId(), call.parameters["deviceId"]!!, name)
+                if (renamed) call.respond(HttpStatusCode.NoContent) else call.respond(HttpStatusCode.NotFound)
+            }
+            delete("/{deviceId}") {
+                val revoked = DeviceRepository.revokeToken(call.userId(), call.parameters["deviceId"]!!)
+                if (revoked) call.respond(HttpStatusCode.NoContent) else call.respond(HttpStatusCode.NotFound)
+            }
+            post("/revoke-all") {
+                val count = DeviceRepository.revokeAllTokens(call.userId())
+                call.respond(mapOf("revoked" to count))
+            }
+        }
     }
 }
 

@@ -84,10 +84,44 @@ data class RecipeManifestEntry(
 // ---- Auth ----
 
 @Serializable
-data class AuthRequest(val username: String, val password: String)
+data class AuthRequest(
+    val username: String,
+    val password: String,
+    /**
+     * Sent by a client that wants a device sync token back, so it never has to store the password.
+     * Absent from older clients, which keep getting exactly the response they always did.
+     */
+    val deviceId: String? = null,
+    val deviceName: String? = null,
+)
 
 @Serializable
-data class AuthResponse(val token: String, val username: String, val expiresIn: Long)
+data class AuthResponse(
+    val token: String,
+    val username: String,
+    val expiresIn: Long,
+    /**
+     * The device sync token, returned exactly once, and only when the request carried a deviceId.
+     * Safe to add: every client decoder ignores unknown fields (ApiJson sets ignoreUnknownKeys,
+     * and Swift's JSONDecoder and System.Text.Json both do by default).
+     */
+    val deviceToken: String? = null,
+)
+
+/** One row of the devices list. Carries no token and no hash — only what a person needs to decide. */
+@Serializable
+data class DeviceListEntry(
+    val deviceId: String,
+    val deviceName: String? = null,
+    val firstSyncDate: String? = null,
+    val lastSyncDate: String? = null,
+    val tokenLastUsed: String? = null,
+    /** False once revoked, so the list can show a device that exists but can no longer sync. */
+    val hasToken: Boolean = false,
+)
+
+@Serializable
+data class DeviceRenameRequest(val deviceName: String)
 
 // ---- Device sync ----
 

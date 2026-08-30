@@ -1,0 +1,63 @@
+{{<layout.mustache}}
+{{$content}}
+<h1>Devices</h1>
+<p class="muted">Apps signed in to sync with this account. Revoking a device stops it syncing until
+it signs in again with your password.</p>
+{{#notice}}<p class="notice">{{.}}</p>{{/notice}}
+{{#error}}<p class="error-text">{{.}}</p>{{/error}}
+
+{{^devices}}
+<p class="muted">No devices have signed in to sync yet.</p>
+{{/devices}}
+
+{{#hasDevices}}
+<table class="users-table">
+    <thead>
+        <tr>
+            <th>Device</th>
+            <th>Last synced</th>
+            <th>First synced</th>
+            <th>Rename</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {{#devices}}
+        <tr>
+            <td>
+                <strong>{{displayName}}</strong>
+                {{^hasToken}}<small class="you-tag"> (revoked)</small>{{/hasToken}}
+            </td>
+            <td>{{lastSyncedLabel}}</td>
+            <td>{{firstSyncedLabel}}</td>
+            <td>
+                <form action="/devices/{{deviceId}}/rename" method="post" class="inline-form">
+                    <input type="hidden" name="csrf" value="{{csrfToken}}">
+                    <input type="text" name="deviceName" required placeholder="Device name" value="{{deviceName}}">
+                    <button type="submit" class="secondary outline">Save</button>
+                </form>
+            </td>
+            <td>
+                {{#hasToken}}
+                <form action="/devices/{{deviceId}}/revoke" method="post" class="inline-form"
+                      onsubmit="return confirm('Revoke {{displayName}}? It will stop syncing until it signs in again.');">
+                    <input type="hidden" name="csrf" value="{{csrfToken}}">
+                    <button type="submit" class="secondary outline danger">Revoke</button>
+                </form>
+                {{/hasToken}}
+            </td>
+        </tr>
+        {{/devices}}
+    </tbody>
+</table>
+
+<p class="muted">Web sessions do not appear in this list</p>
+
+<form action="/devices/revoke-all" method="post" class="inline-form"
+      onsubmit="return confirm('Revoke every device? Each will stop syncing until it signs in again.');">
+    <input type="hidden" name="csrf" value="{{csrfToken}}">
+    <button type="submit" class="secondary outline danger">Revoke all devices</button>
+</form>
+{{/hasDevices}}
+{{/content}}
+{{/layout.mustache}}

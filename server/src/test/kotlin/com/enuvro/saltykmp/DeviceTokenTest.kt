@@ -1,5 +1,12 @@
 package com.enuvro.saltykmp
 
+import com.enuvro.saltykmp.api.AuthRequest
+import com.enuvro.saltykmp.api.AuthResponse
+import com.enuvro.saltykmp.util.appJson
+import io.ktor.client.call.body
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.delete
+import io.ktor.serialization.kotlinx.json.json
 import com.enuvro.saltykmp.auth.DeviceTokenService
 import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.db.Categories
@@ -282,5 +289,133 @@ class DeviceTokenTest {
     private suspend fun lastUsed() = DatabaseFactory.dbQuery {
         DeviceSyncs.selectAll().where { DeviceSyncs.userId eq uid() }
             .limit(1).singleOrNull()?.get(DeviceSyncs.tokenLastUsed)
+    }
+
+    /* ------------------------------------------------------- enrolment and exchange -- */
+
+    /**
+     * Enrolment rides on the login the client already performs. The whole point of the design is
+     * that this is the LAST time the password is needed.
+     */
+    @Test
+    fun loggingInWithADeviceIdReturnsASyncToken() = testApplication {
+        application { installSalty(jwt, imageStore, deviceTokens = tokens) }
+        val client = createClient { install(ContentNegotiation) { json(appJson) } }
+
+        val resp: AuthResponse = client.post("/api/auth/login") {
+            contentType(ContentType.Application.Json)
+            setBody(AuthRequest("tester", "pw", deviceId = "phone-1", deviceName = "My Phone"))
+        }.body()
+
+        val token = resp.deviceToken
+        assertTrue(token != null && token.startsWith("salty_"), "expected a device token, got $token")
+        assertEquals(HttpStatusCode.OK,
+            client.get("/api/recipes") { header(HttpHeaders.Authorization, "Bearer $token") }.status,
+            "the freshly enrolled token should sync immediately")
+    }
+
+    /** An old client sends no deviceId and must get exactly the response it always did. */
+    @Test
+    fun loggingInWithoutADeviceIdReturnsNoToken() = testApplication {
+        application { installSalty(jwt, imageStore, deviceTokens = tokens) }
+        val client = createClient { install(ContentNegotiation) { json(appJson) } }
+
+        val resp: AuthResponse = client.post("/api/auth/login") {
+            contentType(ContentType.Application.Json)
+            setBody(AuthRequest("tester", "pw"))
+        }.body()
+
+        assertNull(resp.deviceToken, "an unmodified client must not be enrolled behind its back")
+        assertTrue(resp.token.isNotBlank(), "but it still gets its JWT")
+    }
+
+    /** The call a client makes forever after: token in, fresh JWT out, no password anywhere. */
+    @Test
+    fun aDeviceTokenMintsAFreshJwt() = testApplication {
+        application { installSalty(jwt, imageStore, deviceTokens = tokens) }
+        val client = createClient { install(ContentNegotiation) { json(appJson) } }
+        val token = issue()
+
+        val minted: AuthResponse =
+            client.post("/api/auth/token") { header(HttpHeaders.Authorization, "Bearer $token") }.body()
+
+        assertTrue(minted.token.isNotBlank())
+        assertEquals(HttpStatusCode.OK,
+            client.get("/api/recipes") { header(HttpHeaders.Authorization, "Bearer ${minted.token}") }.status,
+            "the minted JWT must actually work")
+    }
+
+    @Test
+    fun aRevokedTokenCannotMintAJwt() = testApplication {
+        application { installSalty(jwt, imageStore, deviceTokens = tokens) }
+        val token = issue()
+        runBlocking { DeviceRepository.revokeAllTokens(uid()) }
+        assertEquals(HttpStatusCode.Unauthorized,
+            client.post("/api/auth/token") { header(HttpHeaders.Authorization, "Bearer $token") }.status)
+    }
+
+    /* ------------------------------------------------------------- managing devices -- */
+
+    /**
+     * The escalation this design has to prevent: a stolen phone holds a sync token, and revoking is
+     * how you remove that phone. So neither the token nor a JWT minted from it may reach the device
+     * routes — otherwise the thief simply revokes everyone else.
+     */
+    @Test
+    fun neitherASyncTokenNorItsMintedJwtCanManageDevices() = testApplication {
+        application { installSalty(jwt, imageStore, deviceTokens = tokens) }
+        val client = createClient {
+            install(ContentNegotiation) { json(appJson) }
+            followRedirects = false
+        }
+        val token = issue()
+        val minted: AuthResponse =
+            client.post("/api/auth/token") { header(HttpHeaders.Authorization, "Bearer $token") }.body()
+
+        for ((label, credential) in listOf("sync token" to token, "JWT minted from it" to minted.token)) {
+            val listed = client.get("/api/auth/devices") { header(HttpHeaders.Authorization, "Bearer $credential") }
+            assertNotEquals(HttpStatusCode.OK, listed.status, "$label must not list devices")
+
+            val revoked = client.delete("/api/auth/devices/$DEVICE") {
+                header(HttpHeaders.Authorization, "Bearer $credential")
+            }
+            assertNotEquals(HttpStatusCode.NoContent, revoked.status, "$label must not revoke a device")
+        }
+
+        // And the token still syncs, proving the refusal was about scope and not a broken credential.
+        assertEquals(HttpStatusCode.OK,
+            client.get("/api/recipes") { header(HttpHeaders.Authorization, "Bearer $token") }.status)
+    }
+
+    /** The devices list is what the page renders; it must never carry the credential itself. */
+    @Test
+    fun theDeviceListNamesDevicesButNeverTheirTokens() = runBlocking {
+        val token = issue("phone-1", "My Phone")
+        val entries = DeviceRepository.listForUser(uid())
+        assertEquals(1, entries.size)
+        val entry = entries.single()
+        assertEquals("My Phone", entry.deviceName)
+        assertTrue(entry.hasToken, "an enrolled device should read as able to sync")
+
+        val serialised = appJson.encodeToString(entries)
+        assertTrue(!serialised.contains(token), "the plaintext token must never be serialised")
+        assertTrue(!serialised.contains(tokens.hash(token)), "nor its hash: $serialised")
+    }
+
+    @Test
+    fun aRevokedDeviceStaysInTheListMarkedUnableToSync() = runBlocking {
+        issue("phone-1", "My Phone")
+        DeviceRepository.revokeToken(uid(), "phone-1")
+        val entry = DeviceRepository.listForUser(uid()).single()
+        assertEquals("My Phone", entry.deviceName, "history is worth keeping visible")
+        assertEquals(false, entry.hasToken)
+    }
+
+    @Test
+    fun aDeviceCanBeRenamed() = runBlocking {
+        issue("phone-1", "iPhone")
+        assertTrue(DeviceRepository.renameDevice(uid(), "phone-1", "Kitchen iPad"))
+        assertEquals("Kitchen iPad", DeviceRepository.listForUser(uid()).single().deviceName)
+        assertEquals(false, DeviceRepository.renameDevice(uid(), "no-such-device", "Nope"))
     }
 }
