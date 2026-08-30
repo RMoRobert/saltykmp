@@ -47,16 +47,37 @@ object DevSeed {
     @OptIn(ExperimentalSerializationApi::class)
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    /** Where seed files live, relative to the server's working directory. Override for tests. */
-    const val DEFAULT_DIR = "seed"
+    /**
+     * Where to look for seed files, in order.
+     *
+     * More than one candidate because the working directory depends on how the server was started:
+     * `gradlew :server:run` runs in `server/`, while an IDE run configuration for ApplicationKt
+     * typically runs in the repository root. The same split moves the H2 database and the image
+     * store, so a developer can easily end up with two separate dev environments and a seed
+     * directory that only one of them can see -- which looks exactly like the seeder being broken,
+     * since not finding it is a silent no-op by design.
+     */
+    val DEFAULT_DIRS = listOf("seed", "server/seed", "../seed")
+
+    /** The first candidate that exists, or null. [explicit] (SALTY_SEED_DIR) always wins. */
+    fun resolveDir(explicit: String? = null): Path? {
+        val candidates = if (explicit.isNullOrBlank()) DEFAULT_DIRS else listOf(explicit)
+        return candidates.map { Path.of(it) }.firstOrNull { Files.isDirectory(it) }
+    }
 
     /**
      * Imports every recipe found in [dir] for [userId], or does nothing at all.
      *
      * @return how many recipes were created; 0 when the directory is absent or the library is not empty.
      */
+    /** Resolves the directory itself; see [resolveDir]. */
+    suspend fun seedIfRequested(imageStore: ImageStore, userId: String, explicitDir: String? = null): Int {
+        val dir = resolveDir(explicitDir) ?: return 0  // the common case for other people's checkouts
+        return seedIfRequested(dir, imageStore, userId)
+    }
+
     suspend fun seedIfRequested(dir: Path, imageStore: ImageStore, userId: String): Int {
-        if (!Files.isDirectory(dir)) return 0          // the common case for other people's checkouts
+        if (!Files.isDirectory(dir)) return 0
 
         if (RecipeRepository.count(userId) > 0) {
             log.info("Seed directory present but the library already has recipes; leaving it alone.")

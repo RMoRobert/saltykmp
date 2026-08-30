@@ -110,17 +110,17 @@ private fun Application.enforceSecrets() {
     val allowDefault = System.getenv("SALTY_ALLOW_DEFAULT_SECRET").toBoolean()
 
     if (isDefaultSecret(System.getenv("SALTY_JWT_SECRET"), "dev-secret-change-me")) {
-        val msg = "SALTY_JWT_SECRET is unset or a default/placeholder — JWTs would be signed with a publicly known secret, so anyone could forge a login token. Set a long, random SALTY_JWT_SECRET (e.g. `openssl rand -hex 32`)."
-        if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true — do NOT expose this server)")
+        val msg = "SALTY_JWT_SECRET is unset or a default/placeholder susceptible to forgery. Set a long, random SALTY_JWT_SECRET (e.g., `openssl rand -hex 32` to generate)."
+        if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true -- do not publicly expose this server)")
         else error("SECURITY: $msg Refusing to start. For local/dev use only, set SALTY_ALLOW_DEFAULT_SECRET=true.")
     }
     if (isDefaultSecret(System.getenv("SALTY_SESSION_SECRET"), "dev-secret-change-me")) {
-        val msg = "SALTY_SESSION_SECRET is unset or a default/placeholder — the web session cookie would be MAC'd with a publicly known secret, so anyone could forge a logged-in session. Set a long, random SALTY_SESSION_SECRET (e.g. `openssl rand -hex 32`), distinct from SALTY_JWT_SECRET."
-        if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true — do NOT expose this server)")
+        val msg = "SALTY_SESSION_SECRET is unset or a default/placeholder susceptible to forgery. Set a long, random SALTY_SESSION_SECRET (e.g. `openssl rand -hex 32` to generate), distinct from SALTY_JWT_SECRET."
+        if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true -- do not publicly expose this server)")
         else error("SECURITY: $msg Refusing to start. For local/dev use only, set SALTY_ALLOW_DEFAULT_SECRET=true.")
     }
     if (isDefaultSecret(System.getenv("SALTY_DEFAULT_PASSWORD"), "changeit")) {
-        val msg = "SALTY_DEFAULT_PASSWORD is unset or a default — the seeded admin account would use a well-known password. Set a strong SALTY_DEFAULT_PASSWORD before first run."
+        val msg = "SALTY_DEFAULT_PASSWORD is unset or using default. Set a strong SALTY_DEFAULT_PASSWORD before first run."
         if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true)")
         else error("SECURITY: $msg Refusing to start. For local/dev use only, set SALTY_ALLOW_DEFAULT_SECRET=true.")
     }
@@ -164,9 +164,8 @@ fun Application.module() {
     // DevSeed: it fills an EMPTY library from .saltyrecipe files and does nothing otherwise, so a
     // checkout without that (gitignored) directory never notices it is here.
     runBlocking {
-        val seedDir = Paths.get(System.getenv("SALTY_SEED_DIR") ?: DevSeed.DEFAULT_DIR)
         UserRepository.findByUsername(defaultUser)?.let { user ->
-            DevSeed.seedIfRequested(seedDir, imageStore, user.id)
+            DevSeed.seedIfRequested(imageStore, user.id, System.getenv("SALTY_SEED_DIR"))
         }
     }
 

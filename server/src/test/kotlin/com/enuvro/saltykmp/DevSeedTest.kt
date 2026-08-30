@@ -179,4 +179,26 @@ class DevSeedTest {
         assertEquals(0, DevSeed.seedIfRequested(dir, imageStore, uid()), "should survive bad input")
         assertEquals(0L, RecipeRepository.count(uid()))
     }
+
+    /**
+     * The seed directory is found relative to the working directory, and that differs by launcher:
+     * `gradlew :server:run` runs in server/, an IDE run configuration for ApplicationKt usually
+     * runs in the repo root. Looking in one place meant the seeder silently did nothing under the
+     * other launcher -- indistinguishable from it being broken, since a missing directory is a
+     * deliberate no-op.
+     */
+    @Test
+    fun theSeedDirectoryIsFoundFromEitherWorkingDirectory() {
+        assertEquals(listOf("seed", "server/seed", "../seed"), DevSeed.DEFAULT_DIRS,
+            "both launchers' working directories must be covered")
+    }
+
+    /** An explicit SALTY_SEED_DIR overrides the search entirely, and is not second-guessed. */
+    @Test
+    fun anExplicitDirectoryWinsAndIsNotSearchedFor() {
+        val dir = seedDirWith(sampleJson())
+        assertEquals(dir, DevSeed.resolveDir(dir.toString()))
+        assertEquals(null, DevSeed.resolveDir("/nowhere/that/exists"),
+            "an explicit path that doesn't exist must not silently fall back to a candidate")
+    }
 }

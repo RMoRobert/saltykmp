@@ -251,7 +251,7 @@ function saltyEditor() {
         { kind: "course", label: "Courses", singular: "course", icon: "utensils",
           outline: false, items: this.courses },
         { kind: "tag", label: "Tags", singular: "tag", icon: "tag",
-          outline: true, items: this.tags },
+          outline: false, items: this.tags },
       ];
     },
 
