@@ -77,7 +77,8 @@ List, open, create, delete. Edit name, ingredients, directions and details. Sect
 main-ingredient stars, **drag-to-reorder** (`@alpinejs/sort`), live fraction-aware scaling, rating,
 and a native `<input type="date">` for "last made on" — one field, and the platform picker beats any
 library component. Dialog for delete, toasts for feedback, unsaved-changes guards on navigate and
-unload.
+unload. Follows the OS light/dark setting (`prefers-color-scheme`, applied before first paint to
+avoid a flash) — no in-app toggle.
 
 `lastPrepared` is always written together with `lastModifiedPreparedDate`, because the server merges
 that pair by the stamp rather than the body clock.
