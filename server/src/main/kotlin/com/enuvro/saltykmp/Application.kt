@@ -5,6 +5,7 @@ import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.auth.LoginThrottle
 import com.enuvro.saltykmp.auth.authRoutes
 import com.enuvro.saltykmp.auth.configureAuth
+import com.enuvro.saltykmp.dev.DevSeed
 import com.enuvro.saltykmp.auth.revalidateSession
 import com.enuvro.saltykmp.db.DatabaseFactory
 import com.enuvro.saltykmp.db.UserRepository
@@ -158,6 +159,16 @@ fun Application.module() {
     val maxImagePixels = System.getenv("SALTY_MAX_IMAGE_PIXELS")?.toLongOrNull()?.takeIf { it > 0 }
         ?: ImageStore.DEFAULT_MAX_PIXELS
     val imageStore = ImageStore(Paths.get(System.getenv("SALTY_IMAGE_DIR") ?: defaultImageDir), maxImagePixels)
+
+    // Local-development convenience, inert unless a seed directory exists next to the server. See
+    // DevSeed: it fills an EMPTY library from .saltyrecipe files and does nothing otherwise, so a
+    // checkout without that (gitignored) directory never notices it is here.
+    runBlocking {
+        val seedDir = Paths.get(System.getenv("SALTY_SEED_DIR") ?: DevSeed.DEFAULT_DIR)
+        UserRepository.findByUsername(defaultUser)?.let { user ->
+            DevSeed.seedIfRequested(seedDir, imageStore, user.id)
+        }
+    }
 
     // Set SALTY_TRUST_PROXY=true ONLY when the server sits behind a trusted reverse proxy (and is not
     // directly reachable). It makes the app honour X-Forwarded-* so the real client IP — not the proxy's —

@@ -37,3 +37,10 @@ salty-images*/
 *.mv.db
 *.lock.db
 *.trace.db
+
+# Local development seed data (DevSeed). Unanchored so it matches wherever the server runs from:
+# `gradlew :server:run` uses server/ as its working directory, other launches use the repo root.
+# Real exported recipes are personal data and must never be committed; a checkout without this
+# directory simply never seeds.
+seed/
+*.saltyrecipe
