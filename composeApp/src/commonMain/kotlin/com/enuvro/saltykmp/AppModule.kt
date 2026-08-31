@@ -315,12 +315,16 @@ class AppModule {
 
         val auth = api.login(settings.username, settings.password, settings.deviceId, SYNC_DEVICE_NAME)
         val issued = auth.deviceToken
-        if (issued != null) {
-            settings.syncToken = issued
-            // Only now, once a working replacement is stored: the password stops living on this
-            // device. A server that predates device tokens returns none, and nothing changes.
-            settings.password = ""
-        }
+            // The server enrols on every login now, so a missing token means it is older than this
+            // client. Failing here rather than carrying on with the JWT is deliberate: carrying on is
+            // exactly what used to leave a client syncing with the password indefinitely, invisible on
+            // the account's app list because it never had a token to show there.
+            ?: throw SyncException(
+                "This server is too old for this app. Update the server, then sync again.",
+            )
+        settings.syncToken = issued
+        // Only now, once a working replacement is stored: the password stops living on this device.
+        settings.password = ""
     }
 
     private suspend fun <T> withSyncService(block: suspend (SyncService) -> T): T {

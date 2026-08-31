@@ -12,10 +12,10 @@ const val DEVICE_TOKEN_AUTH = "device-token-auth"
 /**
  * Marks a token as ours on sight.
  *
- * Two jobs. It lets the bearer provider decline a JWT without attempting to verify it, so the two
- * credential types can share the Authorization header and be tried in order. And it makes a leaked
- * token recognisable — greppable in a log, and matchable by secret scanners — which a bare base64
- * blob is not.
+ * Two jobs. It lets the bearer provider decline anything that is not ours without attempting to
+ * verify it, so a route can accept this credential alongside another and try them in order. And it
+ * makes a leaked token recognisable — greppable in a log, and matchable by secret scanners — which a
+ * bare base64 blob is not.
  */
 const val DEVICE_TOKEN_PREFIX = "salty_"
 
@@ -35,9 +35,10 @@ data class DeviceTokenPrincipal(val userId: String, val deviceId: String)
  * here is burn CPU on every single synced request. The keyed HMAC additionally means a stolen
  * database alone is not enough to forge a lookup — the secret is needed too.
  *
- * The key defaults to the JWT secret so no new configuration is required to deploy this. Rotating
- * either secret invalidates every device token, which is the same blast radius rotating the JWT
- * secret already has, and is a reasonable emergency lever.
+ * The key comes from `SALTY_TOKEN_SECRET` (formerly `SALTY_JWT_SECRET`, still read as a fallback so
+ * the rename does not invalidate anything). Rotating it invalidates every device token at once —
+ * a reasonable emergency lever, and the only one that signs every client out without touching
+ * anyone's password.
  */
 class DeviceTokenService(secret: String) {
 

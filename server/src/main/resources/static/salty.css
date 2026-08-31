@@ -223,3 +223,8 @@ body { background:#f5f5f7; }
     font-size:.9rem; line-height:1.5; tab-size:4; min-height:22rem; resize:vertical; }
 .editor-footer { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
 .editor-hint { font-size:.82rem; }
+
+/* The classic view is legacy and says so in its own nav, so nobody wonders why it looks different
+   from the app they were just in. */
+.classic-tag { color: var(--pico-muted-color); text-transform: uppercase;
+               letter-spacing: 0.06em; font-size: 0.7em; }

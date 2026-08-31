@@ -14,7 +14,7 @@ import com.enuvro.saltykmp.db.ShoppingListRepository
 import com.enuvro.saltykmp.db.ShoppingLists
 import com.enuvro.saltykmp.db.model.ShoppingListListContents
 import com.enuvro.saltykmp.auth.AccountLockout
-import com.enuvro.saltykmp.auth.JwtService
+import com.enuvro.saltykmp.auth.CSRF_HEADER
 import com.enuvro.saltykmp.db.Categories
 import com.enuvro.saltykmp.db.Courses
 import com.enuvro.saltykmp.db.DatabaseFactory
@@ -27,8 +27,10 @@ import com.enuvro.saltykmp.db.Tags
 import com.enuvro.saltykmp.db.UserRepository
 import com.enuvro.saltykmp.db.Users
 import com.enuvro.saltykmp.image.ImageStore
+import com.enuvro.saltykmp.web.CreateUserRequest
 import com.enuvro.saltykmp.util.WireDate
 import com.enuvro.saltykmp.util.appJson
+import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.cookies.HttpCookies
@@ -72,7 +74,6 @@ import kotlin.test.assertTrue
 
 class SaltyServerTest {
 
-    private val jwt = JwtService("test-secret", "salty", "salty-app", validityMs = 60_000)
     private val imageStore = ImageStore(Files.createTempDirectory("salty-test-img"))
 
     companion object {
@@ -106,13 +107,20 @@ class SaltyServerTest {
         install(ContentNegotiation) { json(appJson) }
     }
 
+    /** A browser: session cookie plus JSON, which is what the app itself is. */
+    private fun ApplicationTestBuilder.jsonCookieClient() = createClient {
+        install(ContentNegotiation) { json(appJson) }
+        install(HttpCookies)
+        followRedirects = false
+    }
+
     private suspend fun login(client: io.ktor.client.HttpClient): String {
         val resp = client.post("/api/auth/login") {
             contentType(ContentType.Application.Json)
-            setBody(AuthRequest("tester", "pw"))
+            setBody(AuthRequest("tester", "pw", deviceId = "test-device"))
         }
         assertEquals(HttpStatusCode.OK, resp.status)
-        return resp.body<AuthResponse>().token
+        return resp.body<AuthResponse>().deviceToken!!
     }
 
     private fun recipe(id: String, name: String, lastModified: String) = ServerRecipe(
@@ -123,36 +131,61 @@ class SaltyServerTest {
 
     @Test
     fun webLoginPageRenders() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val resp = createClient { }.get("/login")
         assertEquals(HttpStatusCode.OK, resp.status)
         assertTrue(resp.bodyAsText().contains("Sign in"))
     }
 
+    /** Build info moved into the app's About dialog, and is still not shown to anonymous visitors. */
     @Test
-    fun aboutPageIsBehindAuth() = testApplication {
-        application { installSalty(jwt, imageStore) }
-        // Anonymous → redirected to login (version/build info not disclosed).
-        val anon = createClient { followRedirects = false }.get("/about")
+    fun buildInfoIsBehindAuth() = testApplication {
+        application { installSalty(imageStore) }
+        val anon = createClient { followRedirects = false }.get("/app")
         assertEquals(HttpStatusCode.Found, anon.status)
         assertEquals("/login", anon.headers[HttpHeaders.Location])
-        // Logged in → renders.
+
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        assertEquals(HttpStatusCode.OK, web.get("/about").status)
+        val html = web.get("/app").bodyAsText()
+        assertTrue(html.contains("data-version="), "the app shell should carry the build info its About dialog shows")
+    }
+
+    /** Signing in lands on the app, not on the classic library it used to. */
+    @Test
+    fun loginRedirectsToTheApp() = testApplication {
+        application { installSalty(imageStore) }
+        val web = createClient { install(HttpCookies); followRedirects = false }
+        val resp = web.submitForm(
+            url = "/login",
+            formParameters = parameters { append("username", "tester"); append("password", "pw") },
+        )
+        assertEquals("/app", resp.headers[HttpHeaders.Location])
+    }
+
+    /** `/` is a signpost to the app now; anonymous visitors still meet the login page first. */
+    @Test
+    fun rootRedirectsToTheApp() = testApplication {
+        application { installSalty(imageStore) }
+        val web = createClient { install(HttpCookies); followRedirects = false }
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+        assertEquals("/app", web.get("/").headers[HttpHeaders.Location])
+
+        val anon = createClient { followRedirects = false }.get("/")
+        assertEquals("/login", anon.headers[HttpHeaders.Location])
     }
 
     @Test
-    fun webRootRedirectsWhenNotLoggedIn() = testApplication {
-        application { installSalty(jwt, imageStore) }
-        val resp = createClient { followRedirects = false }.get("/")
+    fun classicRootRedirectsWhenNotLoggedIn() = testApplication {
+        application { installSalty(imageStore) }
+        val resp = createClient { followRedirects = false }.get("/classic")
         assertEquals(HttpStatusCode.Found, resp.status)
         assertEquals("/login", resp.headers[HttpHeaders.Location])
     }
 
     @Test
     fun webLoginThenListsRecipes() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking {
             val uid = UserRepository.findByUsername("tester")!!.id
             RecipeRepository.upsert(uid, recipe("w1", "Web Waffles", "2026-06-01T00:00:00.000Z"))
@@ -162,12 +195,12 @@ class SaltyServerTest {
             url = "/login",
             formParameters = parameters { append("username", "tester"); append("password", "pw") },
         )
-        assertTrue(web.get("/").bodyAsText().contains("Web Waffles"))
+        assertTrue(web.get("/classic").bodyAsText().contains("Web Waffles"))
     }
 
     @Test
     fun webShowsShoppingListsAndTheirContents() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking {
             val uid = UserRepository.findByUsername("tester")!!.id
             ShoppingListRepository.save(uid, ServerShoppingList(
@@ -191,7 +224,7 @@ class SaltyServerTest {
             formParameters = parameters { append("username", "tester"); append("password", "pw") },
         )
 
-        val index = web.get("/shoppingLists").bodyAsText()
+        val index = web.get("/classic/shoppingLists").bodyAsText()
         assertTrue(index.contains("Web Groceries"))
         assertTrue(index.contains("Web Notes"))
         // Size-based, matching the Swift app's row subtitle: headings don't count as items, and blank
@@ -199,25 +232,25 @@ class SaltyServerTest {
         assertTrue(index.contains("2 items"), "checklist reports its item count")
         assertTrue(index.contains("2 lines"), "freeform list reports its line count")
 
-        val checklist = web.get("/shoppingLists/wl1").bodyAsText()
+        val checklist = web.get("/classic/shoppingLists/wl1").bodyAsText()
         assertTrue(checklist.contains("Produce"))
         assertTrue(checklist.contains("Web Apples"))
         assertTrue(checklist.contains("☑"), "completed items render as checked")
         assertTrue(checklist.contains("☐"), "open items render as unchecked")
 
-        val freeform = web.get("/shoppingLists/wl2").bodyAsText()
+        val freeform = web.get("/classic/shoppingLists/wl2").bodyAsText()
         assertTrue(freeform.contains("Corner Store"))
 
         // The sidebar entry must appear on OTHER pages too — that's what makes the section reachable
         // at all. Asserting it only on its own page would pass even if it were never added to chrome().
-        val recipesPage = web.get("/").bodyAsText()
+        val recipesPage = web.get("/classic").bodyAsText()
         assertTrue(recipesPage.contains("Shopping Lists"), "sidebar entry missing from the recipes page")
-        assertTrue(recipesPage.contains("href=\"/shoppingLists\""), "sidebar link missing from the recipes page")
+        assertTrue(recipesPage.contains("href=\"/classic/shoppingLists\""), "sidebar link missing from the recipes page")
     }
 
     @Test
     fun webShoppingListSummaryHandlesSingularAndEmpty() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking {
             val uid = UserRepository.findByUsername("tester")!!.id
             ShoppingListRepository.save(uid, ServerShoppingList(
@@ -235,27 +268,35 @@ class SaltyServerTest {
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
 
-        val index = web.get("/shoppingLists").bodyAsText()
+        val index = web.get("/classic/shoppingLists").bodyAsText()
         assertTrue(index.contains("1 item<"), "singular, not \"1 items\"")
         assertTrue(index.contains("No items"), "a headings-only list has no items to count")
         assertTrue(index.contains("Empty"), "whitespace-only freeform counts as empty")
     }
 
     /** The CSRF token lives in the session; forms echo it. Fish it out of a rendered page. */
+    /**
+     * The CSRF token the app shell hands its own JSON calls. The classic pages put it in a hidden
+     * form field; the app puts it in a data attribute, and user management is an API now.
+     */
+    private suspend fun appCsrf(client: HttpClient): String =
+        Regex("""data-csrf="([0-9a-f]+)"""").find(client.get("/app").bodyAsText())?.groupValues?.get(1)
+            ?: error("no CSRF token in the app shell")
+
     private fun csrfFrom(html: String): String =
         Regex("""name="csrf" value="([0-9a-f]+)"""").find(html)?.groupValues?.get(1)
             ?: error("no CSRF token found in page")
 
     @Test
     fun webChecklistEditingRoundTrip() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        val csrf = csrfFrom(web.get("/shoppingLists").bodyAsText())
+        val csrf = csrfFrom(web.get("/classic/shoppingLists").bodyAsText())
 
         // Create a checklist from the index form.
         val created = web.submitForm(
-            url = "/shoppingLists",
+            url = "/classic/shoppingLists",
             formParameters = parameters { append("csrf", csrf); append("name", "Web List"); append("type", "checklist") },
         )
         assertEquals(HttpStatusCode.Found, created.status)
@@ -301,7 +342,7 @@ class SaltyServerTest {
     /** ↑/↓ swap with the neighbor; moving past either end is a true no-op (revision untouched). */
     @Test
     fun webChecklistItemReordering() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
         runBlocking {
             ShoppingListRepository.save(uid, ServerShoppingList(
@@ -315,16 +356,16 @@ class SaltyServerTest {
         }
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        val csrf = csrfFrom(web.get("/shoppingLists/ord").bodyAsText())
+        val csrf = csrfFrom(web.get("/classic/shoppingLists/ord").bodyAsText())
         suspend fun texts() = ShoppingListRepository.getById(uid, "ord")!!.contentsForList!!.map { it.text }
         suspend fun revision() = ShoppingListRepository.getById(uid, "ord")!!.revision
 
-        web.submitForm(url = "/shoppingLists/ord/items/move", formParameters = parameters {
+        web.submitForm(url = "/classic/shoppingLists/ord/items/move", formParameters = parameters {
             append("csrf", csrf); append("itemId", "c"); append("dir", "up")
         })
         assertEquals(listOf("Alpha", "Gamma", "Beta"), runBlocking { texts() })
 
-        web.submitForm(url = "/shoppingLists/ord/items/move", formParameters = parameters {
+        web.submitForm(url = "/classic/shoppingLists/ord/items/move", formParameters = parameters {
             append("csrf", csrf); append("itemId", "a"); append("dir", "down")
         })
         assertEquals(listOf("Gamma", "Alpha", "Beta"), runBlocking { texts() })
@@ -332,10 +373,10 @@ class SaltyServerTest {
         // Top item up / bottom item down: order AND revision must be untouched — a no-op that still
         // bumped the revision would make every client re-download the list for nothing.
         val before = runBlocking { revision() }
-        web.submitForm(url = "/shoppingLists/ord/items/move", formParameters = parameters {
+        web.submitForm(url = "/classic/shoppingLists/ord/items/move", formParameters = parameters {
             append("csrf", csrf); append("itemId", "g"); append("dir", "up")   // unknown id: also a no-op
         })
-        web.submitForm(url = "/shoppingLists/ord/items/move", formParameters = parameters {
+        web.submitForm(url = "/classic/shoppingLists/ord/items/move", formParameters = parameters {
             append("csrf", csrf); append("itemId", "b"); append("dir", "down")
         })
         assertEquals(listOf("Gamma", "Alpha", "Beta"), runBlocking { texts() })
@@ -347,7 +388,7 @@ class SaltyServerTest {
      *  ShoppingListRepository.write) — and the revision must not budge. */
     @Test
     fun webItemMoveOnNullContentsListIsANoOp() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
         runBlocking {
             ShoppingListRepository.save(uid, ServerShoppingList(
@@ -357,10 +398,10 @@ class SaltyServerTest {
         }
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        val csrf = csrfFrom(web.get("/shoppingLists/ff").bodyAsText())
+        val csrf = csrfFrom(web.get("/classic/shoppingLists/ff").bodyAsText())
         val before = runBlocking { ShoppingListRepository.getById(uid, "ff")!! }
 
-        web.submitForm(url = "/shoppingLists/ff/items/move", formParameters = parameters {
+        web.submitForm(url = "/classic/shoppingLists/ff/items/move", formParameters = parameters {
             append("csrf", csrf); append("itemId", "x"); append("dir", "up")
         })
 
@@ -372,7 +413,7 @@ class SaltyServerTest {
     /** A freeform save whose baseRevision went stale must show the conflict banner, not clobber. */
     @Test
     fun webFreeformSaveConflictShowsBannerAndPreservesDraft() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
         runBlocking {
             ShoppingListRepository.save(uid, ServerShoppingList(
@@ -381,7 +422,7 @@ class SaltyServerTest {
         }
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        val page = web.get("/shoppingLists/ff").bodyAsText()
+        val page = web.get("/classic/shoppingLists/ff").bodyAsText()
         val csrf = csrfFrom(page)
         assertTrue(page.contains("""name="baseRevision" value="1""""), "editor carries the revision it rendered")
 
@@ -394,7 +435,7 @@ class SaltyServerTest {
         }
 
         // The stale tab saves: banner + both texts, and the row is untouched.
-        val conflicted = web.submitForm(url = "/shoppingLists/ff/freeform", formParameters = parameters {
+        val conflicted = web.submitForm(url = "/classic/shoppingLists/ff/freeform", formParameters = parameters {
             append("csrf", csrf); append("text", "my draft"); append("baseRevision", "1")
         }).bodyAsText()
         assertTrue(conflicted.contains("changed while you were editing"), "conflict banner shown")
@@ -404,7 +445,7 @@ class SaltyServerTest {
         assertEquals("from a device", runBlocking { ShoppingListRepository.getById(uid, "ff")?.contentsForFreeform })
 
         // Retrying with the fresh baseRevision succeeds.
-        val saved = web.submitForm(url = "/shoppingLists/ff/freeform", formParameters = parameters {
+        val saved = web.submitForm(url = "/classic/shoppingLists/ff/freeform", formParameters = parameters {
             append("csrf", csrf); append("text", "my draft"); append("baseRevision", "2")
         })
         assertEquals(HttpStatusCode.Found, saved.status)
@@ -414,7 +455,7 @@ class SaltyServerTest {
     /** Web mutations are state-changing form POSTs: no valid CSRF token, no write. */
     @Test
     fun webShoppingListEditsRequireCsrf() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
         runBlocking {
             ShoppingListRepository.save(uid, ServerShoppingList(
@@ -425,7 +466,7 @@ class SaltyServerTest {
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
 
-        val resp = web.submitForm(url = "/shoppingLists/sl/items/delete", formParameters = parameters {
+        val resp = web.submitForm(url = "/classic/shoppingLists/sl/items/delete", formParameters = parameters {
             append("csrf", "forged"); append("itemId", "i1")
         })
         assertEquals(HttpStatusCode.Forbidden, resp.status)
@@ -435,7 +476,7 @@ class SaltyServerTest {
     /** One user must never see another's lists, and an unknown id must not 500. */
     @Test
     fun webShoppingListsAreUserScoped() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking {
             UserRepository.create("other", "pw2")
             val otherId = UserRepository.findByUsername("other")!!.id
@@ -450,15 +491,15 @@ class SaltyServerTest {
             formParameters = parameters { append("username", "tester"); append("password", "pw") },
         )
 
-        assertTrue(!web.get("/shoppingLists").bodyAsText().contains("Other Persons List"))
+        assertTrue(!web.get("/classic/shoppingLists").bodyAsText().contains("Other Persons List"))
         // Unknown / not-yours id redirects back to the index rather than erroring.
-        assertEquals(HttpStatusCode.OK, web.get("/shoppingLists/secret").status)
-        assertTrue(!web.get("/shoppingLists/secret").bodyAsText().contains("Other Persons List"))
+        assertEquals(HttpStatusCode.OK, web.get("/classic/shoppingLists/secret").status)
+        assertTrue(!web.get("/classic/shoppingLists/secret").bodyAsText().contains("Other Persons List"))
     }
 
     @Test
     fun webRecipesPaginate() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking {
             val uid = UserRepository.findByUsername("tester")!!.id
             // 30 zero-padded names so lexical sort == numeric: page 1 = 01..25, page 2 = 26..30.
@@ -469,19 +510,19 @@ class SaltyServerTest {
         val web = createClient { install(HttpCookies) }
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
 
-        val page1 = web.get("/").bodyAsText()
+        val page1 = web.get("/classic").bodyAsText()
         assertTrue(page1.contains("Page 1 of 2"), "page 1 shows pagination")
         assertTrue(page1.contains("Recipe 01") && page1.contains("Recipe 25"), "page 1 holds the first 25")
         assertTrue(!page1.contains("Recipe 26"), "page 1 stops at 25")
 
-        val page2 = web.get("/?page=2").bodyAsText()
+        val page2 = web.get("/classic?page=2").bodyAsText()
         assertTrue(page2.contains("Recipe 26") && page2.contains("Recipe 30"), "page 2 holds the remainder")
         assertTrue(!page2.contains("Recipe 01"), "page 2 excludes page-1 recipes")
     }
 
     @Test
     fun webBrowseByCourseAndCategory() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking {
             val uid = UserRepository.findByUsername("tester")!!.id
             LibraryRepository.upsertCourse(uid, ServerCourse("c-dessert", "Desserts", "2026-06-01T00:00:00.000Z"))
@@ -494,53 +535,55 @@ class SaltyServerTest {
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
 
         // Browse indexes list the classifiers with a recipe count.
-        val courses = web.get("/courses").bodyAsText()
+        val courses = web.get("/classic/courses").bodyAsText()
         assertTrue(courses.contains("Desserts"), "course index lists the course")
 
         // Drill-down filters to just that course/category.
-        val inCourse = web.get("/courses/c-dessert").bodyAsText()
+        val inCourse = web.get("/classic/courses/c-dessert").bodyAsText()
         assertTrue(inCourse.contains("Brownies"), "course view includes its recipe")
         assertTrue(!inCourse.contains("Pot Roast"), "course view excludes other recipes")
 
-        val inCategory = web.get("/categories/cat-quick").bodyAsText()
+        val inCategory = web.get("/classic/categories/cat-quick").bodyAsText()
         assertTrue(inCategory.contains("Brownies") && !inCategory.contains("Pot Roast"), "category view filters correctly")
 
         // Unknown ids redirect back to the browse index rather than erroring.
         val missing = createClient { install(HttpCookies); followRedirects = false }
         missing.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        assertEquals("/tags", missing.get("/tags/nope").headers[HttpHeaders.Location])
+        assertEquals("/classic/tags", missing.get("/classic/tags/nope").headers[HttpHeaders.Location])
     }
 
     @Test
     fun nonAdminCannotAccessUserManagement() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         // "tester" is seeded as a non-admin in reset().
-        val web = createClient { install(HttpCookies) }
+        val web = jsonCookieClient()
         web.submitForm(
             url = "/login",
             formParameters = parameters { append("username", "tester"); append("password", "pw") },
         )
-        assertEquals(HttpStatusCode.Forbidden, web.get("/users").status)
+        assertEquals(HttpStatusCode.Forbidden, web.get("/api/users").status)
     }
 
     @Test
     fun adminCanCreateUserWithIsolatedDataThenDelete() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { UserRepository.create("boss", "pw", isAdmin = true) }
-        val web = createClient { install(HttpCookies) }
+        val web = jsonCookieClient()
         web.submitForm(
             url = "/login",
             formParameters = parameters { append("username", "boss"); append("password", "pw") },
         )
-        // Admin sees the management page.
-        val usersHtml = web.get("/users").bodyAsText()
-        assertTrue(usersHtml.contains("Users"))
-        val csrf = csrfFrom(usersHtml)
+        // Admin can list users.
+        assertEquals(HttpStatusCode.OK, web.get("/api/users").status)
+        val csrf = appCsrf(web)
 
-        // Create a new user via the form (password must clear the 8-char minimum; CSRF token required).
-        web.submitForm(
-            url = "/users",
-            formParameters = parameters { append("username", "alice"); append("password", "alicepw12"); append("csrf", csrf) },
+        // Create a new user (password must clear the 8-char minimum; CSRF header required).
+        assertEquals(
+            HttpStatusCode.Created,
+            web.post("/api/users") {
+                contentType(ContentType.Application.Json); header(CSRF_HEADER, csrf)
+                setBody(CreateUserRequest("alice", "alicepw12"))
+            }.status,
         )
         val alice = runBlocking { UserRepository.findByUsername("alice") }
         assertNotNull(alice)
@@ -554,35 +597,36 @@ class SaltyServerTest {
         val api = jsonClient()
         val aliceToken = runBlocking {
             api.post("/api/auth/login") {
-                contentType(ContentType.Application.Json); setBody(AuthRequest("alice", "alicepw12"))
-            }.body<AuthResponse>().token
+                contentType(ContentType.Application.Json); setBody(AuthRequest("alice", "alicepw12", deviceId = "alice-device"))
+            }.body<AuthResponse>().deviceToken!!
         }
         assertEquals(0, runBlocking { api.get("/api/recipes") { bearerAuth(aliceToken) }.body<List<ServerRecipe>>().size })
 
         // Delete alice; she can no longer authenticate.
-        web.submitForm(url = "/users/${alice.id}/delete", formParameters = parameters { append("csrf", csrf) })
+        web.delete("/api/users/${alice.id}") { header(CSRF_HEADER, csrf) }
         assertEquals(null, runBlocking { UserRepository.findByUsername("alice") })
     }
 
     @Test
     fun adminCannotDeleteOwnAccount() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { UserRepository.create("boss", "pw", isAdmin = true) }
-        val web = createClient { install(HttpCookies) }
+        val web = jsonCookieClient()
         web.submitForm(
             url = "/login",
             formParameters = parameters { append("username", "boss"); append("password", "pw") },
         )
         val bossId = runBlocking { UserRepository.findByUsername("boss")!!.id }
         // Send a valid CSRF token so the self-delete guard (not the CSRF check) is what blocks this.
-        val csrf = csrfFrom(web.get("/users").bodyAsText())
-        web.submitForm(url = "/users/$bossId/delete", formParameters = parameters { append("csrf", csrf) })
+        val csrf = appCsrf(web)
+        val resp = web.delete("/api/users/$bossId") { header(CSRF_HEADER, csrf) }
+        assertEquals(HttpStatusCode.Conflict, resp.status)
         assertNotNull(runBlocking { UserRepository.findByUsername("boss") })
     }
 
     @Test
     fun loginSucceedsAndProtectsRoutes() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             // Bad creds → 401
@@ -603,7 +647,7 @@ class SaltyServerTest {
 
     @Test
     fun usernamesAreCaseInsensitive() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             // Mixed-case creation is stored lowercase; lookups match regardless of casing.
@@ -612,7 +656,7 @@ class SaltyServerTest {
             assertTrue(UserRepository.existsByUsername("mixedCASE"))
             // API login accepts any casing (and surrounding whitespace) and returns the canonical name.
             val resp = client.post("/api/auth/login") {
-                contentType(ContentType.Application.Json); setBody(AuthRequest(" TESTER ", "pw"))
+                contentType(ContentType.Application.Json); setBody(AuthRequest(" TESTER ", "pw", deviceId = "test-device"))
             }
             assertEquals(HttpStatusCode.OK, resp.status)
             assertEquals("tester", resp.body<AuthResponse>().username)
@@ -621,24 +665,24 @@ class SaltyServerTest {
 
     @Test
     fun caseVariantUsernameIsRejectedAsDuplicate() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { UserRepository.create("boss", "pw", isAdmin = true) }
-        val web = createClient { install(HttpCookies) }
+        val web = jsonCookieClient()
         // Web login is case-insensitive too.
         web.submitForm(url = "/login", formParameters = parameters { append("username", "BOSS"); append("password", "pw") })
-        val csrf = csrfFrom(web.get("/users").bodyAsText())
+        val csrf = appCsrf(web)
         // "Tester" is a case variant of the existing "tester" — rejected as a duplicate, not created.
-        val resp = web.submitForm(
-            url = "/users",
-            formParameters = parameters { append("username", "Tester"); append("password", "longenough1"); append("csrf", csrf) },
-        )
-        assertTrue(resp.headers[HttpHeaders.Location].orEmpty().contains("error=exists"))
+        val resp = web.post("/api/users") {
+            contentType(ContentType.Application.Json); header(CSRF_HEADER, csrf)
+            setBody(CreateUserRequest("Tester", "longenough1"))
+        }
+        assertEquals(HttpStatusCode.Conflict, resp.status)
         assertEquals(2, runBlocking { UserRepository.listAll() }.size)
     }
 
     @Test
     fun recipeCrudRoundTripPreservesShapeAndDate() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -667,7 +711,7 @@ class SaltyServerTest {
 
     @Test
     fun shoppingListCrudRoundTripPreservesItemsAndDate() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -715,7 +759,7 @@ class SaltyServerTest {
     /** Clients detect deletions by absence from this list, so it must be complete and counted. */
     @Test
     fun shoppingListsListIsCompleteAndReportsTotalCount() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -734,7 +778,7 @@ class SaltyServerTest {
 
     @Test
     fun shoppingListsAreUserScopedAndBehindAuth() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             assertEquals(HttpStatusCode.Unauthorized, client.get("/api/shoppingLists").status)
@@ -745,7 +789,7 @@ class SaltyServerTest {
 
     @Test
     fun shoppingListRevisionStartsAtOneAndIncrementsOnMatchedSave() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -768,7 +812,7 @@ class SaltyServerTest {
     /** A stale baseRevision means the row changed hands since that client synced: 409 + current row. */
     @Test
     fun shoppingListBaseRevisionMismatchIsRejectedWithCurrentRow() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -795,7 +839,7 @@ class SaltyServerTest {
      */
     @Test
     fun shoppingListLegacyWritesAreTimestampGuarded() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -828,7 +872,7 @@ class SaltyServerTest {
     /** Delete with If-Match: refused (409 + row) when the row moved on — edit beats delete. */
     @Test
     fun shoppingListDeleteHonorsIfMatchRevision() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -854,7 +898,7 @@ class SaltyServerTest {
 
     @Test
     fun listReportsTotalCountNoParams() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -867,7 +911,7 @@ class SaltyServerTest {
 
     @Test
     fun modifiedSinceReturnsOnlyTheDelta() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -883,7 +927,7 @@ class SaltyServerTest {
 
     @Test
     fun paginationReturnsPageAndHeaders() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -898,7 +942,7 @@ class SaltyServerTest {
 
     @Test
     fun manifestListsAllIds() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -911,7 +955,7 @@ class SaltyServerTest {
 
     @Test
     fun badModifiedSinceReturns400() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -934,7 +978,7 @@ class SaltyServerTest {
      */
     @Test
     fun deviceRegistrationTracksFirstSync() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
 
         suspend fun register() = client.post("/api/recipes/sync/device") {
@@ -964,7 +1008,7 @@ class SaltyServerTest {
      */
     @Test
     fun enrolmentDoesNotMakeADeviceLookLikeItHasAlreadySynced() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val auth = client.post("/api/auth/login") {
@@ -974,7 +1018,7 @@ class SaltyServerTest {
             assertNotNull(auth.deviceToken, "the sign-in enrolled, which is what creates the row early")
 
             val info = client.post("/api/recipes/sync/device") {
-                bearerAuth(auth.token); contentType(ContentType.Application.Json)
+                bearerAuth(auth.deviceToken!!); contentType(ContentType.Application.Json)
                 setBody(DeviceRegisterRequest("device-enrolled", "Laptop"))
             }.body<DeviceSyncInfo>()
 
@@ -985,7 +1029,7 @@ class SaltyServerTest {
 
     @Test
     fun thumbnailEndpointDownscalesImage() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -1008,7 +1052,7 @@ class SaltyServerTest {
 
     @Test
     fun headRequestsAnswerExistenceChecks() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -1033,7 +1077,7 @@ class SaltyServerTest {
 
     @Test
     fun aBodyUploadNamingAnImageTheServerDoesNotHaveLeavesTheRealOneAlone() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -1061,7 +1105,7 @@ class SaltyServerTest {
 
     @Test
     fun aBodyUploadCanStillClearAnImage() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -1085,7 +1129,7 @@ class SaltyServerTest {
 
     @Test
     fun anImageUploadIsStoredByItsRealFormatAndUnservableOnesAreRefused() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)
@@ -1121,7 +1165,7 @@ class SaltyServerTest {
 
     @Test
     fun cannotReadAnotherUsersImage() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             // "tester" owns a recipe with an image.
@@ -1133,8 +1177,8 @@ class SaltyServerTest {
             // A different user must not be able to read it by filename (GET/HEAD/thumbnail all 404).
             UserRepository.create("intruder", "pw")
             val intruderToken = client.post("/api/auth/login") {
-                contentType(ContentType.Application.Json); setBody(AuthRequest("intruder", "pw"))
-            }.body<AuthResponse>().token
+                contentType(ContentType.Application.Json); setBody(AuthRequest("intruder", "pw", deviceId = "intruder-device"))
+            }.body<AuthResponse>().deviceToken!!
 
             assertEquals(HttpStatusCode.NotFound, client.get("/api/recipes/images/$filename") { bearerAuth(intruderToken) }.status)
             assertEquals(HttpStatusCode.NotFound, client.head("/api/recipes/images/$filename") { bearerAuth(intruderToken) }.status)
@@ -1148,13 +1192,13 @@ class SaltyServerTest {
 
     @Test
     fun tokenInvalidatedByPasswordChangeAndDeletion() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         runBlocking {
             UserRepository.create("carol", "carolpw12")
             val token = client.post("/api/auth/login") {
-                contentType(ContentType.Application.Json); setBody(AuthRequest("carol", "carolpw12"))
-            }.body<AuthResponse>().token
+                contentType(ContentType.Application.Json); setBody(AuthRequest("carol", "carolpw12", deviceId = "carol-device"))
+            }.body<AuthResponse>().deviceToken!!
             assertEquals(HttpStatusCode.OK, client.get("/api/recipes") { bearerAuth(token) }.status)
 
             // Cross a whole second so the password-change timestamp is strictly after the token's iat
@@ -1166,8 +1210,8 @@ class SaltyServerTest {
 
             // A token for a since-deleted user is likewise rejected (existence check, no timing needed).
             val token2 = client.post("/api/auth/login") {
-                contentType(ContentType.Application.Json); setBody(AuthRequest("carol", "carolpw34"))
-            }.body<AuthResponse>().token
+                contentType(ContentType.Application.Json); setBody(AuthRequest("carol", "carolpw34", deviceId = "carol-device"))
+            }.body<AuthResponse>().deviceToken!!
             assertEquals(HttpStatusCode.OK, client.get("/api/recipes") { bearerAuth(token2) }.status)
             UserRepository.deleteWithData(carol.id)
             assertEquals(HttpStatusCode.Unauthorized, client.get("/api/recipes") { bearerAuth(token2) }.status)
@@ -1176,30 +1220,31 @@ class SaltyServerTest {
 
     @Test
     fun adminPostWithoutCsrfIsRejected() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { UserRepository.create("boss", "pw", isAdmin = true) }
-        val web = createClient { install(HttpCookies); followRedirects = false }
+        val web = jsonCookieClient()
         web.submitForm(url = "/login", formParameters = parameters { append("username", "boss"); append("password", "pw") })
-        // No CSRF token → 403, and no user is created.
-        val resp = web.submitForm(
-            url = "/users",
-            formParameters = parameters { append("username", "mallory"); append("password", "password123") },
-        )
+        // No CSRF header → 403, and no user is created.
+        val resp = web.post("/api/users") {
+            contentType(ContentType.Application.Json)
+            setBody(CreateUserRequest("mallory", "password123"))
+        }
         assertEquals(HttpStatusCode.Forbidden, resp.status)
         assertEquals(null, runBlocking { UserRepository.findByUsername("mallory") })
     }
 
     @Test
     fun createUserRejectsShortPassword() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { UserRepository.create("boss", "pw", isAdmin = true) }
-        val web = createClient { install(HttpCookies) }
+        val web = jsonCookieClient()
         web.submitForm(url = "/login", formParameters = parameters { append("username", "boss"); append("password", "pw") })
-        val csrf = csrfFrom(web.get("/users").bodyAsText())
-        web.submitForm(
-            url = "/users",
-            formParameters = parameters { append("username", "shorty"); append("password", "abc"); append("csrf", csrf) },
-        )
+        val csrf = appCsrf(web)
+        val resp = web.post("/api/users") {
+            contentType(ContentType.Application.Json); header(CSRF_HEADER, csrf)
+            setBody(CreateUserRequest("shorty", "abc"))
+        }
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
         assertEquals(null, runBlocking { UserRepository.findByUsername("shorty") })
     }
 
@@ -1208,7 +1253,7 @@ class SaltyServerTest {
         // Low account threshold; trustProxy so each request's X-Forwarded-For becomes the client IP the
         // per-IP throttle sees.
         val lockout = AccountLockout(maxFailures = 3, lockMs = 60_000L)
-        application { installSalty(jwt, imageStore, trustProxy = true, accountLockout = lockout) }
+        application { installSalty(imageStore, trustProxy = true, accountLockout = lockout) }
         val client = jsonClient()
         runBlocking {
             // 3 failures, each from a DIFFERENT IP — the per-IP throttle (threshold 10) never trips, but the
@@ -1232,7 +1277,7 @@ class SaltyServerTest {
 
     @Test
     fun loginWithUnknownUsernameReturns401() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = jsonClient()
         val resp = runBlocking {
             client.post("/api/auth/login") {
@@ -1245,7 +1290,7 @@ class SaltyServerTest {
     @Test
     fun oversizedRequestBodyRejectedPreAuth() = testApplication {
         // Tiny cap so a normal login body passes but an inflated one is rejected before any handler runs.
-        application { installSalty(jwt, imageStore, maxRequestBodyBytes = 64) }
+        application { installSalty(imageStore, maxRequestBodyBytes = 64) }
         val client = jsonClient()
         val resp = runBlocking {
             client.post("/api/auth/login") {
@@ -1260,7 +1305,7 @@ class SaltyServerTest {
     fun multipartImageUploadIsExemptFromBodyLimit() = testApplication {
         // Body cap far below the image bytes: multipart uploads must be exempt (they self-limit by size
         // and resolution), so a normal image still stores.
-        application { installSalty(jwt, imageStore, maxRequestBodyBytes = 64) }
+        application { installSalty(imageStore, maxRequestBodyBytes = 64) }
         val client = jsonClient()
         runBlocking {
             val token = login(client)

@@ -1,7 +1,6 @@
 package com.enuvro.saltykmp
 
 import com.enuvro.saltykmp.auth.AccountLockout
-import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.auth.LoginThrottle
 import com.enuvro.saltykmp.auth.authRoutes
 import com.enuvro.saltykmp.auth.DeviceTokenService
@@ -11,6 +10,9 @@ import com.enuvro.saltykmp.auth.revalidateSession
 import com.enuvro.saltykmp.db.DatabaseFactory
 import com.enuvro.saltykmp.db.UserRepository
 import com.enuvro.saltykmp.image.ImageStore
+import com.enuvro.saltykmp.recipe.AddressPolicy
+import com.enuvro.saltykmp.recipe.addressRefusal
+import com.enuvro.saltykmp.recipe.recipeImportRoutes
 import com.enuvro.saltykmp.recipe.recipeRoutes
 import com.enuvro.saltykmp.util.appJson
 import com.enuvro.saltykmp.library.libraryRoutes
@@ -18,7 +20,8 @@ import com.enuvro.saltykmp.shoppinglist.shoppingListRoutes
 import com.enuvro.saltykmp.web.UserSession
 import com.enuvro.saltykmp.auth.WEB_API_AUTH
 import com.enuvro.saltykmp.web.WEB_AUTH
-import com.enuvro.saltykmp.web.editorRoutes
+import com.enuvro.saltykmp.web.accountRoutes
+import com.enuvro.saltykmp.web.appRoutes
 import com.enuvro.saltykmp.web.webRoutes
 import com.github.mustachejava.DefaultMustacheFactory
 import io.ktor.http.ContentType
@@ -97,26 +100,50 @@ private fun isDefaultSecret(value: String?, knownDev: String) =
     value.isNullOrBlank() || value == knownDev || value.startsWith("CHANGE_ME")
 
 /**
- * Fails fast (or, for local dev, warns) when the JWT secret or seeded admin password is unset or still a
- * known placeholder/dev value.
+ * The key that device sync tokens are HMAC'd with.
  *
- * A default JWT secret is critical: JWTs would be signed with a publicly-known key, so anyone could forge
- * a login token for any user. We therefore **refuse to start** by default. A fresh local/dev run with zero
- * config (or the throwaway H2 profile) is still possible by setting `SALTY_ALLOW_DEFAULT_SECRET=true`, which
- * downgrades the failure to a loud warning. Deployments must set a real `SALTY_JWT_SECRET` (the compose
- * templates ship `CHANGE_ME_*` placeholders precisely so an unedited deploy fails here instead of silently
- * running forgeable).
+ * `SALTY_JWT_SECRET` is read as a fallback, and that fallback is not tidiness — it is the upgrade
+ * path. This one key names itself after what it now protects, but it is the same key it always was:
+ * device tokens were keyed on the JWT secret from the day they shipped, so a deployment that renamed
+ * the variable and generated a fresh value in the same step would silently sign every enrolled
+ * device out. Reading the old name keeps existing tokens valid across the rename, and
+ * [enforceSecrets] warns when it is doing so.
+ *
+ * Rotating the value on purpose is still the way to revoke everything at once.
+ */
+private fun syncTokenSecret(): String =
+    System.getenv("SALTY_TOKEN_SECRET")?.takeIf { it.isNotBlank() }
+        ?: System.getenv("SALTY_JWT_SECRET")?.takeIf { it.isNotBlank() }
+        ?: "dev-secret-change-me"
+
+/**
+ * Fails fast (or, for local dev, warns) when the sync-token secret, session secret or seeded admin
+ * password is unset or still a known placeholder/dev value.
+ *
+ * A default sync-token secret is critical: device sync tokens are verified by HMAC against this key,
+ * so a publicly-known one lets anyone forge a token for any account. We therefore **refuse to start**
+ * by default. A fresh local/dev run with zero config (or the throwaway H2 profile) is still possible
+ * by setting `SALTY_ALLOW_DEFAULT_SECRET=true`, which downgrades the failure to a loud warning.
+ * Deployments must set a real `SALTY_TOKEN_SECRET` (the compose templates ship `CHANGE_ME_*`
+ * placeholders precisely so an unedited deploy fails here instead of silently running forgeable).
  */
 private fun Application.enforceSecrets() {
     val allowDefault = System.getenv("SALTY_ALLOW_DEFAULT_SECRET").toBoolean()
 
-    if (isDefaultSecret(System.getenv("SALTY_JWT_SECRET"), "dev-secret-change-me")) {
-        val msg = "SALTY_JWT_SECRET is unset or a default/placeholder susceptible to forgery. Set a long, random SALTY_JWT_SECRET (e.g., `openssl rand -hex 32` to generate)."
+    if (isDefaultSecret(syncTokenSecret(), "dev-secret-change-me")) {
+        val msg = "SALTY_TOKEN_SECRET is unset or a default/placeholder susceptible to forgery. Set a long, random SALTY_TOKEN_SECRET (e.g., `openssl rand -hex 32` to generate)."
         if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true -- do not publicly expose this server)")
         else error("SECURITY: $msg Refusing to start. For local/dev use only, set SALTY_ALLOW_DEFAULT_SECRET=true.")
     }
+    if (System.getenv("SALTY_TOKEN_SECRET").isNullOrBlank() && !System.getenv("SALTY_JWT_SECRET").isNullOrBlank()) {
+        log.warn(
+            "SALTY_JWT_SECRET is deprecated and is being used as SALTY_TOKEN_SECRET. Rename it in your " +
+                "environment. Do NOT change its value at the same time: it keys the HMAC over every " +
+                "device sync token, so a different value signs every enrolled device out.",
+        )
+    }
     if (isDefaultSecret(System.getenv("SALTY_SESSION_SECRET"), "dev-secret-change-me")) {
-        val msg = "SALTY_SESSION_SECRET is unset or a default/placeholder susceptible to forgery. Set a long, random SALTY_SESSION_SECRET (e.g. `openssl rand -hex 32` to generate), distinct from SALTY_JWT_SECRET."
+        val msg = "SALTY_SESSION_SECRET is unset or a default/placeholder susceptible to forgery. Set a long, random SALTY_SESSION_SECRET (e.g. `openssl rand -hex 32` to generate), distinct from SALTY_TOKEN_SECRET."
         if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true -- do not publicly expose this server)")
         else error("SECURITY: $msg Refusing to start. For local/dev use only, set SALTY_ALLOW_DEFAULT_SECRET=true.")
     }
@@ -146,18 +173,6 @@ fun Application.module() {
         )
     }
 
-    val jwtService = JwtService(
-        secret = System.getenv("SALTY_JWT_SECRET") ?: "dev-secret-change-me",
-        issuer = "salty",
-        audience = "salty-app",
-        // 90 minutes, not days. A long lifetime was only ever compensation for re-minting costing
-        // the user a password prompt; a device token re-mints silently, so the window a stolen JWT
-        // is useful for can shrink by two orders of magnitude at no cost to anyone. A client too old
-        // to re-mint faces a login prompt every 90 minutes — set SALTY_JWT_MINUTES higher until
-        // every client is converted. An unparseable value falls back to the default rather than
-        // refusing to start: a wrong token lifetime is recoverable, a server that is down is not.
-        validityMs = (System.getenv("SALTY_JWT_MINUTES")?.toLongOrNull() ?: 90) * 60 * 1000,
-    )
     // Pair the image store with the DB profile: the throwaway H2 sandbox gets its own folder so it
     // doesn't inherit the Postgres deployment's leftover image files. Those would make the client's
     // disk-only HEAD existence check report images as already-present and skip uploading them into the
@@ -183,16 +198,11 @@ fun Application.module() {
     val trustProxy = System.getenv("SALTY_TRUST_PROXY").toBoolean()
 
     installSalty(
-        jwtService,
         imageStore,
-        // Keyed on the JWT secret by default so deploying device tokens needs no new configuration.
-        // Rotating either secret invalidates every device token -- the same blast radius rotating
-        // the JWT secret already has, and a reasonable emergency lever.
-        deviceTokens = DeviceTokenService(
-            System.getenv("SALTY_TOKEN_SECRET") ?: System.getenv("SALTY_JWT_SECRET") ?: "dev-secret-change-me",
-        ),
-        // Key separation: the web session cookie's MAC uses its own secret, distinct from the JWT signer.
-        // Required (enforced in enforceSecrets); its own long random value, e.g. `openssl rand -hex 32`.
+        deviceTokens = DeviceTokenService(syncTokenSecret()),
+        // Key separation: the web session cookie's MAC uses its own secret, distinct from the one
+        // that keys sync tokens. Required (enforced in enforceSecrets); its own long random value,
+        // e.g. `openssl rand -hex 32`.
         sessionSecret = System.getenv("SALTY_SESSION_SECRET") ?: "dev-secret-change-me",
         // Behind a TLS-terminating reverse proxy the session cookie must be HTTPS-only. Default to the
         // trust-proxy setting (a proxy deployment is normally TLS-terminated) unless explicitly overridden;
@@ -204,17 +214,18 @@ fun Application.module() {
 
 /** Installs plugins + routes. Shared by production [module] and tests (which set up their own DB). */
 fun Application.installSalty(
-    jwtService: JwtService,
     imageStore: ImageStore,
-    // Injected like jwtService rather than read from the environment here: a test needs to hash a
-    // token with the same key the server verifies it against, and reaching for System.getenv from
-    // inside would make that impossible to arrange.
+    // Injected rather than read from the environment here: a test needs to hash a token with the
+    // same key the server verifies it against, and reaching for System.getenv from inside would
+    // make that impossible to arrange.
     deviceTokens: DeviceTokenService = DeviceTokenService("dev-secret-change-me"),
     sessionSecret: String = "dev-session-secret-change-me",
     secureCookies: Boolean = false,
     trustProxy: Boolean = false,
     maxRequestBodyBytes: Long = MAX_REQUEST_BODY_BYTES,
     accountLockout: AccountLockout = AccountLockout(),
+    // Which hosts the web importer may fetch. Only a test ever passes anything else; see AddressPolicy.
+    importAddressPolicy: AddressPolicy = ::addressRefusal,
 ) {
     val loginThrottle = LoginThrottle()
     // Only trust X-Forwarded-* when explicitly told we're behind a trusted proxy; otherwise a direct
@@ -253,11 +264,10 @@ fun Application.installSalty(
             transform(SessionTransportTransformerMessageAuthentication(sessionSecret.encodeToByteArray()))
         }
     }
-    // JWT for the API (Bearer) + a session provider for the web UI (cookie → redirect to /login).
-    // Keyed on the JWT secret by default so deploying this needs no new configuration. Rotating
-    // either secret invalidates every device token — the same blast radius rotating the JWT secret
-    // already has, and a reasonable emergency lever.
-    configureAuth(jwtService, deviceTokens) {
+    // Device sync tokens for the API (Bearer) + a session provider for the web UI (cookie → redirect
+    // to /login). Rotating SALTY_TOKEN_SECRET invalidates every device token at once, which is the
+    // emergency lever: it signs every client out without touching anyone's password.
+    configureAuth(deviceTokens) {
         session<UserSession>(WEB_AUTH) {
             validate { revalidateSession(it) }
             challenge { call.respondRedirect("/login") }
@@ -289,11 +299,13 @@ fun Application.installSalty(
         get("/health") { call.respondText("OK") }
         // Static assets for the web UI (e.g. /static/salty.css) from resources/static/.
         staticResources("/static", "static")
-        authRoutes(jwtService, deviceTokens, loginThrottle, accountLockout)
+        authRoutes(deviceTokens, loginThrottle, accountLockout)
         recipeRoutes(imageStore)
+        recipeImportRoutes(importAddressPolicy)
         libraryRoutes()
         shoppingListRoutes()
         webRoutes(imageStore, loginThrottle, accountLockout)
-        editorRoutes()
+        accountRoutes(imageStore, accountLockout)
+        appRoutes()
     }
 }

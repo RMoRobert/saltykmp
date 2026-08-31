@@ -1,0 +1,7 @@
+<!-- Placeholder app icon: the salt shaker emoji, drawn by whatever emoji font the viewer has.
+     One file for both the classic pages and the app, so replacing it with a real icon is a file
+     swap and nothing else. A real icon also wants PNG (192/512) before an installable web app
+     manifest is worth adding — Chrome's install prompt does not accept an SVG icon alone. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <text x="32" y="34" font-size="52" text-anchor="middle" dominant-baseline="central">&#129474;</text>
+</svg>

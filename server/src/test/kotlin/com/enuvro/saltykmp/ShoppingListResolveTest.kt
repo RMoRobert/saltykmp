@@ -2,7 +2,6 @@ package com.enuvro.saltykmp
 
 import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.auth.CSRF_HEADER
-import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.db.Categories
 import com.enuvro.saltykmp.db.Courses
 import com.enuvro.saltykmp.db.DatabaseFactory
@@ -56,7 +55,6 @@ import kotlin.test.assertTrue
  */
 class ShoppingListResolveTest {
 
-    private val jwt = JwtService("test-secret", "salty", "salty-app", validityMs = 60_000)
     private val imageStore = ImageStore(Files.createTempDirectory("salty-resolve-img"))
 
     companion object {
@@ -116,8 +114,8 @@ class ShoppingListResolveTest {
             url = "/login",
             formParameters = parameters { append("username", "tester"); append("password", "pw") },
         )
-        val html = client.get("/shoppingLists").bodyAsText()
-        return Regex("""name="csrf" value="([0-9a-f]+)"""").find(html)!!.groupValues[1]
+        val html = client.get("/app").bodyAsText()
+        return Regex("""data-csrf="([0-9a-f]+)"""").find(html)!!.groupValues[1]
     }
 
     private suspend fun resolve(
@@ -138,7 +136,7 @@ class ShoppingListResolveTest {
      */
     @Test
     fun aCheckOffAndAnUnrelatedEditBothSurvive() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val base = runBlocking { seedBase() }
 
         // Someone else checks off "Milk" and it lands first.
@@ -171,7 +169,7 @@ class ShoppingListResolveTest {
     /** Adds on both sides are unions, not a last-writer-wins overwrite of the list. */
     @Test
     fun additionsFromBothSidesAreKept() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val base = runBlocking { seedBase() }
 
         runBlocking {
@@ -200,7 +198,7 @@ class ShoppingListResolveTest {
     /** Freeform text has no sensible auto-merge, so the losing side is preserved as a new list. */
     @Test
     fun conflictingFreeformTextIsPreservedAsACopy() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val base = runBlocking {
             val l = ServerShoppingList(
                 id = LIST_ID, name = "Notes", isFreeform = true,
@@ -237,7 +235,7 @@ class ShoppingListResolveTest {
     /** With no base, the merge degrades to two-way — a check-off still must not be lost. */
     @Test
     fun withoutABaseTheMergeStillKeepsCheckOffs() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val base = runBlocking { seedBase() }
 
         runBlocking {
@@ -264,7 +262,7 @@ class ShoppingListResolveTest {
 
     @Test
     fun resolvingAMissingListIs404() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val web = client()
         val csrf = login(web)
         val resp = web.post("/api/shoppingLists/$LIST_ID/resolve") {
@@ -278,7 +276,7 @@ class ShoppingListResolveTest {
     /** The endpoint is a write, so it must obey the same CSRF rule as every other cookie write. */
     @Test
     fun resolveRequiresACsrfToken() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { seedBase() }
         val web = client()
         login(web)
@@ -294,7 +292,7 @@ class ShoppingListResolveTest {
     /** A clean merge leaves no conflict copy behind. */
     @Test
     fun aCleanMergeProducesNoCopy() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val base = runBlocking { seedBase() }
         val web = client()
         val csrf = login(web)

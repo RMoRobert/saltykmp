@@ -62,7 +62,6 @@ dependencies {
     implementation(libs.ktor.serverContentNegotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.ktor.serverAuth)
-    implementation(libs.ktor.serverAuthJwt)
     implementation(libs.ktor.serverStatusPages)
     implementation(libs.ktor.serverCallLogging)
     implementation(libs.ktor.serverCors)

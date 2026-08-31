@@ -6,7 +6,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.createRouteScopedPlugin
 import io.ktor.server.auth.AuthenticationChecked
 import io.ktor.server.auth.principal
-import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.header
 import io.ktor.server.response.respond
@@ -14,10 +13,10 @@ import io.ktor.server.response.respond
 /**
  * CSRF guard for the JSON API's *session-authenticated* callers.
  *
- * The API accepts two credentials. A Bearer JWT is not an ambient credential — a hostile page has no way
- * to make the browser attach it — so JWT callers need no CSRF protection and are skipped. The session
- * cookie IS ambient, so a state-changing API call authenticated by cookie must additionally prove it came
- * from our own page by echoing the session's CSRF token in a header.
+ * The API accepts two credentials. A Bearer device sync token is not an ambient credential — a hostile
+ * page has no way to make the browser attach it — so those callers need no CSRF protection and are
+ * skipped. The session cookie IS ambient, so a state-changing API call authenticated by cookie must
+ * additionally prove it came from our own page by echoing the session's CSRF token in a header.
  *
  * This is defence in depth rather than the only line: `SALTY_SESSION` is `SameSite=Strict`, so a
  * cross-site request never carries it in the first place. The header check covers the cases SameSite
@@ -37,7 +36,7 @@ val ApiCsrfGuard = createRouteScopedPlugin("ApiCsrfGuard") {
         if (call.request.httpMethod in safeMethods) return@on
 
         // Bearer-token callers: no ambient credential, nothing to forge.
-        if (call.principal<JWTPrincipal>() != null) return@on
+        if (call.principal<DeviceTokenPrincipal>() != null) return@on
 
         val session = call.principal<UserSession>() ?: return@on
         val presented = call.request.header(CSRF_HEADER)

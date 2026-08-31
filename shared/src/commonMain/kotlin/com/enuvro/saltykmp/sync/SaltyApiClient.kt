@@ -37,7 +37,7 @@ import io.ktor.serialization.ContentConvertException
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.SerializationException
 
-/** Holds the JWT so it can be persisted per-platform later; defaults to in-memory. */
+/** Holds the credential sent as Bearer on every call — the device sync token. Defaults to in-memory. */
 interface TokenStore {
     var token: String?
 }
@@ -134,16 +134,20 @@ class SaltyApiClient(
     // ---- Auth ----
 
     /**
-     * Signs in with the password.
+     * Signs in with the password, and enrols this device in the same call.
      *
-     * Passing [deviceId] asks the server to enrol this device and hand back a sync token in
-     * [AuthResponse.deviceToken] — after which the password is not needed again and should not be
-     * kept. Omitting it preserves the old behaviour exactly.
+     * The server hands back a sync token in [AuthResponse.deviceToken], after which the password is
+     * not needed again and should not be kept — which is the only reason this endpoint still exists.
+     *
+     * [deviceId] has no default on purpose. It was optional while servers that predated device tokens
+     * had to be supported, and an omitted one silently produced a client that synced with the password
+     * forever; requiring it makes "signing in means enrolling" a thing the compiler checks rather than
+     * a convention. A server that answers 400 here is older than this client.
      */
     suspend fun login(
         username: String,
         password: String,
-        deviceId: String? = null,
+        deviceId: String,
         deviceName: String? = null,
     ): AuthResponse {
         val resp = client.post("$baseUrl/api/auth/login") {
@@ -151,23 +155,30 @@ class SaltyApiClient(
             setBody(AuthRequest(username, password, deviceId, deviceName))
         }.ensureOk()
         val auth: AuthResponse = resp.body()
-        tokenStore.token = auth.token
+        // The token IS the session now: there is no JWT to exchange it for, so it goes straight into
+        // the store every later call reads its Bearer header from.
+        auth.deviceToken?.let { tokenStore.token = it }
         return auth
     }
 
     /**
-     * Trades a device sync token for a fresh JWT — the ordinary path once enrolled.
+     * Adopts a stored device sync token, confirming with the server that it still works.
      *
-     * Returns null when the server rejects the token (revoked from the devices page, or invalidated
-     * by a password change), because that is a normal state the caller must handle by asking for
-     * the password again — not a transport failure. Anything else still throws, so a flaky network
-     * is never mistaken for a revoked device and does not throw away a token that is still good.
+     * This used to trade the token for a JWT. It no longer trades anything — the token authenticates
+     * the sync routes itself, so it goes straight into the store — but the round trip is still worth
+     * making once at startup, because it is what separates "the server disowned this device" from
+     * "the network is down".
+     *
+     * Returns null on rejection (revoked from the devices page, or invalidated by a password change),
+     * because that is a normal state the caller handles by asking for the password again — not a
+     * transport failure. Anything else still throws, so a flaky connection is never mistaken for a
+     * revoked device and never discards a token that is still perfectly good.
      */
     suspend fun loginWithDeviceToken(deviceToken: String): AuthResponse? {
-        val resp = client.post("$baseUrl/api/auth/token") { bearerAuth(deviceToken) }
+        val resp = client.post("$baseUrl/api/auth/token/verify") { bearerAuth(deviceToken) }
         if (resp.status == HttpStatusCode.Unauthorized) return null
         val auth: AuthResponse = resp.ensureOk().body()
-        tokenStore.token = auth.token
+        tokenStore.token = deviceToken
         return auth
     }
 

@@ -1,10 +1,10 @@
 {{<layout.mustache}}
 {{$content}}
-<p><a href="/" class="back-link">← Back to recipes</a></p>
+<p><a href="/classic" class="back-link">← Back to recipes</a></p>
 <h1 class="recipe-title">{{name}}</h1>
 
 <div class="detail-head">
-    {{#hasImage}}<img alt="{{name}}" src="/recipes/{{id}}/image" class="detail-image">{{/hasImage}}
+    {{#hasImage}}<img alt="{{name}}" src="/classic/recipes/{{id}}/image" class="detail-image">{{/hasImage}}
     <div class="meta-box">
         {{#metaBox}}<div class="meta-item"><small>{{label}}</small><strong>{{value}}</strong></div>{{/metaBox}}
         {{#badges}}<div class="meta-item"><span class="badge {{cssClass}}">{{text}}</span></div>{{/badges}}

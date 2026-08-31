@@ -1,24 +1,32 @@
 /*
- * Salty web recipe editor — Alpine + Web Awesome.
+ * The Salty web app — Alpine + Web Awesome.
  *
  * Talks to the same JSON API the native clients use (/api/recipes), authenticated by the web session
  * cookie rather than a Bearer token. Every state-changing call echoes the session's CSRF token; see
  * ApiCsrfGuard on the server.
  *
- * No build step: Alpine and Web Awesome come from a CDN (see editor.mustache).
+ * No build step: Alpine and Web Awesome come from a CDN (see app.mustache).
  *
  * Note there is no x-model workaround here. Shoelace 2 fired only sl-input/sl-change, which broke
  * Alpine's two-way binding; Web Awesome 3 emits standard `input` and `change` alongside its wa-*
  * events, so x-model works in both directions. Verified, not assumed.
  */
-function saltyEditor() {
+function saltyApp() {
   "use strict";
 
   // Read from data attributes rather than a generated script literal; see the note in the template.
   const SALTY = (() => {
     const el = document.getElementById("salty-config");
     const d = el ? el.dataset : {};
-    return { csrfToken: d.csrf || "", username: d.username || "", isAdmin: d.isAdmin === "true" };
+    return {
+      csrfToken: d.csrf || "",
+      username: d.username || "",
+      isAdmin: d.isAdmin === "true",
+      version: d.version || "",
+      buildTime: d.buildTime || "",
+      // Server-supplied so the form can state the rule up front rather than discovering it in a 400.
+      minPasswordLength: Number(d.minPasswordLength) || 8,
+    };
   })();
 
   const SCALES = [0.5, 1, 1.5, 2, 3, 4];
@@ -191,9 +199,47 @@ function saltyEditor() {
     directions: [],
     selectedId: null,
     username: SALTY.username || "",
+    isAdmin: SALTY.isAdmin,
+    build: { version: SALTY.version, buildTime: SALTY.buildTime },
+    minPasswordLength: SALTY.minPasswordLength,
+
+    /**
+     * Which modal is open, mirrored in the URL hash: "library" | "password" | "devices" | "users" |
+     * "about", or null. One field rather than a boolean each, because these are mutually exclusive
+     * and separate flags let two of them open at once the moment a menu item forgot to close its
+     * sibling. Confirmations below are separate: they stack ON TOP of one of these.
+     */
+    dialog: null,
+    pw: { current: "", next: "", confirm: "", error: "", saving: false },
+    devices: { loading: false, rows: [], error: "" },
+    users: { loading: false, rows: [], error: "", newName: "", newPassword: "", newAdmin: false, creating: false },
+    pendingDeviceRemove: null,
+    confirmRevokeAll: false,
+    pendingUserDelete: null,
+    pendingUserPassword: null,
     // Read is the default, matching the Swift and CMP apps: Edit is an action you take, not a tab.
     mode: "read",
     pane: "list",          // compact-screen pane: rail | list | detail
+    /**
+     * Chef mode: the open recipe alone, big enough to read from a step back with your hands full.
+     *
+     * A view state and nothing more. It is deliberately NOT remembered between visits and not in
+     * the URL: it answers "I am cooking right now", not "this is how I like the app", and coming
+     * back tomorrow to a chromeless window you didn't ask for is the failure mode of every kiosk
+     * toggle that got persisted.
+     */
+    chefMode: false,
+    /**
+     * The screen wake lock chef mode holds, and the preference that governs it.
+     *
+     * Per browser rather than per account, and so stored beside the pane width rather than on the
+     * server: "keep this screen on" is a fact about the tablet propped against the toaster, not
+     * about the person — the same account on a laptop wants the opposite. On by default, because a
+     * screen that goes dark four steps into a recipe is most of why chef mode exists; off is one
+     * switch away in Preferences for anyone who would rather have the battery.
+     */
+    wakeLockPref: true,
+    _wakeLock: null,
     courses: [],
     categories: [],
     tags: [],
@@ -223,7 +269,6 @@ function saltyEditor() {
     saving: false,
     loadingRecipe: false,
     confirmDelete: false,
-    libraryManagerOpen: false,
     pendingClassifierDelete: null,
     newClassifier: { category: "", course: "", tag: "" },
     newTagOpen: false,
@@ -234,6 +279,16 @@ function saltyEditor() {
     pendingImageFile: null,
     pendingImageUrl: null,
     pendingImageRemoval: false,
+    /**
+     * True while `current` is a recipe that has never been written to the server — today only an
+     * import. It matters because "discard my changes" means two different things: for a saved
+     * recipe, reload the stored copy; for a draft there is nothing to reload, and asking the server
+     * for one would 404. See cancelEdit/revert.
+     */
+    isDraft: false,
+    importUrl: "",
+    importing: false,
+    importError: "",
     toasts: [],
     _toastSeq: 0,
 
@@ -311,6 +366,112 @@ function saltyEditor() {
       return rows.sort(this.recipeSorters[this.sortBy] || this.recipeSorters.name);
     },
 
+    /*
+     * A tooltip for a name that had to be cut, and for no other.
+     *
+     * Truncation here is purely visual -- the full text is in the DOM, so a screen reader has never
+     * been missing anything and this is not an accessibility fix. It is for the sighted reader
+     * looking at "Veggie Burger (Grind Burger Kitch...".
+     *
+     * Set on mouseenter rather than rendered into every row: `title` on all of them would pop a
+     * tooltip that repeats text already fully visible, which is noise. mouseenter lands long before
+     * the browser's own tooltip delay, and re-measuring per hover is what keeps it honest when the
+     * divider moves and the same name stops being clipped.
+     */
+    titleIfClipped(el) {
+      if (el.scrollWidth > el.clientWidth) el.title = el.textContent.trim();
+      else el.removeAttribute("title");
+    },
+
+    /*
+     * The list column's width, remembered per browser.
+     *
+     * The attribute, not the property: a custom element that has not upgraded yet turns an assigned
+     * property into an own property that shadows the accessor, and the autoloader defines
+     * <wa-split-panel> whenever it gets to it. An attribute is read on upgrade either way.
+     *
+     * Pixels rather than the percentage, to match primary="start": the list is a fixed-size
+     * thumbnail and a name, and it should keep the width it was given when the window changes.
+     */
+    splitKey: "salty.listWidth",
+    wakeLockKey: "salty.chefWakeLock",
+
+    restoreSplit(el) {
+      // localStorage throws outright in a locked-down browser; a remembered pane width is not worth
+      // taking the whole app down for.
+      const saved = Number(this.readStored(this.splitKey));
+      if (saved > 0) el.setAttribute("position-in-pixels", String(Math.round(saved)));
+    },
+
+    rememberSplit(el) {
+      // wa-reposition fires per pointer move, hence the debounce on the listener: only the resting
+      // width is worth writing.
+      const px = Math.round(el.positionInPixels || 0);
+      if (px > 0) this.writeStored(this.splitKey, String(px));
+    },
+
+    readStored(key) {
+      try { return localStorage.getItem(key); } catch { return null; }
+    },
+
+    writeStored(key, value) {
+      try { localStorage.setItem(key, value); } catch { /* private mode, quota, disabled */ }
+    },
+
+    /*
+     * Roving tabindex: the list column is one tab stop, not one per recipe.
+     *
+     * Tabbing into a 200-recipe list and having to leave it the same way is the thing that makes a
+     * long list of buttons unusable with a keyboard, so exactly one row is tabbable and the arrow
+     * keys move between them (see rowKeys). The tab stop is the selected row -- come back to the
+     * list and you land where you left -- falling back to the first row when nothing is selected or
+     * when the selection is filtered out by the search box, which would otherwise leave the column
+     * with no way in at all.
+     */
+    get recipeTabId() {
+      const rows = this.visibleRecipes;
+      if (!rows.length) return null;
+      return rows.some(r => r.id === this.selectedId) ? this.selectedId : rows[0].id;
+    },
+
+    get shoppingTabId() {
+      const rows = this.shoppingLists;
+      if (!rows.length) return null;
+      return rows.some(l => l.id === this.selectedListId) ? this.selectedListId : rows[0].id;
+    },
+
+    /*
+     * Arrow-key navigation within a list column, bound on the <ul>.
+     *
+     * Focus moves; it does not select. Selection-follows-focus would read a recipe off the server
+     * on every keypress, so holding Down through the list would fire a request per row -- Enter or
+     * Space opens the focused one, which is what the row being a real <button> already does.
+     *
+     * The rows come from the DOM rather than from `visibleRecipes` so that one handler serves both
+     * columns, and the moved tab stop is set on the elements directly: the `:tabindex` binding is
+     * the resting state and recomputes from the selection, while this carries the roving stop until
+     * then. No wrap-around at the ends -- in a scrolling list, jumping from the last row back to
+     * the first loses your place more than it saves a keystroke.
+     */
+    rowKeys(e) {
+      const step = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+      if (step === undefined && e.key !== "Home" && e.key !== "End") return;
+      const rows = [...e.currentTarget.querySelectorAll(".rrow")];
+      if (!rows.length) return;
+
+      const from = rows.indexOf(e.target.closest(".rrow"));
+      let to;
+      if (e.key === "Home") to = 0;
+      else if (e.key === "End") to = rows.length - 1;
+      else if (from < 0) to = 0;
+      else to = Math.min(rows.length - 1, Math.max(0, from + step));
+
+      e.preventDefault();
+      rows.forEach(el => { el.tabIndex = -1; });
+      rows[to].tabIndex = 0;
+      rows[to].focus();
+    },
+
     async init() {
       // matchMedia rather than a resize listener seeded from innerWidth: the window can still be
       // settling when Alpine initialises (a pane that opens narrow and widens, a restored window),
@@ -321,6 +482,19 @@ function saltyEditor() {
       window.addEventListener("beforeunload", e => {
         if (this.dirty || this.listDirty) { e.preventDefault(); e.returnValue = ""; }
       });
+      // Stored as "0"/"1". Anything else — never set, or storage that throws — means the default.
+      this.wakeLockPref = this.readStored(this.wakeLockKey) !== "0";
+      // The platform drops a wake lock whenever the page stops being visible and does not hand it
+      // back on its own. Ducking out to a timer app and returning must not leave the screen dark,
+      // so it is re-taken here. Nothing to do on the way out: it is already gone.
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") this.acquireWakeLock();
+      });
+      // Dialogs are addressable. Both events are needed: popstate covers the Back button after
+      // openDialog()'s pushState, hashchange covers a URL typed or pasted into the address bar.
+      window.addEventListener("popstate", () => this.applyHash());
+      window.addEventListener("hashchange", () => this.applyHash());
+      this.applyHash();
       await Promise.all([this.loadList(), this.loadLibrary()]);
     },
 
@@ -404,11 +578,15 @@ function saltyEditor() {
       }
     },
 
-    /** Rows arrive without `contentsForList` when a list has never had items; normalise so the
+    /** Rows arrive without their contents field when a list has never had any; normalise so the
      *  template can iterate and x-model can bind without null checks everywhere. */
     normaliseList(l) {
-      l.contentsForList = l.contentsForList || [];
-      l.contentsForFreeform = l.contentsForFreeform || "";
+      // Only the side this list actually uses. A freeform row's contentsForList is NULL on the
+      // server and has to stay NULL: writing [] back turns "this list has no checklist" into "this
+      // list has an empty checklist", a different row to every other client -- and since a save
+      // PUTs the whole object, it would happen on the first keystroke in the text area.
+      if (l.isFreeform) l.contentsForFreeform = l.contentsForFreeform || "";
+      else l.contentsForList = l.contentsForList || [];
       return l;
     },
 
@@ -626,11 +804,21 @@ function saltyEditor() {
 
     /* --- whole lists --- */
 
-    async createList() {
+    /**
+     * A new list of either shape.
+     *
+     * The two shapes are separate columns on the row, not two renderings of one thing, so this
+     * choice is real and is made once: only the matching column is ever populated. Sending just the
+     * one that applies leaves the other NULL, which is what every other client expects to find.
+     */
+    async createList({ freeform = false } = {}) {
       const id = uuidv7();
       try {
         const saved = await api("POST", "/api/shoppingLists", {
-          id, name: "New List", isFreeform: false, contentsForList: [],
+          id,
+          name: freeform ? "New Markdown List" : "New List",
+          isFreeform: freeform,
+          ...(freeform ? { contentsForFreeform: "" } : { contentsForList: [] }),
           lastModifiedDate: wireNow(),
         });
         this.shoppingLists.push(saved);
@@ -665,7 +853,7 @@ function saltyEditor() {
 
     /** "3 items · 1 left" — enough to pick a list out without opening it. */
     listMeta(l) {
-      if (l.isFreeform) return "Notes";
+      if (l.isFreeform) return "Markdown";
       const rows = (l.contentsForList || []).filter(i => !i.isHeading);
       if (!rows.length) return "Empty";
       const left = rows.filter(i => !i.isCompleted).length;
@@ -683,7 +871,418 @@ function saltyEditor() {
       return { category: "categories", course: "courses", tag: "tags" }[kind];
     },
 
-    openLibraryManager() { this.libraryManagerOpen = true; },
+    /* ---------------------------------------------------------- web import -- */
+
+    /**
+     * Import a recipe from a URL.
+     *
+     * The fetch is the server's, not ours: a browser may not read a third-party page cross-origin,
+     * so /api/recipes/import loads and parses it (behind an address policy — see RecipeImport.kt)
+     * and answers with a draft. What comes back is untrusted content that merely looks like a
+     * recipe, so it lands in the editor unsaved and becomes a recipe only if the user saves it.
+     */
+    async runImport() {
+      const url = this.importUrl.trim();
+      if (!url || this.importing) return;
+      // Asked before the request, not after: spending fifteen seconds on a fetch and only then
+      // finding out the answer is "don't discard my edits" would throw the import away.
+      if (this.dirty && !window.confirm("Discard unsaved changes?")) return;
+
+      this.importing = true;
+      this.importError = "";
+      try {
+        const result = await api("POST", "/api/recipes/import", { url });
+        this.importUrl = "";
+        this.dismissDialog();
+        this.openImportedDraft(result);
+        this.notify("Imported — review it and save.");
+      } catch (e) {
+        this.importError = e.message;
+      } finally {
+        this.importing = false;
+      }
+    },
+
+    /**
+     * Put an imported draft in the editor, in the same shape open() leaves a loaded recipe.
+     *
+     * The id is minted here rather than by the server: ids are UUIDv7 so they sort by creation, and
+     * the one moment a recipe is created is this one. `dirty` starts true because the draft exists
+     * only in this tab — the unload guard should fight for it exactly as it would for typed edits.
+     */
+    openImportedDraft(result) {
+      const r = result.recipe || {};
+      const now = wireNow();
+      r.id = uuidv7();
+      r.createdDate = now;
+      r.lastModifiedDate = now;
+      r.categoryIds = [];
+      r.tagIds = [];
+      r.notes = [];
+      r.variations = [];
+      r.preparationTimes = r.preparationTimes || [];
+
+      this.resetImageStaging();
+      this.current = r;
+      this.selectedId = null;        // nothing in the list to highlight until it is saved
+      this.ingredients = (r.ingredients || []).map(x => ({
+        id: x.id || uuidv7(), text: x.text || "", isHeading: !!x.isHeading, isMain: !!x.isMain,
+      }));
+      this.directions = (r.directions || []).map(x => ({
+        id: x.id || uuidv7(), text: x.text || "", isHeading: !!x.isHeading, isMain: false,
+      }));
+
+      if (result.imageBase64) this.stageImportedImage(result);
+
+      this.isDraft = true;
+      this.dirty = true;
+      this.section = "recipes";
+      this.pane = "detail";
+      this.mode = "edit";            // it arrived to be reviewed, so open it in the form
+    },
+
+    /**
+     * Stage the imported photo as if the user had picked the file themselves, so it travels through
+     * the editor's existing save path and gets its thumbnail generated like every other upload.
+     * A photo is a nicety: anything wrong with it drops the photo, never the recipe.
+     */
+    stageImportedImage(result) {
+      const type = result.imageContentType || "";
+      if (!IMAGE_TYPES.includes(type)) return;
+      try {
+        const binary = atob(result.imageBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        if (bytes.length > MAX_IMAGE_BYTES) return;
+        const file = new File([bytes], "imported-image", { type });
+        this.pendingImageFile = file;
+        this.pendingImageUrl = URL.createObjectURL(file);
+        this.pendingImageRemoval = false;
+      } catch {
+        // A malformed image is not a reason to lose the recipe that came with it.
+      }
+    },
+
+    /* ------------------------------------------------ dialogs, account, admin -- */
+
+    /**
+     * The modals that are addressable. The recipe editor and the confirmations are deliberately not
+     * in here: an editor with unsaved work must not be reopened by a URL it never wrote, and a
+     * confirmation is a step inside another dialog rather than a place.
+     */
+    get routedDialogs() { return ["library", "import", "preferences", "users", "about"]; },
+
+    _dialogFromHash() {
+      const m = /^#\/([a-z]+)$/.exec(window.location.hash || "");
+      return m && this.routedDialogs.includes(m[1]) ? m[1] : null;
+    },
+
+    /**
+     * Hash is the source of truth; this pulls state into line with it (Back, or a pasted URL).
+     *
+     * The outgoing dialog is closed by calling the component's own requestClose(), NOT by letting
+     * the `:open` binding go false. Web Awesome 3.12's wa-dialog closes by awaiting
+     * `animateWithClass(el, "hide")`, and its shadow stylesheet defines show-dialog/show-backdrop
+     * keyframes but nothing for hide — so that await never settles. Closing through requestClose()
+     * still leaves the component believing it is open, but it does remove the visible dialog;
+     * flipping `open` from outside leaves it on screen. Every close therefore takes the same route
+     * the close button does.
+     *
+     * State is assigned BEFORE the close, so the wa-hide handler's own guard short-circuits rather
+     * than racing this method for the URL.
+     */
+    applyHash() {
+      const next = this._dialogFromHash();
+      if (next === this.dialog) return;
+      const previous = this.dialog;
+      this.dialog = next;
+      if (previous) this._dismissDialogElement(previous);
+      if (next) this.onDialogOpened(next);
+    },
+
+    _dismissDialogElement(name) {
+      const el = document.querySelector(`wa-dialog[data-dialog="${name}"]`);
+      if (el && el.open && typeof el.requestClose === "function") el.requestClose();
+    },
+
+    /**
+     * Opens a dialog and puts it in the URL, so a reload reopens it and Back closes it.
+     *
+     * pushState rather than assigning location.hash: assigning fires `hashchange`, which would run
+     * applyHash() and re-enter the load below. Pushing changes the URL silently and lets the
+     * popstate listener handle only the direction that matters — going back.
+     */
+    openDialog(name) {
+      if (this.dialog === name) return;
+      // Replace rather than push when swapping one dialog straight for another: two modals are not
+      // two places, and stacking them would make Back walk you through the ones you passed through.
+      const entry = { saltyDialog: name };
+      if (this.dialog) history.replaceState(entry, "", "#/" + name);
+      else history.pushState(entry, "", "#/" + name);
+      this.dialog = name;
+      this.onDialogOpened(name);
+    },
+
+    /**
+     * Asks the open dialog to close — what every Cancel/Done button and every "saved, now get out
+     * of the way" path calls.
+     *
+     * It goes through the component rather than clearing `dialog` and letting the `:open` binding
+     * do it, for the reason spelled out on applyHash(): wa-dialog does not reliably remove itself
+     * from the screen when `open` is flipped from outside. requestClose() dispatches wa-hide
+     * synchronously, so closeDialog() below still runs and still owns the state and the URL.
+     */
+    dismissDialog() {
+      if (this.dialog) this._dismissDialogElement(this.dialog);
+    },
+
+    /**
+     * The wa-hide handler: the dialog is going away, so drop the state and take it out of the URL.
+     * Never call this to close something — call dismissDialog().
+     *
+     * history.back() only when this app pushed the entry. Someone who opened /app#/users directly
+     * has no Salty entry behind them, and going back would leave the app entirely — so that case
+     * rewrites the URL in place instead.
+     */
+    closeDialog(name) {
+      // `name` is the dialog asking to close, and it must be the one that is actually open.
+      //
+      // wa-hide fires whenever a dialog closes, INCLUDING when it closes because `dialog` already
+      // moved to a different one — going straight from #/users to #/password, say. Without this
+      // guard the outgoing dialog's hide event ran closeDialog() and shut its replacement in the
+      // same tick, leaving both half-open and the hash cleared.
+      if (name && this.dialog !== name) return;
+      if (!this.dialog) return;
+      const pushedByUs = history.state && history.state.saltyDialog;
+      this.dialog = null;
+      if (pushedByUs) history.back();
+      else history.replaceState(null, "", window.location.pathname + window.location.search);
+    },
+
+    /** Dialog contents load when opened, not on page load: most sessions open none of them. */
+    onDialogOpened(name) {
+      if (name === "preferences") {
+        this.pw = { current: "", next: "", confirm: "", error: "", saving: false };
+        this.loadDevices();
+      }
+      if (name === "users") this.loadUsers();
+      if (name === "import") this.importError = "";
+    },
+
+    openLibraryManager() { this.openDialog("library"); },
+
+    /* ---- your own password ---- */
+
+    get passwordFormReady() {
+      return !this.pw.saving &&
+        this.pw.current.length > 0 &&
+        this.pw.next.length >= this.minPasswordLength &&
+        this.pw.confirm.length > 0;
+    },
+
+    /**
+     * The confirm field and the length rule are checked here as well as on the server. Not because
+     * the client's check is trusted — the server rejects both regardless — but because a typo in
+     * the confirm field is not something to learn from a round trip, and the server has no confirm
+     * field to compare against anyway.
+     */
+    async changePassword() {
+      this.pw.error = "";
+      if (this.pw.next !== this.pw.confirm) {
+        this.pw.error = "The new passwords don't match.";
+        return;
+      }
+      if (this.pw.next.length < this.minPasswordLength) {
+        this.pw.error = `New password must be at least ${this.minPasswordLength} characters.`;
+        return;
+      }
+      if (this.pw.next === this.pw.current) {
+        this.pw.error = "That is already your password.";
+        return;
+      }
+      this.pw.saving = true;
+      try {
+        const res = await api("POST", "/api/account/password", {
+          currentPassword: this.pw.current,
+          newPassword: this.pw.next,
+        });
+        this.pw = { current: "", next: "", confirm: "", error: "", saving: false };
+        const n = (res && res.devicesSignedOut) || 0;
+        this.notify(n
+          ? `Password changed. ${n} app${n === 1 ? " was" : "s were"} signed out.`
+          : "Password changed.");
+        // Every enrolment is revoked by that call, and Preferences now shows the list directly
+        // under this form — so the rows have to say so on the spot rather than at the next open,
+        // or the warning above the fields is contradicted by the screen below them. That is also
+        // why this no longer closes the dialog: there is more here than the password.
+        this.devices.rows = this.devices.rows.map(d => ({ ...d, hasToken: false }));
+      } catch (e) {
+        this.pw.error = e.message;
+      } finally {
+        this.pw.saving = false;
+      }
+    },
+
+    /* ---- authorized apps (device sync enrolments) ---- */
+
+    get hasLiveDevices() { return this.devices.rows.some(d => d.hasToken); },
+
+    /** Never blank: an unnamed enrolment is still one you may need to revoke. */
+    deviceFallbackName(d) { return `Unnamed app (${String(d.deviceId || "").slice(0, 8)})`; },
+
+    deviceLabel(d) {
+      const n = (d.deviceName || "").trim();
+      return n || this.deviceFallbackName(d);
+    },
+
+    deviceMeta(d) {
+      // Token use beats sync date: it is the freshest evidence the enrolment is still alive.
+      if (!d.hasToken) return "Signed out \u2014 sign in again to resume";
+      const when = this.relativeDate(d.tokenLastUsed || d.lastSyncDate);
+      return when ? `Last synced ${when}` : "Never synced";
+    },
+
+    async loadDevices() {
+      this.devices.loading = true;
+      this.devices.error = "";
+      try {
+        this.devices.rows = (await api("GET", "/api/auth/devices")) || [];
+      } catch (e) {
+        this.devices.error = `Couldn't load your apps: ${e.message}`;
+      } finally {
+        this.devices.loading = false;
+      }
+    },
+
+    async renameDevice(d, name) {
+      const trimmed = (name || "").trim();
+      if (!trimmed || trimmed === (d.deviceName || "")) return;
+      try {
+        await api("PATCH", `/api/auth/devices/${encodeURIComponent(d.deviceId)}`, { deviceName: trimmed });
+        d.deviceName = trimmed;
+      } catch (e) {
+        this.notify(e.message, "danger");
+        await this.loadDevices();   // put the input back to what the server actually holds
+      }
+    },
+
+    /** Removal deletes the row server-side, so drop it here rather than leaving a dead entry. */
+    async removeDevice(d) {
+      if (!d) return;
+      const label = this.deviceLabel(d);
+      this.pendingDeviceRemove = null;
+      try {
+        await api("DELETE", `/api/auth/devices/${encodeURIComponent(d.deviceId)}`);
+        this.devices.rows = this.devices.rows.filter(r => r.deviceId !== d.deviceId);
+        this.notify(`${label} removed.`);
+      } catch (e) {
+        this.notify(e.message, "danger");
+      }
+    },
+
+    /**
+     * Signs every app out without forgetting them — the rows stay, minus their tokens, so nothing
+     * has to re-download when they sign back in. Removal is the per-app action.
+     */
+    async revokeAllDevices() {
+      this.confirmRevokeAll = false;
+      try {
+        const res = await api("POST", "/api/auth/devices/revoke-all");
+        this.devices.rows = this.devices.rows.map(d => ({ ...d, hasToken: false }));
+        const n = (res && res.revoked) || 0;
+        this.notify(n ? `${n} app${n === 1 ? "" : "s"} signed out.` : "Nothing to sign out.");
+      } catch (e) {
+        this.notify(e.message, "danger");
+      }
+    },
+
+    /* ---- user administration ---- */
+
+    get newUserReady() {
+      return !this.users.creating &&
+        this.users.newName.trim().length > 0 &&
+        this.users.newPassword.length >= this.minPasswordLength;
+    },
+
+    async loadUsers() {
+      this.users.loading = true;
+      this.users.error = "";
+      try {
+        this.users.rows = (await api("GET", "/api/users")) || [];
+      } catch (e) {
+        this.users.error = `Couldn't load users: ${e.message}`;
+      } finally {
+        this.users.loading = false;
+      }
+    },
+
+    async createUser() {
+      if (!this.newUserReady) return;
+      this.users.creating = true;
+      try {
+        await api("POST", "/api/users", {
+          username: this.users.newName.trim(),
+          password: this.users.newPassword,
+          isAdmin: this.users.newAdmin,
+        });
+        this.notify(`${this.users.newName.trim()} created.`);
+        this.users.newName = "";
+        this.users.newPassword = "";
+        this.users.newAdmin = false;
+        await this.loadUsers();
+      } catch (e) {
+        this.notify(e.message, "danger");
+      } finally {
+        this.users.creating = false;
+      }
+    },
+
+    /**
+     * Demoting yourself is allowed (the server only stops the LAST admin from going), so this has
+     * to handle the case where the screen it is running on is about to become forbidden: drop the
+     * local flag, which hides the menu item, and close the dialog rather than leaving a live users
+     * list that every subsequent click would 403 on.
+     */
+    async setUserAdmin(u, isAdmin) {
+      try {
+        await api("PATCH", `/api/users/${encodeURIComponent(u.id)}`, { isAdmin });
+        u.isAdmin = isAdmin;
+        this.notify(`${u.username} is ${isAdmin ? "now an administrator" : "no longer an administrator"}.`);
+        if (u.isSelf) {
+          this.isAdmin = isAdmin;
+          if (!isAdmin) this.dismissDialog();
+        }
+      } catch (e) {
+        this.notify(e.message, "danger");
+      }
+    },
+
+    async resetUserPassword() {
+      const pending = this.pendingUserPassword;
+      if (!pending || pending.password.length < this.minPasswordLength) return;
+      this.pendingUserPassword = null;
+      try {
+        await api("POST", `/api/users/${encodeURIComponent(pending.user.id)}/password`,
+                  { password: pending.password });
+        this.notify(`Password set for ${pending.user.username}. Their apps were signed out.`);
+      } catch (e) {
+        this.notify(e.message, "danger");
+      }
+    },
+
+    async deleteUser() {
+      const target = this.pendingUserDelete;
+      if (!target) return;
+      this.pendingUserDelete = null;
+      try {
+        await api("DELETE", `/api/users/${encodeURIComponent(target.id)}`);
+        this.users.rows = this.users.rows.filter(u => u.id !== target.id);
+        this.notify(`${target.username} deleted.`);
+      } catch (e) {
+        this.notify(e.message, "danger");
+      }
+    },
+
 
     /**
      * Creates a tag and attaches it to the open recipe without leaving the editor. Tags get
@@ -821,12 +1420,23 @@ function saltyEditor() {
     courseName(id) { return id ? (this.courses.find(c => c.id === id) || {}).name || "" : ""; },
 
     /** Category and tag names for the read view's chip row. */
-    chipsFor(recipe) {
-      const cats = (recipe.categoryIds || [])
-        .map(id => (this.categories.find(c => c.id === id) || {}).name).filter(Boolean);
-      const tags = (recipe.tagIds || [])
-        .map(id => (this.tags.find(t => t.id === id) || {}).name).filter(Boolean);
-      return [...cats, ...tags];
+    /**
+     * The quiet line under a recipe's name.
+     *
+     * Built as a list and joined, rather than four templates each carrying its own " \u00b7 ": that
+     * spelling printed the separator for fields the recipe does not have, so a recipe with no
+     * yield read "Main \u00b7  \u00b7 Serves 6 \u00b7 \u2605\u2605\u2605\u2605". Empty here also means the whole line
+     * goes, rather than leaving a blank gap above the introduction.
+     */
+    get metaLine() {
+      const r = this.current;
+      if (!r) return "";
+      return [
+        this.courseName(r.courseId),
+        r.yield,
+        r.servings ? `Serves ${r.servings}` : "",
+        r.rating ? "\u2605".repeat(r.rating) : "",
+      ].map(part => String(part == null ? "" : part).trim()).filter(Boolean).join(" \u00b7 ");
     },
 
     /**
@@ -854,6 +1464,68 @@ function saltyEditor() {
       this.mode = "read";
     },
 
+    /* ---------------------------------------------------------------- chef mode -- */
+
+    /**
+     * Only from a recipe that is open and being read: chef mode hides the detail bar, so there
+     * would be no way back out of an editor entered underneath it, and nothing to show if no
+     * recipe were loaded.
+     */
+    enterChefMode() {
+      if (!this.current || this.mode !== "read") return;
+      this.chefMode = true;
+      this.acquireWakeLock();
+    },
+
+    exitChefMode() {
+      this.chefMode = false;
+      this.releaseWakeLock();
+    },
+
+    /**
+     * Screen Wake Lock is secure-context only, so a Salty reached over plain http on the LAN —
+     * a normal way to run this — does not have it at all. Worth saying out loud in Preferences,
+     * rather than offering a switch that silently does nothing.
+     */
+    get wakeLockSupported() {
+      return typeof navigator !== "undefined" && "wakeLock" in navigator;
+    },
+
+    setWakeLockPref(on) {
+      this.wakeLockPref = !!on;
+      this.writeStored(this.wakeLockKey, this.wakeLockPref ? "1" : "0");
+      // Takes effect now, not at the next chef mode: the switch is most likely to be reached by
+      // someone who has just watched their screen do the wrong thing.
+      if (this.wakeLockPref) this.acquireWakeLock(); else this.releaseWakeLock();
+    },
+
+    /**
+     * Best effort, deliberately silent. The request is refused when the document is not visible,
+     * when the browser is saving power, and everywhere the API is missing — none of which is worth
+     * interrupting someone mid-recipe about, because the recipe is still on screen either way.
+     */
+    async acquireWakeLock() {
+      if (!this.chefMode || !this.wakeLockPref || !this.wakeLockSupported) return;
+      if (this._wakeLock) return;
+      try {
+        const lock = await navigator.wakeLock.request("screen");
+        // Chef mode may have ended while that was in flight — the request is a round trip through
+        // the platform, and Escape is one keystroke. Holding a lock for a mode that is over is
+        // precisely the drain the preference exists to prevent.
+        if (!this.chefMode || !this.wakeLockPref) { lock.release().catch(() => {}); return; }
+        this._wakeLock = lock;
+        // Fires for a lock the platform took back as well as for one we released, so this is the
+        // only place the handle is cleared on that path.
+        lock.addEventListener("release", () => { this._wakeLock = null; });
+      } catch { /* refused: nothing to say, and nothing has broken */ }
+    },
+
+    releaseWakeLock() {
+      const lock = this._wakeLock;
+      this._wakeLock = null;
+      if (lock) lock.release().catch(() => {});
+    },
+
     /** The Save button: write if there's anything to write, then close. */
     async saveAndClose() {
       if (this.dirty) await this.save();
@@ -869,6 +1541,7 @@ function saltyEditor() {
      */
     async cancelEdit() {
       if (this.dirty && !window.confirm("Discard unsaved changes?")) return;
+      if (this.isDraft) { this.discardDraft(); return; }
       this.resetImageStaging();
       const id = this.current && this.current.id;
       this.dirty = false;
@@ -1169,6 +1842,7 @@ function saltyEditor() {
         r.preparationTimes = r.preparationTimes || [];
         this.current = r;
         this.selectedId = r.id;
+        this.isDraft = false;
         // Rows are held separately so Alpine's reactivity and x-sort keys stay simple; they're
         // folded back into `current` on save.
         this.ingredients = (r.ingredients || []).map(x => ({
@@ -1242,6 +1916,7 @@ function saltyEditor() {
           return;                     // dirty stays true; the staged file survives for a retry
         }
         this.dirty = false;
+        this.isDraft = false;         // it exists on the server now
         this.syncListRow();
         this.notify("Saved");
       } catch (e) {
@@ -1267,8 +1942,19 @@ function saltyEditor() {
     async revert() {
       this.resetImageStaging();
       if (!this.current) return;
+      if (this.isDraft) { this.discardDraft(); return; }
       this.dirty = false;
       await this.open(this.current.id, { keepMode: true });
+    },
+
+    /** A draft was never stored, so discarding it is simply forgetting it. */
+    discardDraft() {
+      this.resetImageStaging();
+      this.isDraft = false;
+      this.dirty = false;
+      this.mode = "read";
+      this.current = null;
+      this.selectedId = null;
     },
 
     async doDelete() {

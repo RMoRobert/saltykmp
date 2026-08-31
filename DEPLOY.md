@@ -28,14 +28,27 @@ Edit the `CHANGE_ME_*` values in `docker-compose.yml`:
 
 - `db-password` — strong DB password (defined once; shared by Postgres and the app via a YAML anchor).
 - `SALTY_DEFAULT_PASSWORD` — the seeded admin login password.
-- `SALTY_JWT_SECRET` — long + random:  `openssl rand -hex 32`.
+- `SALTY_TOKEN_SECRET` — long + random:  `openssl rand -hex 32`. Keys the HMAC over every device
+  sync token.
 
 > `SALTY_DEFAULT_USER`/`PASSWORD` seed a login **only on first run** (empty users table). The default
-> `SALTY_JWT_SECRET` placeholder is forgeable — you must change it.
+> `SALTY_TOKEN_SECRET` placeholder is forgeable — you must change it.
 
-Optional: `SALTY_JWT_MINUTES` sets the JWT lifetime (default 90). Clients enrolled with a device
-sync token re-mint expired JWTs silently, so the short default costs them nothing — raise it only
-while older clients that still log in with a password are in use.
+> **Upgrading from `SALTY_JWT_SECRET`?** It is still read when `SALTY_TOKEN_SECRET` is unset, and the
+> server warns when it does. Rename the variable, but **keep its value**: device sync tokens were
+> always keyed on it, so renaming and regenerating in one step signs every enrolled client out.
+> (Rotating it deliberately is the way to do exactly that.)
+
+There is no JWT any more, and so no token lifetime to tune: a device sync token authenticates the
+sync routes directly and is checked against its database row on every request. That makes revoking a
+device take effect on its next request rather than whenever its last JWT would have expired.
+
+> **Clients must be updated alongside this server.** Signing in now requires a device id, and a
+> client that omits one is refused with a 400 rather than falling back to password sync. That
+> fallback is what used to leave a client syncing with the stored password indefinitely, showing up
+> on the account's app list as a device that looked revoked. Clients also no longer exchange their
+> token at `POST /api/auth/token`; that route is now `POST /api/auth/token/verify` and returns no
+> credential.
 
 ## 3. Run
 
@@ -45,17 +58,21 @@ docker compose up -d --build
 
 - App listens on **`127.0.0.1:8080`** (localhost only — NGINX proxies to it).
 - Postgres data → `salty-db18` volume; recipe images → `salty-images` volume (both persist across redeploys).
-- Health check: `curl http://127.0.0.1:8080/health` → `OK`. (`/` is the web UI — redirects to `/login`.)
+- Health check: `curl http://127.0.0.1:8080/health` → `OK`. (`/` is the web app — redirects to `/login`, then to `/app`.)
 
 ### Managing users
 
 Each user has a completely separate set of recipes and and related data (suggested setup: one user shares
 same user account across all devices; different users have different accounts).
-The seeded `SALTY_DEFAULT_USER` is an admin. Sign in to the web UI and open **Users** in the
-top nav bar to add accounts, reset passwords, grant/revoke admin (not recommended for regular user
-accounts), or delete a user (including all of their data). Only admins see the Users page.
-New users start empty; point a cleint app at the server, log in as that user on the client, and sync
+The seeded `SALTY_DEFAULT_USER` is an admin. Sign in to the web app and open the **account menu**
+(person icon, top right) → **Manage users…** to add accounts, reset passwords, grant/revoke admin
+(not recommended for regular user accounts), or delete a user (including all of their data). Only
+admins see that menu item, and every route behind it re-checks against the user row.
+New users start empty; point a client app at the server, log in as that user on the client, and sync
 to populate data.
+
+Everyone — admin or not — can change their own password from the same menu, and see which apps are
+authorized to sync with their account. A password change signs out every one of those apps.
 
 ## 4. NGINX reverse proxy (HTTPS)
 
@@ -219,7 +236,7 @@ it once happy: `docker volume rm $(basename "$PWD")_salty-db` (irreversible).
 
 - **Schema migrations:** startup runs `SchemaUtils.create` (creates missing tables; does not alter).
   Fine for first deploy; a future schema change needs a migration step (Flyway/Exposed migrations).
-- **CORS** is not enabled (native clients don't need it); add it if a browser-based web UI is introduced.
+- **CORS** is not enabled, and the web app doesn't need it: it is served from this same origin.
 - **Backups:** back up the `salty-db18` and `salty-images` Docker volumes.
 
 ---

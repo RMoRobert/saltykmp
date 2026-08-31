@@ -1,19 +1,14 @@
 package com.enuvro.saltykmp.web
 
-import com.enuvro.saltykmp.BuildInfo
 import com.enuvro.saltykmp.api.ServerRecipe
 import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.auth.AccountLockout
 import com.enuvro.saltykmp.auth.LoginThrottle
-import com.enuvro.saltykmp.auth.MIN_PASSWORD_LENGTH
 import com.enuvro.saltykmp.db.LibraryRepository
 import com.enuvro.saltykmp.db.RecipeRepository
 import com.enuvro.saltykmp.db.ShoppingListRepository
-import com.enuvro.saltykmp.db.DeviceRepository
 import com.enuvro.saltykmp.db.UserRepository
-import java.time.format.DateTimeFormatter
 import java.time.Instant
-import com.enuvro.saltykmp.db.UserRow
 import com.enuvro.saltykmp.db.model.NutritionInformation
 import com.enuvro.saltykmp.db.model.ShoppingListListContents
 import com.enuvro.saltykmp.image.ImageStore
@@ -32,6 +27,7 @@ import io.ktor.server.response.respondRedirect
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.route
 import io.ktor.server.sessions.clear
 import io.ktor.server.sessions.sessions
 import io.ktor.server.sessions.set
@@ -67,7 +63,12 @@ private fun newCsrfToken(): String {
 }
 
 /**
- * View-only, server-rendered web UI (session-cookie auth). Edit forms can be added later as POSTs.
+ * Sign-in, plus the classic server-rendered UI under `/classic` (session-cookie auth).
+ *
+ * `/login` and `/logout` are the front door for everything, app included. The rest is the original
+ * Pico-styled, mostly view-only browse UI, kept while the Web Awesome app at `/app` settles; account
+ * and user management are no longer here at all — those are JSON now, in AccountRoutes, because the
+ * app has to show the result of a write without a page navigation.
  *
  * The HTML lives in Mustache templates under `resources/templates/`; the handlers below build plain
  * view-model maps (all formatting/conditionals resolved here, since Mustache is logic-less). Shared
@@ -97,7 +98,7 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
             // Mint a fresh CSRF token per session and store it in the (signed) session cookie.
             call.sessions.set(UserSession(user.id, user.username, user.isAdmin, newCsrfToken(),
                                           issuedAt = Instant.now().epochSecond))
-            call.respondRedirect("/")
+            call.respondRedirect("/app")
         } else {
             throttle.recordFailure(ip, username)
             accountLockout.recordFailure(username)
@@ -109,429 +110,309 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
         call.respondRedirect("/login")
     }
     authenticate(WEB_AUTH) {
-        // App name + build info. Behind auth so the exact version isn't disclosed to anonymous visitors
-        // (minor fingerprinting hardening); it's only linked from the logged-in nav anyway.
-        get("/about") {
-            call.respond(MustacheContent("about.mustache", aboutModel(call.principal<UserSession>())))
-        }
+        // The app is the front door. `/` is behind auth only so an anonymous visitor meets the login
+        // page directly instead of bouncing through /app to get there.
+        get("/") { call.respondRedirect("/app") }
 
-        // Recipe Library — all recipes, searchable + paginated.
-        get("/") {
-            val session = call.principal<UserSession>()!!
-            val query = call.request.queryParameters["q"].orEmpty().trim()
-            val all = loadRecipesSorted(session.userId).search(query)
-            val (pageItems, paging) = all.paginate(call)
-            val courseNames = LibraryRepository.listCourses(session.userId).associate { it.id to it.name.orEmpty() }
-            call.respond(MustacheContent("recipeList.mustache", recipeListModel(
-                session, heading = "Recipe Library", recipes = pageItems, paging = paging,
-                query = query, courseNames = courseNames, active = "library", basePath = "/",
-            )))
-        }
-
-        // Browse-by index pages (Courses / Categories / Tags) with per-item recipe counts.
-        get("/courses") {
-            val session = call.principal<UserSession>()!!
-            val all = loadRecipesSorted(session.userId)
-            val items = LibraryRepository.listCourses(session.userId)
-                .filter { !it.name.isNullOrBlank() }
-                .map { BrowseItem(it.name!!, "/courses/${it.id}", all.count { r -> r.courseId == it.id }) }
-            call.respond(MustacheContent("browseIndex.mustache", browseIndexModel(session, "Courses", "courses", items)))
-        }
-        get("/categories") {
-            val session = call.principal<UserSession>()!!
-            val all = loadRecipesSorted(session.userId)
-            val items = LibraryRepository.listCategories(session.userId)
-                .filter { !it.name.isNullOrBlank() }
-                .map { c -> BrowseItem(c.name!!, "/categories/${c.id}", all.count { c.id in it.categoryIds.orEmpty() }) }
-            call.respond(MustacheContent("browseIndex.mustache", browseIndexModel(session, "Categories", "categories", items)))
-        }
-        get("/tags") {
-            val session = call.principal<UserSession>()!!
-            val all = loadRecipesSorted(session.userId)
-            val items = LibraryRepository.listTags(session.userId)
-                .filter { !it.name.isNullOrBlank() }
-                .map { t -> BrowseItem(t.name!!, "/tags/${t.id}", all.count { t.id in it.tagIds.orEmpty() }) }
-            call.respond(MustacheContent("browseIndex.mustache", browseIndexModel(session, "Tags", "tags", items)))
-        }
-
-        // Filtered, paginated recipe lists (drill-down from a browse index).
-        get("/courses/{id}") {
-            val session = call.principal<UserSession>()!!
-            val id = call.parameters["id"]!!
-            val course = LibraryRepository.listCourses(session.userId).firstOrNull { it.id == id }
-            if (course == null) { call.respondRedirect("/courses"); return@get }
-            val query = call.request.queryParameters["q"].orEmpty().trim()
-            val filtered = loadRecipesSorted(session.userId).filter { it.courseId == id }.search(query)
-            val (pageItems, paging) = filtered.paginate(call)
-            val courseNames = mapOf(id to course.name.orEmpty())
-            call.respond(MustacheContent("recipeList.mustache", recipeListModel(
-                session, heading = "Course: ${course.name.orEmpty()}", recipes = pageItems, paging = paging,
-                query = query, courseNames = courseNames, active = "courses", basePath = "/courses/$id",
-                backLink = "← All courses" to "/courses",
-            )))
-        }
-        get("/categories/{id}") {
-            val session = call.principal<UserSession>()!!
-            val id = call.parameters["id"]!!
-            val category = LibraryRepository.listCategories(session.userId).firstOrNull { it.id == id }
-            if (category == null) { call.respondRedirect("/categories"); return@get }
-            val query = call.request.queryParameters["q"].orEmpty().trim()
-            val filtered = loadRecipesSorted(session.userId).filter { id in it.categoryIds.orEmpty() }.search(query)
-            val (pageItems, paging) = filtered.paginate(call)
-            val courseNames = LibraryRepository.listCourses(session.userId).associate { it.id to it.name.orEmpty() }
-            call.respond(MustacheContent("recipeList.mustache", recipeListModel(
-                session, heading = "Category: ${category.name.orEmpty()}", recipes = pageItems, paging = paging,
-                query = query, courseNames = courseNames, active = "categories", basePath = "/categories/$id",
-                backLink = "← All categories" to "/categories",
-            )))
-        }
-        get("/tags/{id}") {
-            val session = call.principal<UserSession>()!!
-            val id = call.parameters["id"]!!
-            val tag = LibraryRepository.listTags(session.userId).firstOrNull { it.id == id }
-            if (tag == null) { call.respondRedirect("/tags"); return@get }
-            val query = call.request.queryParameters["q"].orEmpty().trim()
-            val filtered = loadRecipesSorted(session.userId).filter { id in it.tagIds.orEmpty() }.search(query)
-            val (pageItems, paging) = filtered.paginate(call)
-            val courseNames = LibraryRepository.listCourses(session.userId).associate { it.id to it.name.orEmpty() }
-            call.respond(MustacheContent("recipeList.mustache", recipeListModel(
-                session, heading = "Tag: ${tag.name.orEmpty()}", recipes = pageItems, paging = paging,
-                query = query, courseNames = courseNames, active = "tags", basePath = "/tags/$id",
-                backLink = "← All tags" to "/tags",
-            )))
-        }
-        // Shopping lists — viewable and editable. Checklist edits are SEMANTIC per-item POSTs
-        // (toggle/add/remove/edit one item id), each applied atomically to the CURRENT server row via
-        // ShoppingListRepository.mutate, so they compose with concurrent syncs by construction.
-        // Only the freeform editor saves a whole document, and that path carries baseRevision so a
-        // stale browser tab gets a conflict banner instead of clobbering a sync that landed meanwhile.
-        get("/shoppingLists") {
-            val session = call.principal<UserSession>()!!
-            val lists = ShoppingListRepository.list(session.userId)
-            call.respond(MustacheContent("browseIndex.mustache", shoppingListsIndexModel(session, lists)))
-        }
-        get("/shoppingLists/{id}") {
-            val session = call.principal<UserSession>()!!
-            val list = ShoppingListRepository.getById(session.userId, call.parameters["id"]!!)
-            if (list == null) { call.respondRedirect("/shoppingLists"); return@get }
-            call.respond(MustacheContent("shoppingListDetail.mustache",
-                shoppingListDetailModel(session, list, editItemId = call.request.queryParameters["edit"])))
-        }
-        post("/shoppingLists") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val name = params["name"].orEmpty().trim()
-            if (name.isEmpty()) { call.respondRedirect("/shoppingLists"); return@post }
-            val freeform = params["type"] == "freeform"
-            val id = newWebId()
-            ShoppingListRepository.save(session.userId, ServerShoppingList(
-                id = id, name = name, isFreeform = freeform,
-                contentsForList = if (freeform) null else emptyList(),
-                contentsForFreeform = if (freeform) "" else null,
-                lastModifiedDate = WireDate.format(WireDate.nowUtc()),
-                baseRevision = 0, // create-only: an (impossible) id collision conflicts instead of overwriting
-            ))
-            call.respondRedirect("/shoppingLists/$id")
-        }
-        post("/shoppingLists/{id}/delete") {
-            val session = call.principal<UserSession>()!!
-            if (!call.checkCsrf(call.receiveParameters())) return@post
-            ShoppingListRepository.delete(session.userId, call.parameters["id"]!!)
-            call.respondRedirect("/shoppingLists")
-        }
-        post("/shoppingLists/{id}/rename") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val name = params["name"].orEmpty().trim()
-            if (name.isNotEmpty()) {
-                ShoppingListRepository.mutate(session.userId, id) { it.copy(name = name) }
+        /**
+         * The classic, server-rendered UI — every Pico page lives under this one prefix.
+         *
+         * It is legacy: the app at `/app` is the supported UI, and this subtree is kept only while
+         * anything still depends on it. Having it all under `/classic` is the point — removing it
+         * later is deleting this block and its templates, not auditing which flat URLs were whose.
+         */
+        route("/classic") {
+            // Recipe Library — all recipes, searchable + paginated.
+            get {
+                val session = call.principal<UserSession>()!!
+                val query = call.request.queryParameters["q"].orEmpty().trim()
+                val all = loadRecipesSorted(session.userId).search(query)
+                val (pageItems, paging) = all.paginate(call)
+                val courseNames = LibraryRepository.listCourses(session.userId).associate { it.id to it.name.orEmpty() }
+                call.respond(MustacheContent("recipeList.mustache", recipeListModel(
+                    session, heading = "Recipe Library", recipes = pageItems, paging = paging,
+                    query = query, courseNames = courseNames, active = "library", basePath = "/classic",
+                )))
             }
-            call.respondRedirect("/shoppingLists/$id")
-        }
-        post("/shoppingLists/{id}/items/add") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val text = params["text"].orEmpty().trim()
-            if (text.isNotEmpty()) {
-                val item = ShoppingListListContents(
-                    id = newWebId(), text = text, isHeading = params["heading"] == "on",
-                )
-                ShoppingListRepository.mutate(session.userId, id) {
-                    it.copy(contentsForList = it.contentsForList.orEmpty() + item)
+
+            // Browse-by index pages (Courses / Categories / Tags) with per-item recipe counts.
+            get("/courses") {
+                val session = call.principal<UserSession>()!!
+                val all = loadRecipesSorted(session.userId)
+                val items = LibraryRepository.listCourses(session.userId)
+                    .filter { !it.name.isNullOrBlank() }
+                    .map { BrowseItem(it.name!!, "/classic/courses/${it.id}", all.count { r -> r.courseId == it.id }) }
+                call.respond(MustacheContent("browseIndex.mustache", browseIndexModel(session, "Courses", "courses", items)))
+            }
+            get("/categories") {
+                val session = call.principal<UserSession>()!!
+                val all = loadRecipesSorted(session.userId)
+                val items = LibraryRepository.listCategories(session.userId)
+                    .filter { !it.name.isNullOrBlank() }
+                    .map { c -> BrowseItem(c.name!!, "/classic/categories/${c.id}", all.count { c.id in it.categoryIds.orEmpty() }) }
+                call.respond(MustacheContent("browseIndex.mustache", browseIndexModel(session, "Categories", "categories", items)))
+            }
+            get("/tags") {
+                val session = call.principal<UserSession>()!!
+                val all = loadRecipesSorted(session.userId)
+                val items = LibraryRepository.listTags(session.userId)
+                    .filter { !it.name.isNullOrBlank() }
+                    .map { t -> BrowseItem(t.name!!, "/classic/tags/${t.id}", all.count { t.id in it.tagIds.orEmpty() }) }
+                call.respond(MustacheContent("browseIndex.mustache", browseIndexModel(session, "Tags", "tags", items)))
+            }
+
+            // Filtered, paginated recipe lists (drill-down from a browse index).
+            get("/courses/{id}") {
+                val session = call.principal<UserSession>()!!
+                val id = call.parameters["id"]!!
+                val course = LibraryRepository.listCourses(session.userId).firstOrNull { it.id == id }
+                if (course == null) { call.respondRedirect("/classic/courses"); return@get }
+                val query = call.request.queryParameters["q"].orEmpty().trim()
+                val filtered = loadRecipesSorted(session.userId).filter { it.courseId == id }.search(query)
+                val (pageItems, paging) = filtered.paginate(call)
+                val courseNames = mapOf(id to course.name.orEmpty())
+                call.respond(MustacheContent("recipeList.mustache", recipeListModel(
+                    session, heading = "Course: ${course.name.orEmpty()}", recipes = pageItems, paging = paging,
+                    query = query, courseNames = courseNames, active = "courses", basePath = "/classic/courses/$id",
+                    backLink = "← All courses" to "/classic/courses",
+                )))
+            }
+            get("/categories/{id}") {
+                val session = call.principal<UserSession>()!!
+                val id = call.parameters["id"]!!
+                val category = LibraryRepository.listCategories(session.userId).firstOrNull { it.id == id }
+                if (category == null) { call.respondRedirect("/classic/categories"); return@get }
+                val query = call.request.queryParameters["q"].orEmpty().trim()
+                val filtered = loadRecipesSorted(session.userId).filter { id in it.categoryIds.orEmpty() }.search(query)
+                val (pageItems, paging) = filtered.paginate(call)
+                val courseNames = LibraryRepository.listCourses(session.userId).associate { it.id to it.name.orEmpty() }
+                call.respond(MustacheContent("recipeList.mustache", recipeListModel(
+                    session, heading = "Category: ${category.name.orEmpty()}", recipes = pageItems, paging = paging,
+                    query = query, courseNames = courseNames, active = "categories", basePath = "/classic/categories/$id",
+                    backLink = "← All categories" to "/classic/categories",
+                )))
+            }
+            get("/tags/{id}") {
+                val session = call.principal<UserSession>()!!
+                val id = call.parameters["id"]!!
+                val tag = LibraryRepository.listTags(session.userId).firstOrNull { it.id == id }
+                if (tag == null) { call.respondRedirect("/classic/tags"); return@get }
+                val query = call.request.queryParameters["q"].orEmpty().trim()
+                val filtered = loadRecipesSorted(session.userId).filter { id in it.tagIds.orEmpty() }.search(query)
+                val (pageItems, paging) = filtered.paginate(call)
+                val courseNames = LibraryRepository.listCourses(session.userId).associate { it.id to it.name.orEmpty() }
+                call.respond(MustacheContent("recipeList.mustache", recipeListModel(
+                    session, heading = "Tag: ${tag.name.orEmpty()}", recipes = pageItems, paging = paging,
+                    query = query, courseNames = courseNames, active = "tags", basePath = "/classic/tags/$id",
+                    backLink = "← All tags" to "/classic/tags",
+                )))
+            }
+            // Shopping lists — viewable and editable. Checklist edits are SEMANTIC per-item POSTs
+            // (toggle/add/remove/edit one item id), each applied atomically to the CURRENT server row via
+            // ShoppingListRepository.mutate, so they compose with concurrent syncs by construction.
+            // Only the freeform editor saves a whole document, and that path carries baseRevision so a
+            // stale browser tab gets a conflict banner instead of clobbering a sync that landed meanwhile.
+            get("/shoppingLists") {
+                val session = call.principal<UserSession>()!!
+                val lists = ShoppingListRepository.list(session.userId)
+                call.respond(MustacheContent("browseIndex.mustache", shoppingListsIndexModel(session, lists)))
+            }
+            get("/shoppingLists/{id}") {
+                val session = call.principal<UserSession>()!!
+                val list = ShoppingListRepository.getById(session.userId, call.parameters["id"]!!)
+                if (list == null) { call.respondRedirect("/classic/shoppingLists"); return@get }
+                call.respond(MustacheContent("shoppingListDetail.mustache",
+                    shoppingListDetailModel(session, list, editItemId = call.request.queryParameters["edit"])))
+            }
+            post("/shoppingLists") {
+                val session = call.principal<UserSession>()!!
+                val params = call.receiveParameters()
+                if (!call.checkCsrf(params)) return@post
+                val name = params["name"].orEmpty().trim()
+                if (name.isEmpty()) { call.respondRedirect("/classic/shoppingLists"); return@post }
+                val freeform = params["type"] == "freeform"
+                val id = newWebId()
+                ShoppingListRepository.save(session.userId, ServerShoppingList(
+                    id = id, name = name, isFreeform = freeform,
+                    contentsForList = if (freeform) null else emptyList(),
+                    contentsForFreeform = if (freeform) "" else null,
+                    lastModifiedDate = WireDate.format(WireDate.nowUtc()),
+                    baseRevision = 0, // create-only: an (impossible) id collision conflicts instead of overwriting
+                ))
+                call.respondRedirect("/classic/shoppingLists/$id")
+            }
+            post("/shoppingLists/{id}/delete") {
+                val session = call.principal<UserSession>()!!
+                if (!call.checkCsrf(call.receiveParameters())) return@post
+                ShoppingListRepository.delete(session.userId, call.parameters["id"]!!)
+                call.respondRedirect("/classic/shoppingLists")
+            }
+            post("/shoppingLists/{id}/rename") {
+                val session = call.principal<UserSession>()!!
+                val params = call.receiveParameters()
+                if (!call.checkCsrf(params)) return@post
+                val id = call.parameters["id"]!!
+                val name = params["name"].orEmpty().trim()
+                if (name.isNotEmpty()) {
+                    ShoppingListRepository.mutate(session.userId, id) { it.copy(name = name) }
                 }
+                call.respondRedirect("/classic/shoppingLists/$id")
             }
-            call.respondRedirect("/shoppingLists/$id")
-        }
-        post("/shoppingLists/{id}/items/toggle") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val itemId = params["itemId"].orEmpty()
-            ShoppingListRepository.mutate(session.userId, id) { cur ->
-                // NULL contents (freeform / legacy rows) stay NULL — never materialize them as [].
-                val items = cur.contentsForList ?: return@mutate cur
-                cur.copy(contentsForList = items.map {
-                    if (it.id == itemId) it.copy(isCompleted = it.isCompleted != true) else it
-                })
+            post("/shoppingLists/{id}/items/add") {
+                val session = call.principal<UserSession>()!!
+                val params = call.receiveParameters()
+                if (!call.checkCsrf(params)) return@post
+                val id = call.parameters["id"]!!
+                val text = params["text"].orEmpty().trim()
+                if (text.isNotEmpty()) {
+                    val item = ShoppingListListContents(
+                        id = newWebId(), text = text, isHeading = params["heading"] == "on",
+                    )
+                    ShoppingListRepository.mutate(session.userId, id) {
+                        it.copy(contentsForList = it.contentsForList.orEmpty() + item)
+                    }
+                }
+                call.respondRedirect("/classic/shoppingLists/$id")
             }
-            call.respondRedirect("/shoppingLists/$id")
-        }
-        post("/shoppingLists/{id}/items/edit") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val itemId = params["itemId"].orEmpty()
-            val text = params["text"].orEmpty().trim()
-            if (text.isNotEmpty()) {
+            post("/shoppingLists/{id}/items/toggle") {
+                val session = call.principal<UserSession>()!!
+                val params = call.receiveParameters()
+                if (!call.checkCsrf(params)) return@post
+                val id = call.parameters["id"]!!
+                val itemId = params["itemId"].orEmpty()
                 ShoppingListRepository.mutate(session.userId, id) { cur ->
+                    // NULL contents (freeform / legacy rows) stay NULL — never materialize them as [].
                     val items = cur.contentsForList ?: return@mutate cur
                     cur.copy(contentsForList = items.map {
-                        if (it.id == itemId) it.copy(text = text) else it
+                        if (it.id == itemId) it.copy(isCompleted = it.isCompleted != true) else it
                     })
                 }
+                call.respondRedirect("/classic/shoppingLists/$id")
             }
-            call.respondRedirect("/shoppingLists/$id")
-        }
-        post("/shoppingLists/{id}/items/delete") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val itemId = params["itemId"].orEmpty()
-            ShoppingListRepository.mutate(session.userId, id) { cur ->
-                val items = cur.contentsForList ?: return@mutate cur
-                cur.copy(contentsForList = items.filter { it.id != itemId })
+            post("/shoppingLists/{id}/items/edit") {
+                val session = call.principal<UserSession>()!!
+                val params = call.receiveParameters()
+                if (!call.checkCsrf(params)) return@post
+                val id = call.parameters["id"]!!
+                val itemId = params["itemId"].orEmpty()
+                val text = params["text"].orEmpty().trim()
+                if (text.isNotEmpty()) {
+                    ShoppingListRepository.mutate(session.userId, id) { cur ->
+                        val items = cur.contentsForList ?: return@mutate cur
+                        cur.copy(contentsForList = items.map {
+                            if (it.id == itemId) it.copy(text = text) else it
+                        })
+                    }
+                }
+                call.respondRedirect("/classic/shoppingLists/$id")
             }
-            call.respondRedirect("/shoppingLists/$id")
-        }
-        // Reorder: swap the item with its neighbor. `dir` comes from which of the ↑/↓ submit
-        // buttons was clicked. Moving past either end, an unknown item id, or a row with no
-        // checklist contents all return the row untouched, which mutate() treats as a true
-        // no-op (no write, no revision bump).
-        post("/shoppingLists/{id}/items/move") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val itemId = params["itemId"].orEmpty()
-            val delta = when (params["dir"]) { "up" -> -1; "down" -> 1; else -> 0 }
-            if (delta != 0) {
+            post("/shoppingLists/{id}/items/delete") {
+                val session = call.principal<UserSession>()!!
+                val params = call.receiveParameters()
+                if (!call.checkCsrf(params)) return@post
+                val id = call.parameters["id"]!!
+                val itemId = params["itemId"].orEmpty()
                 ShoppingListRepository.mutate(session.userId, id) { cur ->
-                    val items = cur.contentsForList?.toMutableList() ?: return@mutate cur
-                    val from = items.indexOfFirst { it.id == itemId }
-                    val to = from + delta
-                    if (from < 0 || to !in items.indices) return@mutate cur
-                    Collections.swap(items, from, to)
-                    cur.copy(contentsForList = items)
+                    val items = cur.contentsForList ?: return@mutate cur
+                    cur.copy(contentsForList = items.filter { it.id != itemId })
                 }
+                call.respondRedirect("/classic/shoppingLists/$id")
             }
-            call.respondRedirect("/shoppingLists/$id")
-        }
-        // Whole-document save (freeform editor). baseRevision came from the hidden field the form was
-        // RENDERED with — i.e. the version the user actually saw — so a save over a row that moved on
-        // 409s into a conflict banner (draft preserved) rather than silently losing either side.
-        post("/shoppingLists/{id}/freeform") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val text = params["text"].orEmpty()
-            val base = params["baseRevision"]?.toLongOrNull()
-            val current = ShoppingListRepository.getById(session.userId, id)
-            if (current == null || current.isFreeform != true || base == null) {
-                call.respondRedirect("/shoppingLists/$id"); return@post
+            // Reorder: swap the item with its neighbor. `dir` comes from which of the ↑/↓ submit
+            // buttons was clicked. Moving past either end, an unknown item id, or a row with no
+            // checklist contents all return the row untouched, which mutate() treats as a true
+            // no-op (no write, no revision bump).
+            post("/shoppingLists/{id}/items/move") {
+                val session = call.principal<UserSession>()!!
+                val params = call.receiveParameters()
+                if (!call.checkCsrf(params)) return@post
+                val id = call.parameters["id"]!!
+                val itemId = params["itemId"].orEmpty()
+                val delta = when (params["dir"]) { "up" -> -1; "down" -> 1; else -> 0 }
+                if (delta != 0) {
+                    ShoppingListRepository.mutate(session.userId, id) { cur ->
+                        val items = cur.contentsForList?.toMutableList() ?: return@mutate cur
+                        val from = items.indexOfFirst { it.id == itemId }
+                        val to = from + delta
+                        if (from < 0 || to !in items.indices) return@mutate cur
+                        Collections.swap(items, from, to)
+                        cur.copy(contentsForList = items)
+                    }
+                }
+                call.respondRedirect("/classic/shoppingLists/$id")
             }
-            val result = ShoppingListRepository.save(session.userId, current.copy(
-                contentsForFreeform = text,
-                lastModifiedDate = WireDate.format(WireDate.nowUtc()),
-                revision = null,
-                baseRevision = base,
-            ))
-            when (result) {
-                is ShoppingListRepository.SaveResult.Saved -> call.respondRedirect("/shoppingLists/$id")
-                is ShoppingListRepository.SaveResult.Conflict -> call.respond(MustacheContent(
-                    "shoppingListDetail.mustache",
-                    shoppingListDetailModel(session, result.current, conflictDraft = text),
+            // Whole-document save (freeform editor). baseRevision came from the hidden field the form was
+            // RENDERED with — i.e. the version the user actually saw — so a save over a row that moved on
+            // 409s into a conflict banner (draft preserved) rather than silently losing either side.
+            post("/shoppingLists/{id}/freeform") {
+                val session = call.principal<UserSession>()!!
+                val params = call.receiveParameters()
+                if (!call.checkCsrf(params)) return@post
+                val id = call.parameters["id"]!!
+                val text = params["text"].orEmpty()
+                val base = params["baseRevision"]?.toLongOrNull()
+                val current = ShoppingListRepository.getById(session.userId, id)
+                if (current == null || current.isFreeform != true || base == null) {
+                    call.respondRedirect("/classic/shoppingLists/$id"); return@post
+                }
+                val result = ShoppingListRepository.save(session.userId, current.copy(
+                    contentsForFreeform = text,
+                    lastModifiedDate = WireDate.format(WireDate.nowUtc()),
+                    revision = null,
+                    baseRevision = base,
                 ))
-            }
-        }
-        get("/recipes/{id}") {
-            val session = call.principal<UserSession>()!!
-            val recipe = RecipeRepository.getById(session.userId, call.parameters["id"]!!)
-            if (recipe == null) {
-                call.respondRedirect("/")
-            } else {
-                val courseName = recipe.courseId
-                    ?.let { cid -> LibraryRepository.listCourses(session.userId).firstOrNull { it.id == cid }?.name }
-                    ?.takeIf { it.isNotBlank() }
-                val catMap = LibraryRepository.listCategories(session.userId).associate { it.id to it.name.orEmpty() }
-                val tagMap = LibraryRepository.listTags(session.userId).associate { it.id to it.name.orEmpty() }
-                val categoryNames = recipe.categoryIds.orEmpty().mapNotNull { catMap[it]?.takeIf(String::isNotBlank) }
-                val tagNames = recipe.tagIds.orEmpty().mapNotNull { tagMap[it]?.takeIf(String::isNotBlank) }
-                call.respond(MustacheContent("recipeDetail.mustache",
-                    recipeDetailModel(session, recipe, courseName, categoryNames, tagNames)))
-            }
-        }
-        get("/recipes/{id}/image") {
-            val session = call.principal<UserSession>()!!
-            val filename = RecipeRepository.imageFilename(session.userId, call.parameters["id"]!!)
-            val bytes = filename?.let { imageStore.load(it) }
-            if (bytes == null) {
-                call.respond(HttpStatusCode.NotFound)
-            } else {
-                val ct = when (filename.substringAfterLast('.', "").lowercase()) {
-                    "png" -> ContentType.Image.PNG
-                    "gif" -> ContentType.Image.GIF
-                    else -> ContentType.Image.JPEG
-                }
-                call.respondBytes(bytes, ct)
-            }
-        }
-        get("/recipes/{id}/thumbnail") {
-            val session = call.principal<UserSession>()!!
-            val filename = RecipeRepository.imageFilename(session.userId, call.parameters["id"]!!)
-            val bytes = filename?.let { imageStore.loadThumbnail(it) }
-            if (bytes == null) {
-                call.respond(HttpStatusCode.NotFound)
-            } else {
-                call.respondBytes(bytes, ContentType.Image.JPEG)
-            }
-        }
-
-        // ---- User management (admin only). Each user has an isolated set of recipes/library. ----
-        get("/devices") {
-            val session = call.principal<UserSession>()!!
-            val notice = call.request.queryParameters["msg"]?.let(::deviceNotice)
-            call.respond(MustacheContent("devices.mustache", devicesModel(session, notice)))
-        }
-        post("/devices/{deviceId}/rename") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val name = params["deviceName"].orEmpty().trim()
-            if (name.isNotEmpty()) {
-                DeviceRepository.renameDevice(session.userId, call.parameters["deviceId"]!!, name)
-            }
-            call.respondRedirect("/devices?msg=renamed")
-        }
-        post("/devices/{deviceId}/revoke") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            DeviceRepository.revokeToken(session.userId, call.parameters["deviceId"]!!)
-            call.respondRedirect("/devices?msg=revoked")
-        }
-        post("/devices/revoke-all") {
-            val session = call.principal<UserSession>()!!
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            DeviceRepository.revokeAllTokens(session.userId)
-            call.respondRedirect("/devices?msg=revokedAll")
-        }
-
-        get("/users") {
-            val session = call.requireAdmin() ?: return@get
-            val users = UserRepository.listAll()
-            val notice = call.request.queryParameters["msg"]?.let(::userNotice)
-            val error = call.request.queryParameters["error"]?.let(::userError)
-            call.respond(MustacheContent("users.mustache", usersModel(session, users, notice, error)))
-        }
-        get("/users/new") {
-            val session = call.requireAdmin() ?: return@get
-            val error = call.request.queryParameters["error"]?.let(::userError)
-            call.respond(MustacheContent("userForm.mustache",
-                userFormModel(session, error, prefillUsername = call.request.queryParameters["u"].orEmpty())))
-        }
-        post("/users") {
-            call.requireAdmin() ?: return@post
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val username = params["username"].orEmpty().trim()
-            val password = params["password"].orEmpty()
-            val makeAdmin = params["isAdmin"] == "on"
-            when {
-                username.isEmpty() || password.isEmpty() -> call.respondRedirect("/users/new?error=missing")
-                password.length < MIN_PASSWORD_LENGTH -> call.respondRedirect("/users/new?error=weak&u=$username")
-                UserRepository.existsByUsername(username) -> call.respondRedirect("/users/new?error=exists&u=$username")
-                else -> {
-                    UserRepository.create(username, password, makeAdmin)
-                    call.respondRedirect("/users?msg=created")
+                when (result) {
+                    is ShoppingListRepository.SaveResult.Saved -> call.respondRedirect("/classic/shoppingLists/$id")
+                    is ShoppingListRepository.SaveResult.Conflict -> call.respond(MustacheContent(
+                        "shoppingListDetail.mustache",
+                        shoppingListDetailModel(session, result.current, conflictDraft = text),
+                    ))
                 }
             }
-        }
-        post("/users/{id}/password") {
-            call.requireAdmin() ?: return@post
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val password = params["password"].orEmpty()
-            when {
-                UserRepository.findById(id) == null -> call.respondRedirect("/users?error=notfound")
-                password.length < MIN_PASSWORD_LENGTH -> call.respondRedirect("/users?error=weak")
-                else -> {
-                    UserRepository.changePassword(id, password)
-                    // Changing a password means "sign everything out". Explicit revocation, on top of
-                    // the passwordChangedAt check in findByTokenHash -- belt and braces, because the
-                    // check alone would leave dead hashes sitting in the table looking like live
-                    // devices on the devices page.
-                    DeviceRepository.revokeAllTokens(id)
-                    call.respondRedirect("/users?msg=password")
+            get("/recipes/{id}") {
+                val session = call.principal<UserSession>()!!
+                val recipe = RecipeRepository.getById(session.userId, call.parameters["id"]!!)
+                if (recipe == null) {
+                    call.respondRedirect("/classic")
+                } else {
+                    val courseName = recipe.courseId
+                        ?.let { cid -> LibraryRepository.listCourses(session.userId).firstOrNull { it.id == cid }?.name }
+                        ?.takeIf { it.isNotBlank() }
+                    val catMap = LibraryRepository.listCategories(session.userId).associate { it.id to it.name.orEmpty() }
+                    val tagMap = LibraryRepository.listTags(session.userId).associate { it.id to it.name.orEmpty() }
+                    val categoryNames = recipe.categoryIds.orEmpty().mapNotNull { catMap[it]?.takeIf(String::isNotBlank) }
+                    val tagNames = recipe.tagIds.orEmpty().mapNotNull { tagMap[it]?.takeIf(String::isNotBlank) }
+                    call.respond(MustacheContent("recipeDetail.mustache",
+                        recipeDetailModel(session, recipe, courseName, categoryNames, tagNames)))
                 }
             }
-        }
-        post("/users/{id}/admin") {
-            call.requireAdmin() ?: return@post
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val makeAdmin = params["isAdmin"] == "on"
-            val target = UserRepository.findById(id)
-            when {
-                target == null -> call.respondRedirect("/users?error=notfound")
-                // Don't let the last admin (often yourself) drop admin and lock everyone out.
-                !makeAdmin && target.isAdmin && UserRepository.adminCount() <= 1 ->
-                    call.respondRedirect("/users?error=lastadmin")
-                else -> {
-                    UserRepository.setAdmin(id, makeAdmin)
-                    call.respondRedirect("/users?msg=updated")
+            get("/recipes/{id}/image") {
+                val session = call.principal<UserSession>()!!
+                val filename = RecipeRepository.imageFilename(session.userId, call.parameters["id"]!!)
+                val bytes = filename?.let { imageStore.load(it) }
+                if (bytes == null) {
+                    call.respond(HttpStatusCode.NotFound)
+                } else {
+                    val ct = when (filename.substringAfterLast('.', "").lowercase()) {
+                        "png" -> ContentType.Image.PNG
+                        "gif" -> ContentType.Image.GIF
+                        else -> ContentType.Image.JPEG
+                    }
+                    call.respondBytes(bytes, ct)
                 }
             }
-        }
-        post("/users/{id}/delete") {
-            val session = call.requireAdmin() ?: return@post
-            val params = call.receiveParameters()
-            if (!call.checkCsrf(params)) return@post
-            val id = call.parameters["id"]!!
-            val target = UserRepository.findById(id)
-            when {
-                target == null -> call.respondRedirect("/users?error=notfound")
-                target.id == session.userId -> call.respondRedirect("/users?error=self")
-                target.isAdmin && UserRepository.adminCount() <= 1 -> call.respondRedirect("/users?error=lastadmin")
-                else -> {
-                    val images = UserRepository.deleteWithData(id)
-                    images.forEach { imageStore.delete(it) }
-                    call.respondRedirect("/users?msg=deleted")
+            get("/recipes/{id}/thumbnail") {
+                val session = call.principal<UserSession>()!!
+                val filename = RecipeRepository.imageFilename(session.userId, call.parameters["id"]!!)
+                val bytes = filename?.let { imageStore.loadThumbnail(it) }
+                if (bytes == null) {
+                    call.respond(HttpStatusCode.NotFound)
+                } else {
+                    call.respondBytes(bytes, ContentType.Image.JPEG)
                 }
             }
         }
     }
-}
-
-/** Returns the admin session, or responds 403 and returns null (callers `?: return@…`). */
-private suspend fun io.ktor.server.application.ApplicationCall.requireAdmin(): UserSession? {
-    val session = principal<UserSession>()!!
-    if (!session.isAdmin) {
-        respond(HttpStatusCode.Forbidden, "Forbidden — administrator access required.")
-        return null
-    }
-    return session
 }
 
 /**
@@ -547,24 +428,6 @@ private suspend fun io.ktor.server.application.ApplicationCall.checkCsrf(params:
         return false
     }
     return true
-}
-
-private fun userNotice(code: String): String? = when (code) {
-    "created" -> "User created."
-    "deleted" -> "User and all their recipes deleted."
-    "password" -> "Password updated."
-    "updated" -> "User updated."
-    else -> null
-}
-
-private fun userError(code: String): String? = when (code) {
-    "missing" -> "Username and password are required."
-    "weak" -> "Password must be at least $MIN_PASSWORD_LENGTH characters."
-    "exists" -> "That username already exists."
-    "notfound" -> "User not found."
-    "self" -> "You can't delete the account you're signed in as."
-    "lastadmin" -> "You can't remove the last administrator."
-    else -> null
 }
 
 // ---- Browse / pagination helpers ----
@@ -626,16 +489,15 @@ private fun chrome(pageTitle: String, session: UserSession?, sidebarActive: Stri
         "pageTitle" to pageTitle,
         "loggedIn" to (session != null),
         "username" to session?.username,
-        "isAdmin" to (session?.isAdmin == true),
     )
     if (sidebarActive != null) {
         model["showHamburger"] = true
         model["sidebarItems"] = listOf(
-            sidebarItem("Recipe Library", "/", "library", sidebarActive),
-            sidebarItem("Courses", "/courses", "courses", sidebarActive),
-            sidebarItem("Categories", "/categories", "categories", sidebarActive),
-            sidebarItem("Tags", "/tags", "tags", sidebarActive),
-            sidebarItem("Shopping Lists", "/shoppingLists", "shoppingLists", sidebarActive),
+            sidebarItem("Recipe Library", "/classic", "library", sidebarActive),
+            sidebarItem("Courses", "/classic/courses", "courses", sidebarActive),
+            sidebarItem("Categories", "/classic/categories", "categories", sidebarActive),
+            sidebarItem("Tags", "/classic/tags", "tags", sidebarActive),
+            sidebarItem("Shopping Lists", "/classic/shoppingLists", "shoppingLists", sidebarActive),
         )
     }
     return model
@@ -648,77 +510,11 @@ private fun meta(label: String, value: String) = mapOf("label" to label, "value"
 
 private fun badge(cssClass: String, text: String) = mapOf("cssClass" to cssClass, "text" to text)
 
-private fun loginModel(error: Boolean): Map<String, Any?> =
-    chrome("Sign in", session = null).apply { put("error", error) }
-
-private fun aboutModel(session: UserSession?): Map<String, Any?> =
-    chrome("About", session).apply {
-        put("appName", "Salty Server")
-        put("version", BuildInfo.version)
-        put("buildTime", BuildInfo.buildTime)
-    }
-
-private fun deviceNotice(code: String): String? = when (code) {
-    "renamed" -> "Device renamed."
-    "revoked" -> "Device revoked. It will stop syncing until it signs in again."
-    "revokedAll" -> "Every device was revoked."
-    else -> null
-}
-
 /**
- * A device's name as a person would read it, never blank: an unnamed row is still a row you may
- * need to revoke, and "(unnamed device)" is at least actionable where an empty cell is not.
+ * The sign-in page. It renders no shared chrome: the Web Awesome login screen is a standalone
+ * document with no nav, so `chrome()` (which exists to feed head/nav/sidebar) has nothing to give it.
  */
-private fun deviceDisplayName(name: String?, deviceId: String): String =
-    name?.takeIf { it.isNotBlank() } ?: "(unnamed device — ${deviceId.take(8)})"
-
-/** Wire stamps are for machines; this page is for a person deciding whether to revoke something. */
-private fun friendlyDate(wire: String?): String {
-    val parsed = WireDate.parse(wire) ?: return "Never"
-    return DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm").format(parsed) + " UTC"
-}
-
-private suspend fun devicesModel(session: UserSession, notice: String?): Map<String, Any?> {
-    val devices = DeviceRepository.listForUser(session.userId)
-    return chrome("Devices", session).apply {
-        put("notice", notice)
-        put("csrfToken", session.csrfToken)
-        put("hasDevices", devices.isNotEmpty())
-        put("devices", devices.map { d ->
-            mapOf(
-                "deviceId" to d.deviceId,
-                "deviceName" to (d.deviceName ?: ""),
-                "displayName" to deviceDisplayName(d.deviceName, d.deviceId),
-                "hasToken" to d.hasToken,
-                // Prefer token use over sync date: it is the freshest evidence the device is alive.
-                "lastSyncedLabel" to friendlyDate(d.tokenLastUsed ?: d.lastSyncDate),
-                "firstSyncedLabel" to friendlyDate(d.firstSyncDate),
-            )
-        })
-    }
-}
-
-private fun usersModel(session: UserSession, users: List<UserRow>, notice: String?, error: String?): Map<String, Any?> =
-    chrome("Users", session).apply {
-        put("notice", notice)
-        put("error", error)
-        put("csrfToken", session.csrfToken)
-        put("users", users.map { u ->
-            mapOf(
-                "id" to u.id,
-                "username" to u.username,
-                "isAdmin" to u.isAdmin,
-                "isSelf" to (u.id == session.userId),
-            )
-        })
-    }
-
-private fun userFormModel(session: UserSession, error: String?, prefillUsername: String): Map<String, Any?> =
-    chrome("Add user", session).apply {
-        put("error", error)
-        put("csrfToken", session.csrfToken)
-        put("prefillUsername", prefillUsername)
-    }
+private fun loginModel(error: Boolean): Map<String, Any?> = mapOf("error" to error)
 
 private fun browseIndexModel(session: UserSession, heading: String, active: String, items: List<BrowseItem>): Map<String, Any?> =
     chrome(heading, session, sidebarActive = active).apply {

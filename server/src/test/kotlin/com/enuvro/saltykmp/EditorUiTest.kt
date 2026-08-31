@@ -4,7 +4,10 @@ import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerRecipe
 import com.enuvro.saltykmp.api.ServerShoppingList
-import com.enuvro.saltykmp.auth.JwtService
+import com.enuvro.saltykmp.recipe.addressRefusal
+import com.sun.net.httpserver.HttpServer
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import com.enuvro.saltykmp.db.Categories
 import com.enuvro.saltykmp.db.Courses
 import com.enuvro.saltykmp.db.DatabaseFactory
@@ -55,19 +58,32 @@ import kotlin.test.assertTrue
  * toolchain in this build. When a browser cannot be launched (a CI image with no download, say)
  * these are SKIPPED, not passed: the earlier `?: return` reported 33 green tests on a machine that
  * had never opened a browser, which is indistinguishable from a real run and hides the loss of the
- * only coverage ~2000 lines of editor.js and editor.mustache have.
+ * only coverage ~2000 lines of app.js and app.mustache have.
  */
 class EditorUiTest {
 
-    private val jwt = JwtService("test-secret", "salty", "salty-app", validityMs = 60_000)
     private val imageStore = ImageStore(Files.createTempDirectory("salty-ui-img"))
 
     private var server: io.ktor.server.engine.EmbeddedServer<*, *>? = null
     private var playwright: Playwright? = null
     private var browser: Browser? = null
     private var port = 0
+    private var recipeSite: HttpServer? = null
+    private var sitePort = 0
 
     companion object {
+        /** What the stand-in site serves: the structured data a real recipe page publishes. */
+        private val IMPORTABLE_PAGE = """
+            <!doctype html><html><head>
+            <script type="application/ld+json">
+            {"@context":"https://schema.org","@type":"Recipe",
+             "name":"Imported Cornbread",
+             "recipeYield":"8 wedges",
+             "recipeIngredient":["1 cup cornmeal","1 cup buttermilk"],
+             "recipeInstructions":[{"@type":"HowToStep","text":"Heat the skillet."}]}
+            </script></head><body>Cornbread</body></html>
+        """.trimIndent()
+
         @Volatile private var dbReady = false
         private fun ensureDb() {
             if (!dbReady) {
@@ -82,6 +98,8 @@ class EditorUiTest {
         const val RECIPE_ID = "01A05100-0000-7000-8000-0000000000R1"
         const val COURSE_ID = "01A05100-0000-7000-8000-0000000000C1"
         const val CATEGORY_ID = "01A05100-0000-7000-8000-0000000000K1"
+        const val LONG_RECIPE_NAME = "Veggie Burger (Grind Burger Kitchen) with Caramelised Onion Relish"
+        const val LONG_CATEGORY_NAME = "Slow-Cooked Braises, Stews and Other Long Sunday Projects"
         const val TAG_ID = "01A05100-0000-7000-8000-0000000000T1"
         const val LIST_ID = "01A05100-0000-7000-8000-0000000000L1"
     }
@@ -138,12 +156,32 @@ class EditorUiTest {
                 ),
             )
         }
-        server = embeddedServer(Netty, port = 0) { installSalty(jwt, imageStore) }.also { it.start(wait = false) }
+        // A stand-in recipe site for the web import. It runs on loopback, so the app's server is
+        // given a policy that permits loopback specifically -- everything else still goes through
+        // the real one. See AddressPolicy in RecipeImport.kt for why that seam exists.
+        recipeSite = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
+            createContext("/recipe") { exchange ->
+                val bytes = IMPORTABLE_PAGE.toByteArray()
+                exchange.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
+                exchange.sendResponseHeaders(200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+            start()
+        }
+        sitePort = recipeSite!!.address.port
+
+        server = embeddedServer(Netty, port = 0) {
+            installSalty(imageStore, importAddressPolicy = { host ->
+                if (host == "127.0.0.1" || host == "localhost") null else addressRefusal(host)
+            })
+        }.also { it.start(wait = false) }
         port = runBlocking { server!!.engine.resolvedConnectors().first().port }
     }
 
     @AfterTest
     fun tearDown() {
+        recipeSite?.stop(0)
+        recipeSite = null
         server?.stop(0, 0)
         browser?.close()
         playwright?.close()
@@ -152,15 +190,25 @@ class EditorUiTest {
     }
 
     /** Signs in through the real login form and lands on the editor. */
-    private fun editorPage(b: Browser): Page {
+    private fun editorPage(b: Browser, initScript: String? = null): Page {
         val page = b.newPage(Browser.NewPageOptions().setViewportSize(1400, 900))
+        // Before any navigation, so a stubbed platform API is in place by the time app.js runs.
+        if (initScript != null) page.addInitScript(initScript)
         page.navigate("http://localhost:$port/login")
         page.getByLabel("Username").fill("tester")
         page.getByLabel("Password").fill("pw")
         page.getByRole(AriaRole.BUTTON).filter(
             com.microsoft.playwright.Locator.FilterOptions().setHasText("Sign in")
         ).first().click()
-        page.navigate("http://localhost:$port/editor")
+        // Wait for the login POST's own 302 to land on /app rather than navigating there ourselves.
+        //
+        // This used to be a bare `page.navigate(".../app")` immediately after the click, which is a
+        // race the click loses often enough to matter: the request could go out before the login
+        // response had set SALTY_SESSION, arrive unauthenticated, get bounced back to /login, and
+        // then spend 30s waiting for a `.rrow` that was never going to render. It surfaced as a
+        // different test timing out on almost every run -- which is worse than a test that always
+        // fails, because it reads as noise and trains you to re-run instead of look.
+        page.waitForURL("**/app")
         // The editor is client-rendered; wait for the list to arrive rather than a fixed sleep.
         page.waitForSelector(".rrow")
         // The autoloader defines <wa-*> elements asynchronously as it discovers them, so give it
@@ -412,6 +460,580 @@ class EditorUiTest {
             ),
         )
     }
+
+    /**
+     * The recipe column is ONE tab stop, not one per recipe.
+     *
+     * Bare sibling buttons put every row in the tab order, so reaching the recipe pane past a
+     * 200-recipe list meant 200 presses. Exactly one row is tabbable and the arrows move between
+     * them -- and they move FOCUS, not the selection: selection-follows-focus would read a recipe
+     * off the server on every keypress, so Enter is what opens one.
+     */
+    @Test
+    fun theRecipeListIsOneTabStopAndArrowsMoveWithinIt() {
+        val b = requireBrowser()
+        seedSecondRecipe()
+        val page = editorPage(b)
+        val rows = page.locator("section[aria-label='Recipes'] .rrow")
+        val title = page.locator("section[aria-label='Recipe'] .detail__title")
+        assertThat(rows).hasCount(2)
+
+        // A real list, explicitly roled: `list-style: none` drops list semantics in Safari, and
+        // those semantics are what announce "1 of 2" instead of an unbounded run of "button".
+        assertThat(page.locator("section[aria-label='Recipes'] ul.list__rows"))
+            .hasAttribute("role", "list")
+        assertThat(page.locator("section[aria-label='Recipes'] .list__rows > li")).hasCount(2)
+
+        // On a wide screen the first recipe auto-opens, so the selected row holds the tab stop.
+        assertThat(rows.nth(0)).hasAttribute("tabindex", "0")
+        assertThat(rows.nth(1)).hasAttribute("tabindex", "-1")
+
+        rows.nth(0).focus()
+        page.keyboard().press("ArrowDown")
+        assertEquals("Unfiled Soup", focusedRowName(page))
+        // The tab stop travels with focus, or tabbing away and back lands somewhere else.
+        assertThat(rows.nth(1)).hasAttribute("tabindex", "0")
+        assertThat(rows.nth(0)).hasAttribute("tabindex", "-1")
+        // Focus moved. The open recipe did not.
+        assertThat(title).hasText("Skillet Cornbread")
+
+        // Neither end wraps: in a scrolling list, jumping from the last row to the first loses
+        // your place more than it saves a keystroke.
+        page.keyboard().press("ArrowDown")
+        assertEquals("Unfiled Soup", focusedRowName(page))
+        page.keyboard().press("Home")
+        assertEquals("Skillet Cornbread", focusedRowName(page))
+        page.keyboard().press("ArrowUp")
+        assertEquals("Skillet Cornbread", focusedRowName(page))
+        page.keyboard().press("End")
+        assertEquals("Unfiled Soup", focusedRowName(page))
+
+        // Enter opens it, which is the row being a real <button> and nothing more.
+        page.keyboard().press("Enter")
+        assertThat(title).hasText("Unfiled Soup")
+        page.close()
+    }
+
+    /**
+     * The frame is pinned to the viewport and the COLUMNS scroll inside it -- the window does not.
+     *
+     * wa-page is a document layout: it scrolls as a whole, and its main region is an auto-sized
+     * grid row, so with twenty recipes the whole page grew to 1526px and scrolled. .rail,
+     * .list__scroll and .doc were all carrying `overflow-y: auto` with nothing to overflow, and
+     * scrolling the recipe list dragged the search box and the open recipe off the screen with it.
+     * Nothing about that is visible in the markup, and every three-pane assumption in this
+     * stylesheet depends on it, so it is asserted here.
+     */
+    @Test
+    fun theColumnsScrollInsteadOfTheWindow() {
+        val b = requireBrowser()
+        seedManyRecipes()
+        val page = editorPage(b)
+        page.waitForFunction("() => document.querySelectorAll('.rrow').length > 15")
+
+        val m = page.evaluate(
+            """() => {
+                 const col = document.querySelector('.list__scroll');
+                 return { page: document.documentElement.scrollHeight, win: window.innerHeight,
+                          colScroll: col.scrollHeight, colClient: col.clientHeight };
+               }"""
+        ) as Map<*, *>
+
+        assertEquals(m["win"], m["page"], "the window itself must not scroll")
+        assertTrue(
+            (m["colScroll"] as Int) > (m["colClient"] as Int),
+            "the recipe column should be the thing that scrolls, and should overflow with 20 rows",
+        )
+        page.close()
+    }
+
+    /**
+     * The list/recipe divider: drag it, arrow it, and it is still there after a reload.
+     *
+     * wa-split-panel's start/end slots are `display: contents`, so the four <section>s are the grid
+     * items themselves and the layout only holds while exactly one of each pair is x-shown. That is
+     * invisible in the markup and would fail as a silent second column, so it is asserted here.
+     */
+    @Test
+    fun theListDividerResizesAndIsRemembered() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        val list = page.locator("section[aria-label='Recipes']")
+        val divider = page.locator("wa-split-panel [part~='divider']")
+
+        assertThat(divider).isVisible()
+        val start = list.boundingBox().width
+        assertEquals(280.0, start, 2.0, "the divider should start where the fixed column used to be")
+
+        // Drag it right. The divider is a 1px seam with an 11px hit area, so this also covers the
+        // hit area actually being grabbable.
+        val d = divider.boundingBox()
+        page.mouse().move(d.x + d.width / 2, d.y + d.height / 2)
+        page.mouse().down()
+        page.mouse().move(d.x + d.width / 2 + 120, d.y + d.height / 2)
+        page.mouse().up()
+        val dragged = list.boundingBox().width
+        assertTrue(dragged > start + 100, "dragging right should widen the list, got $dragged")
+
+        // Exactly one column of recipes and one of recipe: a section that failed to hide would
+        // show up as a fourth grid item and steal width from these two.
+        assertThat(page.locator("section[aria-label='Shopping lists']")).isHidden()
+        assertThat(page.locator("section[aria-label='Shopping list']")).isHidden()
+
+        // The divider is role="separator" with tabindex="0" straight from the component, so it
+        // resizes from the keyboard with nothing of ours involved.
+        divider.focus()
+        page.keyboard().press("ArrowLeft")
+        page.keyboard().press("ArrowLeft")
+        val arrowed = list.boundingBox().width
+        assertTrue(arrowed < dragged, "the arrow keys should narrow the list, got $arrowed")
+
+        // Remembered across a reload, which is the point of persisting it at all. The wait is the
+        // listener's own debounce: wa-reposition fires per pointer move, so the write is deferred
+        // to the resting width.
+        page.waitForTimeout(400.0)
+        page.reload()
+        page.waitForSelector(".rrow")
+        page.waitForFunction(
+            "w => Math.abs(document.querySelector('.list').getBoundingClientRect().width - w) < 3",
+            arrowed,
+        )
+        page.close()
+    }
+
+    /**
+     * A long recipe name is clipped, not chased.
+     *
+     * WA's native.css puts `white-space: nowrap` on every <button> and a row is one, so a long name
+     * did not wrap -- it overflowed, and the whole COLUMN scrolled sideways to follow it. The
+     * subtitle had been ellipsed since it was written; the name never was.
+     */
+    @Test
+    fun aLongRecipeNameIsClippedRatherThanScrolled() {
+        val b = requireBrowser()
+        seedLongNamedRecipe()
+        val page = editorPage(b)
+        val name = page.locator(".rrow__name", Page.LocatorOptions().setHasText("Veggie Burger"))
+
+        val m = page.evaluate(
+            """() => {
+                 const scroll = document.querySelector('.list__scroll');
+                 const el = [...document.querySelectorAll('.rrow__name')]
+                   .find(n => n.textContent.includes('Veggie'));
+                 const row = el.closest('.rrow');
+                 const box = e => e.getBoundingClientRect();
+                 return { sideways: scroll.scrollWidth > scroll.clientWidth,
+                          clipped: el.scrollWidth > el.clientWidth,
+                          // the row's insets, which the <li> wrapper's inherited bullet margin
+                          // had knocked 18px out of true on the left only
+                          leftGap: Math.round(box(row).left - box(scroll).left),
+                          rightGap: Math.round(box(scroll).right - box(row).right),
+                          full: el.textContent };
+               }"""
+        ) as Map<*, *>
+
+        assertEquals(false, m["sideways"], "the column must not scroll sideways to chase a name")
+        assertEquals(true, m["clipped"], "the name should be clipped")
+        assertEquals(m["rightGap"], m["leftGap"], "the row should sit evenly between the edges")
+        // Clipping is visual only. The full name is still in the DOM, so a screen reader was never
+        // missing anything -- which is why this is not an aria-label.
+        assertEquals(LONG_RECIPE_NAME, m["full"])
+
+        // The tooltip is set on hover, and only when there is something to reveal.
+        name.hover()
+        assertEquals(LONG_RECIPE_NAME, name.getAttribute("title"))
+        val short = page.locator(".rrow__name", Page.LocatorOptions().setHasText("Skillet"))
+        short.hover()
+        assertEquals(null, short.getAttribute("title"), "an unclipped name needs no tooltip")
+        page.close()
+    }
+
+    /**
+     * One long classifier name must not eat the window.
+     *
+     * wa-page's --menu-width defaults to `auto`, so the rail was as wide as its widest label: a
+     * single category called "Slow-Cooked Braises…" took it to 557px of a 1400px window.
+     */
+    @Test
+    fun theRailStopsGrowingForALongClassifierName() {
+        val b = requireBrowser()
+        runBlocking {
+            LibraryRepository.upsertCategory(
+                UserRepository.findByUsername("tester")!!.id,
+                ServerCategory("01A05100-0000-7000-8000-0000000000LC", LONG_CATEGORY_NAME),
+            )
+        }
+        val page = editorPage(b)
+        page.waitForSelector("wa-tree-item[data-kind=category]")
+
+        val m = page.evaluate(
+            """() => {
+                 const rail = document.querySelector('nav.rail');
+                 const label = [...document.querySelectorAll('wa-tree-item span')]
+                   .find(s => s.textContent.trim().startsWith('Slow-Cooked'));
+                 return { railWidth: Math.round(rail.getBoundingClientRect().width),
+                          railSideways: rail.scrollWidth > rail.clientWidth,
+                          labelClipped: label.scrollWidth > label.clientWidth,
+                          // one line, not three: the cap must ellipse, not wrap
+                          labelHeight: Math.round(label.getBoundingClientRect().height) };
+               }"""
+        ) as Map<*, *>
+
+        assertEquals(240, m["railWidth"], "--menu-width should cap the rail at 15rem")
+        assertEquals(false, m["railSideways"], "the rail must not scroll sideways instead")
+        assertEquals(true, m["labelClipped"], "the label should ellipse at the cap")
+        assertTrue((m["labelHeight"] as Int) < 40, "the label should stay on one line")
+        page.close()
+    }
+
+    private fun seedLongNamedRecipe() = runBlocking {
+        RecipeRepository.upsert(
+            UserRepository.findByUsername("tester")!!.id,
+            ServerRecipe(
+                id = "01A05100-0000-7000-8000-0000000000LN",
+                name = LONG_RECIPE_NAME,
+                introduction = "As seen on Diners, Drive-Ins and Dives, season 12, episode 4",
+                lastModifiedDate = "2026-08-01T00:00:00.000Z",
+            ),
+        )
+    }
+
+    /**
+     * Shopping lists are a section of the rail, not a leaf in it: a "Shopping Lists" heading with
+     * "All Lists" under it, the shape Categories and Courses already have.
+     *
+     * The heading is a `data-group`, and the tree is in leaf-selection mode, so it expands and
+     * collapses and never navigates. That is the part worth pinning: it would be easy to make the
+     * heading the destination again and not notice, because the child sits right under it.
+     */
+    @Test
+    fun shoppingListsAreAHeadingWithAllListsUnderIt() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        val heading = page.locator("wa-tree-item[data-group]")
+            .filter(com.microsoft.playwright.Locator.FilterOptions().setHasText("Shopping Lists"))
+        val allLists = page.locator("wa-tree-item[data-kind=shopping]")
+
+        assertThat(heading).hasCount(1)
+        assertThat(allLists).hasText(java.util.regex.Pattern.compile("All Lists"))
+        // The child really is inside the heading, not a sibling that happens to follow it.
+        assertThat(heading.locator("wa-tree-item[data-kind=shopping]")).hasCount(1)
+
+        // Clicking the heading collapses it; it does not open the shopping lists.
+        heading.click()
+        assertThat(page.locator("section[aria-label='Recipes']")).isVisible()
+        assertThat(page.locator("section[aria-label='Shopping lists']")).isHidden()
+
+        // The child is the destination.
+        heading.click()
+        allLists.click()
+        assertThat(page.locator("section[aria-label='Shopping lists']")).isVisible()
+        assertThat(page.locator("section[aria-label='Recipes']")).isHidden()
+        page.close()
+    }
+
+    /**
+     * In a shopping-list row the NAME is the loud one.
+     *
+     * The item count had no styling of its own, so it inherited the row's font size and came out
+     * larger than the name of the list it belonged to -- the loudest thing in the column, for the
+     * least interesting fact in it. It is the recipe rows' subtitle now: second line, smaller,
+     * quiet, ellipsed.
+     */
+    @Test
+    fun theShoppingListCountIsQuieterThanItsName() {
+        val b = requireBrowser()
+        runBlocking {
+            ShoppingListRepository.save(
+                UserRepository.findByUsername("tester")!!.id,
+                ServerShoppingList(
+                    id = LIST_ID,
+                    name = "Saturday Big Shop for the Whole Extended Family Reunion",
+                    isFreeform = false,
+                    contentsForList = listOf(ShoppingListListContents(id = "s0", text = "Milk")),
+                    lastModifiedDate = "2026-08-01T00:00:00.000Z",
+                ),
+            )
+        }
+        val page = editorPage(b)
+        page.locator("wa-tree-item[data-kind=shopping]").click()
+        page.waitForSelector("section[aria-label='Shopping lists'] .rrow")
+
+        val m = page.evaluate(
+            """() => {
+                 const row = document.querySelector("section[aria-label='Shopping lists'] .rrow");
+                 const name = row.querySelector('.rrow__name');
+                 const meta = row.querySelector('.rrow__meta');
+                 const px = el => parseFloat(getComputedStyle(el).fontSize);
+                 return { nameSize: px(name), metaSize: px(meta),
+                          nameColor: getComputedStyle(name).color,
+                          metaColor: getComputedStyle(meta).color,
+                          // the count sits below the name, not beside it
+                          stacked: Math.round(meta.getBoundingClientRect().top) >=
+                                   Math.round(name.getBoundingClientRect().bottom),
+                          nameClipped: name.scrollWidth > name.clientWidth };
+               }"""
+        ) as Map<*, *>
+
+        // Number, not Double: a whole-pixel font size comes back from Playwright as an Integer.
+        val metaSize = (m["metaSize"] as Number).toDouble()
+        val nameSize = (m["nameSize"] as Number).toDouble()
+        assertTrue(metaSize < nameSize, "the count should be smaller than the name, got $metaSize vs $nameSize")
+        assertTrue(m["nameColor"] != m["metaColor"], "the count should be the quieter colour")
+        assertEquals(true, m["stacked"], "the count belongs on its own line under the name")
+        assertEquals(true, m["nameClipped"], "a long list name should still ellipse")
+        page.close()
+    }
+
+    /** Below the pane breakpoint there is one pane and no divider to drag. */
+    @Test
+    fun theDividerIsGoneOnACompactScreen() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        page.setViewportSize(420, 800)
+        // wa-page switches view from a ResizeObserver, and until it does the navigation rail is
+        // still holding a 186px column -- measure before that and the pane is 234px wide.
+        page.waitForFunction("() => document.getElementById('app').getAttribute('view') === 'mobile'")
+
+        assertThat(page.locator("wa-split-panel [part~='divider']")).isHidden()
+        // A recipe auto-opened on the wide screen, so the compact view is showing it and the list
+        // is the pane that stepped aside -- which is the existing data-pane behaviour, not the
+        // split panel's. What matters here is that the survivor gets the whole window.
+        assertThat(page.locator("section[aria-label='Recipes']")).isHidden()
+        val open = page.locator("section[aria-label='Recipe']").boundingBox()
+        assertEquals(420.0, open.width, 2.0, "the one visible pane should fill the window")
+        page.close()
+    }
+
+    /**
+     * Chef mode: the recipe alone, bigger, with the app out of the way.
+     *
+     * The width assertion is the one that would silently regress. wa-page's body grid sizes its
+     * menu track as `minmax(0, var(--menu-width))`, and hiding the rail alone is not enough --
+     * an empty track with a fixed maximum still takes free space up to it, so the recipe kept a
+     * 15rem gutter down its left with nothing in it. Nothing about the markup says so.
+     */
+    @Test
+    fun chefModeHidesTheChromeAndEnlargesTheRecipe() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        val app = page.locator("#app")
+        val recipe = page.locator("section[aria-label='Recipe']")
+
+        val normalStep = ingredientFontSize(page)
+        page.locator("[data-testid=chef]").click()
+        page.waitForFunction("() => document.getElementById('app').hasAttribute('data-chef')")
+
+        assertThat(page.locator(".appbar")).isHidden()
+        assertThat(page.locator("nav.rail")).isHidden()
+        assertThat(page.locator("section[aria-label='Recipes']")).isHidden()
+        assertThat(recipe.locator(".detail__bar")).isHidden()
+        // Still a recipe, not a stripped-down one: what you are standing there to read stays.
+        assertThat(page.getByRole(AriaRole.HEADING, Page.GetByRoleOptions().setName("Ingredients"))).isVisible()
+        assertThat(page.getByRole(AriaRole.HEADING, Page.GetByRoleOptions().setName("Directions"))).isVisible()
+
+        val box = recipe.boundingBox()
+        assertEquals(0.0, box.x, 2.0, "the recipe should start at the window edge, with no empty menu track")
+        assertEquals(1400.0, box.width, 2.0, "the recipe should have the whole window")
+
+        val chefStep = ingredientFontSize(page)
+        assertTrue(
+            chefStep > normalStep * 1.3,
+            "ingredients should be substantially larger in chef mode, got $chefStep vs $normalStep",
+        )
+
+        // Out again by the one control chef mode leaves on screen, and everything comes back.
+        page.locator(".chefexit").click()
+        page.waitForFunction("() => !document.getElementById('app').hasAttribute('data-chef')")
+        assertThat(page.locator(".appbar")).isVisible()
+        assertThat(page.locator("section[aria-label='Recipes']")).isVisible()
+        assertEquals(normalStep, ingredientFontSize(page), 0.01, "the reading view should be unchanged after leaving")
+
+        // ...and Escape is the other way out, because that is what a chromeless view has to answer.
+        page.locator("[data-testid=chef]").click()
+        page.waitForFunction("() => document.getElementById('app').hasAttribute('data-chef')")
+        page.keyboard().press("Escape")
+        page.waitForFunction("() => !document.getElementById('app').hasAttribute('data-chef')")
+        assertEquals(null, app.getAttribute("data-chef"))
+        page.close()
+    }
+
+    /** The computed size of a plain ingredient row — the text chef mode exists to enlarge. */
+    private fun ingredientFontSize(page: Page): Double =
+        page.evaluate(
+            "() => getComputedStyle(document.querySelector('.read__list li:not(.is-heading)')).fontSize"
+        ).toString().removeSuffix("px").toDouble()
+
+    /**
+     * A stand-in Screen Wake Lock that records what was asked of it.
+     *
+     * The real API is refused in headless Chromium, and missing entirely wherever Salty is served
+     * over plain http — the normal way to run it on a LAN — so testing against it would be testing
+     * the browser's mood. What matters here is Salty's half of the contract: a lock is taken when
+     * chef mode opens, given back when it closes, and never asked for once the preference is off.
+     */
+    private val wakeLockStub = """
+        (() => {
+          window.__wakeLog = [];
+          const makeLock = () => {
+            const listeners = [];
+            return {
+              addEventListener: (type, fn) => { if (type === 'release') listeners.push(fn); },
+              release() {
+                window.__wakeLog.push('release');
+                listeners.forEach(fn => fn());
+                return Promise.resolve();
+              },
+            };
+          };
+          Object.defineProperty(navigator, 'wakeLock', {
+            configurable: true,
+            value: {
+              request: () => { window.__wakeLog.push('request'); return Promise.resolve(makeLock()); },
+            },
+          });
+        })();
+    """.trimIndent()
+
+    @Suppress("UNCHECKED_CAST")
+    private fun wakeLog(page: Page): List<String> =
+        (page.evaluate("() => window.__wakeLog") as List<Any?>).map { it.toString() }
+
+    /** Chef mode keeps the screen on, and Preferences is where that is turned off. */
+    @Test
+    fun chefModeHoldsAScreenWakeLockUntilThePreferenceSaysOtherwise() {
+        val b = requireBrowser()
+        val page = editorPage(b, wakeLockStub)
+
+        page.locator("[data-testid=chef]").click()
+        page.waitForFunction("() => window.__wakeLog.includes('request')")
+        assertEquals(listOf("request"), wakeLog(page), "chef mode should take exactly one lock")
+
+        page.keyboard().press("Escape")
+        page.waitForFunction("() => window.__wakeLog.includes('release')")
+        assertEquals(listOf("request", "release"), wakeLog(page), "leaving should give the lock back")
+
+        // Through the menu, because Preferences replaced two items with one and that path is the
+        // one a person actually walks.
+        page.locator(".appbar__account wa-button").first().click()
+        page.locator("[data-testid=open-preferences]").click()
+        page.waitForSelector("[data-testid=wakelock]")
+        // Preferences absorbed two dialogs, so all three sections have to be on this one page --
+        // now split across two tabs, with General open first because that is where chef mode lives.
+        assertThat(page.locator("wa-dialog[data-dialog=preferences] .prefsect")).hasCount(3)
+        assertThat(page.locator("wa-dialog[data-dialog=preferences] wa-tab")).hasCount(2)
+
+        // The password form is real but a tab away, so it must not be showing yet: a visible
+        // password field under a tab labelled General would mean the split did not take.
+        assertThat(page.getByRole(AriaRole.HEADING, Page.GetByRoleOptions().setName("Password")))
+            .not().isVisible()
+        page.locator("wa-dialog[data-dialog=preferences] wa-tab[panel=security]").click()
+        assertThat(page.getByRole(AriaRole.HEADING, Page.GetByRoleOptions().setName("Password"))).isVisible()
+        assertThat(page.getByRole(AriaRole.HEADING, Page.GetByRoleOptions().setName("Authorized apps")))
+            .isVisible()
+        assertEquals(
+            1, page.locator("wa-dialog[data-dialog=preferences] [data-testid=save-password]").count(),
+            "the password form should still be here, with its own submit",
+        )
+
+        // Back to General for the switch, which is what the rest of this test drives.
+        page.locator("wa-dialog[data-dialog=preferences] wa-tab[panel=general]").click()
+        assertThat(page.locator("[data-testid=wakelock]")).isVisible()
+        // The switch graphic, reached through its part. Clicking the <wa-switch> host itself is
+        // what a person does NOT do: the host box includes the hint line underneath, so a click at
+        // its centre lands on explanatory text and toggles nothing. (The visible label does work —
+        // that was checked while writing this.)
+        page.locator("[data-testid=wakelock] [part~=control]").click()
+        page.waitForFunction(
+            "() => Alpine.${'$'}data(document.getElementById('app')).wakeLockPref === false")
+        page.locator("wa-dialog[data-dialog=preferences] wa-button[slot=footer]").first().click()
+        page.waitForFunction("() => Alpine.${'$'}data(document.getElementById('app')).dialog === null")
+
+        page.locator("[data-testid=chef]").click()
+        page.waitForFunction("() => document.getElementById('app').hasAttribute('data-chef')")
+        assertEquals(
+            listOf("request", "release"), wakeLog(page),
+            "with the preference off, chef mode should not ask for a lock at all",
+        )
+        page.keyboard().press("Escape")
+
+        // The preference is per browser and survives a reload — it describes this screen, not the
+        // account, so it is not something the server was ever told.
+        page.reload()
+        page.waitForSelector(".rrow")
+        assertEquals(
+            false,
+            page.evaluate("() => Alpine.${'$'}data(document.getElementById('app')).wakeLockPref"),
+            "the switch should still be off after a reload",
+        )
+        page.close()
+    }
+
+    /** A recipe with no yield, so the meta line has a gap where a separator used to be printed. */
+    private fun seedGappyRecipe() = runBlocking {
+        RecipeRepository.upsert(
+            UserRepository.findByUsername("tester")!!.id,
+            ServerRecipe(
+                id = "01A05100-0000-7000-8000-0000000000R3",
+                name = "Aa Gappy Stew",
+                lastModifiedDate = "2026-08-01T00:00:00.000Z",
+                servings = 6,
+                rating = 4,
+                courseId = COURSE_ID,
+                categoryIds = listOf(CATEGORY_ID),
+            ),
+        )
+    }
+
+    /**
+     * The line under a recipe's name, and what is no longer above it.
+     *
+     * Four templates each carrying their own separator printed one for every field, present or
+     * not, so a recipe with no yield read "Breads .  . Serves 6". And the categories used to sit
+     * over the recipe as a row of outlined boxes, which is not what you want to see first.
+     */
+    @Test
+    fun theMetaLineSkipsMissingFieldsAndNoChipsSitAboveTheRecipe() {
+        val b = requireBrowser()
+        seedGappyRecipe()
+        val page = editorPage(b)
+
+        page.locator(".rrow").filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Aa Gappy Stew")
+        ).click()
+        page.waitForFunction(
+            "() => Alpine.${'$'}data(document.getElementById('app')).current?.name === 'Aa Gappy Stew'")
+        val meta = page.locator(".read__meta").textContent().trim()
+        assertEquals("Breads \u00b7 Serves 6 \u00b7 \u2605\u2605\u2605\u2605", meta)
+
+        assertEquals(0, page.locator(".read__chips").count(), "no chip row above the recipe")
+        assertEquals(
+            0, page.locator(".read wa-tag").count(),
+            "the category was assigned; it should simply not be drawn as a box here",
+        )
+        page.close()
+    }
+
+    /** Enough recipes to overflow the list column on the 1400x900 test viewport. */
+    private fun seedManyRecipes() = runBlocking {
+        val uid = UserRepository.findByUsername("tester")!!.id
+        ('A'..'T').forEachIndexed { i, c ->
+            RecipeRepository.upsert(
+                uid,
+                ServerRecipe(
+                    id = "01A05100-0000-7000-8000-0000000000%02d".format(i),
+                    name = "$c Recipe number $i",
+                    lastModifiedDate = "2026-08-01T00:00:00.000Z",
+                ),
+            )
+        }
+    }
+
+    /** The name on whichever row currently holds focus. */
+    private fun focusedRowName(page: Page) = page.evaluate(
+        """() => document.activeElement?.closest('.rrow')
+                 ?.querySelector('.rrow__name')?.textContent?.trim()"""
+    )
 
     /**
      * Assigning a category from the editor must reach the API. The recipe list already returns
@@ -671,6 +1293,97 @@ class EditorUiTest {
         page.close()
     }
 
+    /* -------------------------------------------------------- web import -- */
+
+    /**
+     * The client half of the import, which the server test can't see: what comes back has to land in
+     * the editor as a DRAFT — open for review, not written to the library. A mis-pasted URL should
+     * cost the user nothing, so nothing may be saved until they say so.
+     */
+    @Test
+    fun anImportedRecipeOpensForReviewWithoutBeingSaved() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        val before = runBlocking {
+            RecipeRepository.listForSync(UserRepository.findByUsername("tester")!!.id, null, null, 100).recipes.size
+        }
+
+        page.locator("section[aria-label='Recipes'] wa-dropdown wa-button").first().click()
+        page.locator("[data-testid=import-from-web]").click()
+        // Wait on a control INSIDE the dialog, not the <wa-dialog> host: the host has no box of its
+        // own (the panel lives in its shadow root), so waitForSelector's visibility check never
+        // passes on it.
+        page.waitForSelector("[data-testid=import-url]")
+
+        page.locator("[data-testid=import-url]").click()
+        page.keyboard().type("http://127.0.0.1:$sitePort/recipe")
+        page.locator("[data-testid=run-import]").click()
+        // Wait for either outcome, so a failed import reports the server's message instead of
+        // timing out on a dialog that is never going to open.
+        page.waitForFunction(
+            """() => { const d = Alpine.${'$'}data(document.getElementById('app'));
+                       return !!d.importError || !!d.current; }"""
+        )
+        assertEquals(
+            "", page.evaluate("() => Alpine.\$data(document.getElementById('app')).importError"),
+            "the import should have succeeded",
+        )
+
+        // It opens in the editor, filled in from the page.
+        page.waitForSelector("[data-testid=save]")
+        page.waitForFunction(
+            "() => Alpine.\$data(document.getElementById('app')).current?.name === 'Imported Cornbread'"
+        )
+        assertTrue(
+            page.evaluate("() => Alpine.\$data(document.getElementById('app')).isDraft") as Boolean,
+            "an imported recipe should be a draft until it is saved",
+        )
+
+        // And the library is untouched.
+        val after = runBlocking {
+            RecipeRepository.listForSync(UserRepository.findByUsername("tester")!!.id, null, null, 100).recipes
+        }
+        assertEquals(before, after.size, "import must not save anything")
+        assertTrue(after.none { it.name == "Imported Cornbread" })
+        page.close()
+    }
+
+    /** Saving the draft is what turns it into a recipe — and it only happens on purpose. */
+    @Test
+    fun savingAnImportedDraftAddsItToTheLibrary() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+
+        page.locator("section[aria-label='Recipes'] wa-dropdown wa-button").first().click()
+        page.locator("[data-testid=import-from-web]").click()
+        page.locator("[data-testid=import-url]").click()
+        page.keyboard().type("http://127.0.0.1:$sitePort/recipe")
+        page.locator("[data-testid=run-import]").click()
+        // Wait for either outcome, so a failed import reports the server's message instead of
+        // timing out on a dialog that is never going to open.
+        page.waitForFunction(
+            """() => { const d = Alpine.${'$'}data(document.getElementById('app'));
+                       return !!d.importError || !!d.current; }"""
+        )
+        assertEquals(
+            "", page.evaluate("() => Alpine.\$data(document.getElementById('app')).importError"),
+            "the import should have succeeded",
+        )
+        page.waitForSelector("[data-testid=save]")
+
+        page.locator("[data-testid=save]").click()
+        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).dirty")
+
+        val stored = runBlocking {
+            RecipeRepository.listForSync(UserRepository.findByUsername("tester")!!.id, null, null, 100).recipes
+        }
+        val imported = stored.singleOrNull { it.name == "Imported Cornbread" }
+        assertTrue(imported != null, "the saved draft should be in the library: ${stored.map { it.name }}")
+        assertEquals("8 wedges", imported.yield)
+        assertEquals(2, imported.ingredients?.size)
+        page.close()
+    }
+
     /* ------------------------------------------------------ shopping lists -- */
 
     private fun seedList(vararg items: Pair<String, Boolean>): ServerShoppingList = runBlocking {
@@ -730,6 +1443,74 @@ class EditorUiTest {
 
         val texts = storedList()?.contentsForList.orEmpty().map { it.text }
         assertTrue(texts.contains("Butter"), "Enter should have added and saved the item: $texts")
+        page.close()
+    }
+
+    /**
+     * The split button's menu is the only way to make the second list shape, so it is the only
+     * thing standing between the app and "checklists only".
+     */
+    @Test
+    fun theSplitButtonMenuCreatesAMarkdownList() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        page.locator("wa-tree-item[data-kind=shopping]").click()
+        page.waitForSelector("section[aria-label='Shopping lists'] wa-button-group")
+
+        page.locator("section[aria-label='Shopping lists'] wa-dropdown wa-button").click()
+        page.locator("[data-testid=new-markdown-list]").click()
+
+        // A Markdown list is a text area and no item rows -- that is the whole difference.
+        page.waitForSelector(".slist wa-textarea.freeform")
+        assertThat(page.locator(".slist .slist__add")).hasCount(0)
+
+        val stored = runBlocking {
+            ShoppingListRepository.list(UserRepository.findByUsername("tester")!!.id)
+        }
+        assertEquals(1, stored.size)
+        assertTrue(stored.single().isFreeform == true, "the created list should be freeform")
+        page.close()
+    }
+
+    /**
+     * Typing in the text area has to save, and it has to save without inventing a checklist.
+     *
+     * The second half is the part that was wrong: the app normalised every list it opened to have
+     * BOTH contents fields, so the first keystroke in a Markdown list wrote `contentsForList: []`
+     * over a column the server deliberately leaves NULL. Every other client reads that column, so
+     * "no checklist" quietly became "an empty checklist".
+     */
+    @Test
+    fun editingAMarkdownListSavesAndLeavesTheChecklistColumnNull() {
+        val b = requireBrowser()
+        val list = runBlocking {
+            val user = UserRepository.findByUsername("tester")!!
+            val l = ServerShoppingList(
+                id = LIST_ID, name = "Hardware", isFreeform = true,
+                contentsForFreeform = "## Hardware store\n",
+                lastModifiedDate = "2026-08-01T00:00:00.000Z",
+            )
+            (ShoppingListRepository.save(user.id, l) as ShoppingListRepository.SaveResult.Saved).list
+        }
+        assertEquals(null, list.contentsForList, "seeded row should start with a NULL checklist")
+
+        val page = editorPage(b)
+        page.locator("wa-tree-item[data-kind=shopping]").click()
+        page.locator("section[aria-label='Shopping lists'] .rrow").first().click()
+        page.waitForSelector(".slist wa-textarea.freeform")
+
+        page.locator(".slist wa-textarea.freeform").click()
+        page.keyboard().type("- 2x4 lumber")
+
+        page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).listDirty")
+        page.waitForTimeout(300.0)
+
+        val stored = storedList()
+        assertTrue(
+            stored?.contentsForFreeform.orEmpty().contains("2x4 lumber"),
+            "the Markdown text should have saved: ${stored?.contentsForFreeform}",
+        )
+        assertEquals(null, stored?.contentsForList, "a Markdown list must not grow a checklist")
         page.close()
     }
 
@@ -982,7 +1763,7 @@ class EditorUiTest {
     /**
      * Guards against the editor and the model drifting apart: every field NutritionInformation
      * defines gets an input, because both the editor and the reading view are generated from one
-     * list in editor.js.
+     * list in app.js.
      */
     @Test
     fun theNutritionEditorCoversEveryFieldInTheModel() {
@@ -992,7 +1773,7 @@ class EditorUiTest {
         page.locator("[data-testid=details-nutrition]").evaluate("el => el.open = true")
 
         // Counted from the model itself, not a literal: both sides of the old assertion derived
-        // from editor.js, so a field added to NutritionInformation and forgotten in the JS list
+        // from app.js, so a field added to NutritionInformation and forgotten in the JS list
         // left this green while the field was uneditable and invisible.
         val modelFields =
             com.enuvro.saltykmp.db.model.NutritionInformation.serializer().descriptor.elementsCount - 1

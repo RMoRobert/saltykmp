@@ -4,7 +4,6 @@ import com.enuvro.saltykmp.api.AuthRequest
 import com.enuvro.saltykmp.api.AuthResponse
 import com.enuvro.saltykmp.api.ServerRecipe
 import com.enuvro.saltykmp.auth.CSRF_HEADER
-import com.enuvro.saltykmp.auth.JwtService
 import com.enuvro.saltykmp.db.Categories
 import com.enuvro.saltykmp.db.Courses
 import com.enuvro.saltykmp.db.DatabaseFactory
@@ -49,7 +48,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * The JSON API accepts a Bearer JWT (native clients) or the web session cookie (browser UI).
+ * The JSON API accepts a Bearer device sync token (native clients) or the web session cookie (browser UI).
  *
  * These cover the three things that change when a second credential is allowed onto those routes: the
  * principal must still resolve to a user id, an unauthenticated call must fail as JSON rather than as a
@@ -57,7 +56,6 @@ import kotlin.test.assertTrue
  */
 class WebApiAuthTest {
 
-    private val jwt = JwtService("test-secret", "salty", "salty-app", validityMs = 60_000)
     private val imageStore = ImageStore(Files.createTempDirectory("salty-webapi-img"))
 
     companion object {
@@ -99,8 +97,8 @@ class WebApiAuthTest {
             url = "/login",
             formParameters = parameters { append("username", "tester"); append("password", "pw") },
         )
-        val html = client.get("/shoppingLists").bodyAsText()
-        val token = Regex("""name="csrf" value="([0-9a-f]+)"""").find(html)?.groupValues?.get(1)
+        val html = client.get("/app").bodyAsText()
+        val token = Regex("""data-csrf="([0-9a-f]+)"""").find(html)?.groupValues?.get(1)
         assertTrue(!token.isNullOrEmpty(), "expected a CSRF token in the rendered page")
         return token!!
     }
@@ -114,7 +112,7 @@ class WebApiAuthTest {
 
     @Test
     fun sessionCookieCanReadTheJsonApi() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { seedRecipe("r1", "Skillet Cornbread") }
 
         val web = jsonCookieClient()
@@ -127,7 +125,7 @@ class WebApiAuthTest {
 
     @Test
     fun unauthenticatedApiCallGets401JsonNotALoginRedirect() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
 
         val anon = createClient { followRedirects = false }
         val resp = anon.get("/api/recipes/r1")
@@ -141,7 +139,7 @@ class WebApiAuthTest {
 
     @Test
     fun sessionWriteWithoutCsrfHeaderIsRejectedAndChangesNothing() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { seedRecipe("r1", "Original Name") }
 
         val web = jsonCookieClient()
@@ -162,7 +160,7 @@ class WebApiAuthTest {
 
     @Test
     fun sessionWriteWithCsrfHeaderSucceeds() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { seedRecipe("r1", "Original Name") }
 
         val web = jsonCookieClient()
@@ -182,22 +180,32 @@ class WebApiAuthTest {
     }
 
     @Test
-    fun editorPageRequiresAuth() = testApplication {
-        application { installSalty(jwt, imageStore) }
+    fun appPageRequiresAuth() = testApplication {
+        application { installSalty(imageStore) }
         val anon = createClient { followRedirects = false }
-        val resp = anon.get("/editor")
+        val resp = anon.get("/app")
         assertEquals(HttpStatusCode.Found, resp.status)
         assertEquals("/login", resp.headers["Location"])
     }
 
+    /** `/editor` was this page's address while it was an experiment; bookmarks of it still exist. */
     @Test
-    fun editorPageCarriesTheSessionCsrfTokenForItsApiCalls() = testApplication {
-        application { installSalty(jwt, imageStore) }
+    fun oldEditorUrlRedirectsToTheApp() = testApplication {
+        application { installSalty(imageStore) }
+        val anon = createClient { followRedirects = false }
+        val resp = anon.get("/editor")
+        assertEquals(HttpStatusCode.MovedPermanently, resp.status)
+        assertEquals("/app", resp.headers["Location"])
+    }
+
+    @Test
+    fun appPageCarriesTheSessionCsrfTokenForItsApiCalls() = testApplication {
+        application { installSalty(imageStore) }
         val web = jsonCookieClient()
         val csrf = webLogin(web)
 
-        val html = web.get("/editor").bodyAsText()
-        assertTrue(html.contains("/static/app/editor.js"), "editor page should load the app bundle")
+        val html = web.get("/app").bodyAsText()
+        assertTrue(html.contains("/static/app/app.js"), "app page should load the app bundle")
         assertTrue(
             html.contains(csrf),
             "the page must hand the session CSRF token to the app, or every write would 403",
@@ -206,21 +214,21 @@ class WebApiAuthTest {
 
     @Test
     fun bearerTokenStillWorksAndNeedsNoCsrfHeader() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         runBlocking { seedRecipe("r1", "Original Name") }
 
         val api = createClient { install(ContentNegotiation) { json(appJson) } }
         val token = api.post("/api/auth/login") {
             contentType(ContentType.Application.Json)
-            setBody(AuthRequest("tester", "pw"))
-        }.body<AuthResponse>().token
+            setBody(AuthRequest("tester", "pw", deviceId = "test-device"))
+        }.body<AuthResponse>().deviceToken!!
 
         val resp = api.put("/api/recipes/r1") {
             bearerAuth(token)
             contentType(ContentType.Application.Json)
             setBody(ServerRecipe(id = "r1", name = "Edited By A Native Client", lastModifiedDate = "2026-02-02T00:00:00.000Z"))
         }
-        assertEquals(HttpStatusCode.OK, resp.status, "JWT callers must not be affected by the CSRF guard")
+        assertEquals(HttpStatusCode.OK, resp.status, "Bearer-token callers must not be affected by the CSRF guard")
 
         val stored = runBlocking {
             RecipeRepository.getById(UserRepository.findByUsername("tester")!!.id, "r1")
@@ -235,7 +243,7 @@ class WebApiAuthTest {
      */
     @Test
     fun aSessionStopsWorkingOnceTheUserIsDeleted() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val client = createClient { install(ContentNegotiation) { json(appJson) }; install(HttpCookies) }
         client.submitForm(
             url = "/login",
@@ -258,7 +266,7 @@ class WebApiAuthTest {
      */
     @Test
     fun deviceManagementWritesNeedTheCsrfHeaderToo() = testApplication {
-        application { installSalty(jwt, imageStore) }
+        application { installSalty(imageStore) }
         val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
         runBlocking { DeviceRepository.issueToken(uid, "phone", "Phone", "a".repeat(64)) }
 

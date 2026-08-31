@@ -6,6 +6,8 @@ import com.enuvro.saltykmp.db.DatabaseFactory.dbQuery
 import com.enuvro.saltykmp.util.WireDate
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.isNotNull
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.update
@@ -148,14 +150,21 @@ object DeviceRepository {
     }
 
     /**
-     * Revokes a specific device. Nulls the hash rather than deleting the row, so first/last sync dates
-     * survive: a revoked device that later re-enrols is recognisably the same device.
+     * Removes a device: revocation and forgetting are the same act, so the row goes.
+     *
+     * This used to null the hash and keep the row, on the theory that a device which later re-enrols
+     * is recognisably the same device. In practice nobody wants that continuity -- re-enrolling is
+     * how you replace a device, not how you resume one -- and keeping the row cost more than it paid:
+     * a null hash could mean revoked, never enrolled, or signed out by a password change, and the
+     * devices list had no way to tell those apart. Deleting collapses the first meaning entirely.
+     *
+     * The row carries the sync watermark, so removing it makes the device's next sync a first sync
+     * ([getOrCreate] reports `isFirstSync` from a null `lastSyncDate`). That is the conservative
+     * direction -- deletion inference is suppressed, so nothing is lost -- but it does mean a removed
+     * device that comes back re-uploads rows the server deleted meanwhile. Callers warn about that.
      */
-    suspend fun revokeToken(userId: String, deviceId: String): Boolean = dbQuery {
-        DeviceSyncs.update({ (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) }) {
-            it[tokenHash] = null
-            it[tokenIssuedAt] = null
-        } > 0
+    suspend fun removeDevice(userId: String, deviceId: String): Boolean = dbQuery {
+        DeviceSyncs.deleteWhere { (DeviceSyncs.deviceId eq deviceId) and (DeviceSyncs.userId eq userId) } > 0
     }
 
     /**
@@ -187,9 +196,24 @@ object DeviceRepository {
         } > 0
     }
 
-    /** Revokes every device for a user. Called on password change, and from "revoke all". */
+    /**
+     * Signs every device out. Called on password change, and from "revoke all".
+     *
+     * Nulls rather than deletes, unlike [removeDevice], and the asymmetry is deliberate: this fires
+     * on every password change, and destroying every watermark on the account would make each device
+     * re-merge its whole library on next sync -- resurrecting anything deleted server-side since.
+     * Changing your password should sign devices out, not rewrite your library. Deletion stays an
+     * explicit per-device act.
+     *
+     * The `tokenHash neq null` filter is what makes the return value a count of devices actually
+     * signed out. Exposed's `update` returns rows MATCHED, so filtering only on the user reported
+     * every row the account had ever registered -- "3 apps signed out" when none held a token.
+     *
+     * With enrolment mandatory at login and revocation deleting the row, this is now the only way a
+     * null `tokenHash` comes about, so it has exactly one meaning: signed out, awaiting re-sign-in.
+     */
     suspend fun revokeAllTokens(userId: String): Int = dbQuery {
-        DeviceSyncs.update({ DeviceSyncs.userId eq userId }) {
+        DeviceSyncs.update({ (DeviceSyncs.userId eq userId) and DeviceSyncs.tokenHash.isNotNull() }) {
             it[tokenHash] = null
             it[tokenIssuedAt] = null
         }

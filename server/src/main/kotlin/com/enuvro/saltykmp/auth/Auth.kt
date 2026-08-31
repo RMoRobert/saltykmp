@@ -1,7 +1,5 @@
 package com.enuvro.saltykmp.auth
 
-import com.auth0.jwt.JWT
-import com.auth0.jwt.algorithms.Algorithm
 import com.enuvro.saltykmp.api.AuthRequest
 import com.enuvro.saltykmp.api.DeviceRenameRequest
 import com.enuvro.saltykmp.api.AuthResponse
@@ -15,8 +13,6 @@ import io.ktor.server.auth.Authentication
 import io.ktor.server.auth.authenticate
 import io.ktor.server.auth.authentication
 import io.ktor.server.auth.bearer
-import io.ktor.server.auth.jwt.JWTPrincipal
-import io.ktor.server.auth.jwt.jwt
 import io.ktor.server.auth.principal
 import com.enuvro.saltykmp.web.UserSession
 import io.ktor.server.plugins.origin
@@ -28,11 +24,6 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.patch
 import io.ktor.server.routing.route
 import io.ktor.server.routing.post
-import java.time.ZoneOffset
-import java.util.Date
-
-const val JWT_REALM = "salty"
-const val JWT_AUTH = "auth-jwt"
 
 /**
  * Session provider for browser calls to the JSON API.
@@ -47,76 +38,33 @@ const val WEB_API_AUTH = "auth-web-api"
 /** Minimum length enforced when an admin sets/resets a user's password via the web UI. */
 const val MIN_PASSWORD_LENGTH = 8
 
-/** How a JWT was obtained. See [JwtService.generate]. */
-const val CLAIM_SOURCE = "src"
-const val SOURCE_PASSWORD = "pw"
-const val SOURCE_DEVICE_TOKEN = "dev"
-
-class JwtService(
-    private val secret: String,
-    private val issuer: String,
-    private val audience: String,
-    val validityMs: Long,
-) {
-    private val algorithm = Algorithm.HMAC256(secret)
-
-    val verifier = JWT.require(algorithm).withIssuer(issuer).withAudience(audience).build()
-
-    /**
-     * @param fromDeviceToken records that this JWT was minted by a sync token rather than by a
-     *   password. Nothing rejects it today — a JWT already reaches only the sync routes, so the
-     *   exchange grants nothing new — but without the claim the two are indistinguishable, and any
-     *   future route that accepts JWTs would silently become reachable by every enrolled device.
-     *   Stamping it now is what lets [RequirePasswordAuth] be strict later.
-     */
-    fun generate(userId: String, username: String, fromDeviceToken: Boolean = false): String {
-        val now = System.currentTimeMillis()
-        return JWT.create()
-            .withIssuer(issuer)
-            .withAudience(audience)
-            .withClaim("uid", userId)
-            .withClaim("username", username)
-            .withClaim(CLAIM_SOURCE, if (fromDeviceToken) SOURCE_DEVICE_TOKEN else SOURCE_PASSWORD)
-            // issuedAt lets the server invalidate tokens minted before a password change (see configureAuth).
-            .withIssuedAt(Date(now))
-            .withExpiresAt(Date(now + validityMs))
-            .sign(algorithm)
-    }
-}
-
+/**
+ * Installs the two credentials Salty has: per-device sync tokens, and the browser session (via
+ * [extra]).
+ *
+ * There used to be a third. A JWT sat between the device token and the sync routes: a client traded
+ * its token for a short-lived JWT and presented that instead. Removing it took nothing away, because
+ * the JWT provider was mounted on exactly the three route groups the device token already reached —
+ * and the web app never used one at all, it has always been a cookie session. What it took away was
+ * a real hole: the JWT validator checked that the user still existed and that the token predated no
+ * password change, but it never checked the device token was still valid, so revoking one device
+ * left its last JWT syncing until it expired. A token checked against the row on every request makes
+ * revocation take effect on the next one.
+ *
+ * The cost is a hash and a row lookup per request instead of a stateless signature check. For a
+ * personal recipe server that is not a trade worth making the other way.
+ */
 fun Application.configureAuth(
-    jwtService: JwtService,
     deviceTokens: DeviceTokenService,
     extra: io.ktor.server.auth.AuthenticationConfig.() -> Unit = {},
 ) {
     install(Authentication) {
-        jwt(JWT_AUTH) {
-            realm = JWT_REALM
-            verifier(jwtService.verifier)
-            validate { credential ->
-                val uid = credential.payload.getClaim("uid").asString() ?: return@validate null
-                // Signature/expiry are already checked by the verifier. Additionally reject tokens whose
-                // user was deleted, or that were minted before the user's last password change — so deleting
-                // a user or resetting a password takes effect immediately instead of lingering for the
-                // token's (up to 30-day) lifetime.
-                val user = UserRepository.findById(uid) ?: return@validate null
-                val issuedAt = credential.payload.issuedAt
-                if (issuedAt != null) {
-                    // Compare at whole-second granularity (JWT iat is seconds) so a token minted in the same
-                    // second as the change isn't falsely rejected.
-                    val issuedSec = issuedAt.toInstant().epochSecond
-                    val changedSec = user.passwordChangedAt.toEpochSecond(ZoneOffset.UTC)
-                    if (issuedSec < changedSec) return@validate null
-                }
-                JWTPrincipal(credential.payload)
-            }
-        }
         /**
-         * Per-device sync tokens, presented the same way a JWT is.
+         * Per-device sync tokens — the only credential a native client ever holds.
          *
-         * Declining a non-`salty_` token by returning null (rather than failing) is what lets both
-         * credential types share the Authorization header: Ktor moves on to the next provider, so a
-         * JWT is still handled by the jwt provider above whichever order they are listed in.
+         * Declining a non-`salty_` token by returning null (rather than failing) leaves Ktor free to
+         * try the next provider, which is what lets a sync route accept either this or the browser's
+         * session cookie on the same request path.
          *
          * This provider is deliberately NOT attached to every authenticated route. Scope is enforced
          * by omission: a device token can only authenticate where sync happens, because that is the
@@ -140,20 +88,19 @@ fun Application.configureAuth(
 /**
  * The authenticated user's id. Only valid inside authenticated routes.
  *
- * API routes accept either a Bearer JWT (native clients) or the web session cookie (the browser UI),
- * so resolve whichever principal the matching provider installed. Both are freshness-checked against
- * the user table on every request -- the JWT in [configureAuth]'s validator, the cookie in
- * [revalidateSession] -- so a deleted user or a password reset takes effect immediately on both.
+ * API routes accept either a Bearer device token (native clients) or the web session cookie (the
+ * browser UI), so resolve whichever principal the matching provider installed. Both are checked
+ * against the database on every request -- the token in [DeviceRepository.findByTokenHash], the
+ * cookie in [revalidateSession] -- so a deleted user, a password reset or a revoked device takes
+ * effect immediately on both.
  */
 fun ApplicationCall.userId(): String {
-    principal<JWTPrincipal>()?.let { return it.payload.getClaim("uid").asString() }
     principal<DeviceTokenPrincipal>()?.let { return it.userId }
     principal<UserSession>()?.let { return it.userId }
     error("userId() called outside an authenticated route")
 }
 
 fun Route.authRoutes(
-    jwtService: JwtService,
     deviceTokens: DeviceTokenService,
     throttle: LoginThrottle,
     accountLockout: AccountLockout,
@@ -181,42 +128,45 @@ fun Route.authRoutes(
         }
         throttle.recordSuccess(ip, req.username)
         accountLockout.recordSuccess(req.username)
-        val token = jwtService.generate(user.id, user.username)
 
-        // Enrolment rides on the login the client already performs: send a deviceId and get a sync
-        // token back, once. A client that sends nothing gets exactly the response it always did.
-        val deviceToken = req.deviceId?.takeIf { it.isNotBlank() }?.let { deviceId ->
-            val minted = deviceTokens.generate()
-            DeviceRepository.issueToken(user.id, deviceId, req.deviceName, deviceTokens.hash(minted))
-            minted
-        }
-        call.respond(
-            AuthResponse(
-                token = token,
-                username = user.username,
-                expiresIn = jwtService.validityMs,
-                deviceToken = deviceToken,
-            ),
-        )
+        // Enrolment rides on the login the client already performs, and is now the ONLY thing this
+        // endpoint is for: sign in once with the password, leave holding a sync token.
+        //
+        // deviceId is required. It was optional while clients that predated device tokens still had
+        // to work, and that optionality was the whole bug: such a client got no token, kept the
+        // password, and synced with it forever, while the device_sync row registerDevice created for
+        // it sat there with a null hash looking exactly like a revoked device. Rejecting the request
+        // is what makes "every syncing client is an enrolled client" true rather than merely
+        // intended -- and with it, a null token_hash now has exactly one meaning (see
+        // [DeviceRepository.revokeAllTokens]).
+        val deviceId = req.deviceId?.takeIf { it.isNotBlank() }
+            ?: return@post call.respond(
+                HttpStatusCode.BadRequest,
+                mapOf("error" to "This client is too old to sign in. Update it and try again."),
+            )
+        val minted = deviceTokens.generate()
+        DeviceRepository.issueToken(user.id, deviceId, req.deviceName, deviceTokens.hash(minted))
+        call.respond(AuthResponse(username = user.username, deviceToken = minted))
     }
 
     /**
-     * Trades a device sync token for a fresh JWT — the one call a client makes for the rest of its
-     * life, and the reason it never needs the password again.
+     * Confirms a device token is still good, and says who it belongs to.
      *
-     * Not an escalation: JWT_AUTH is mounted on the same three sync route groups DEVICE_TOKEN_AUTH
-     * is and nowhere else, so the JWT handed back reaches exactly what the token already reached.
-     * The minted JWT is stamped as device-sourced anyway, so a route that later accepts JWTs cannot
-     * silently widen that.
+     * This used to trade the token for a short-lived JWT, which is what a client then presented on
+     * every sync request. The trade is gone — the token authenticates the sync routes directly — but
+     * the round trip it provided is still worth one call: a client starting up needs to tell "the
+     * server disowned me, ask for the password again" apart from "the network is down", and a 401
+     * here says the first unambiguously.
+     *
+     * Reaching it at all requires a live token, so there is nothing to check in the body.
      */
     authenticate(DEVICE_TOKEN_AUTH) {
-        post("/api/auth/token") {
+        post("/api/auth/token/verify") {
             val principal = call.principal<DeviceTokenPrincipal>()
                 ?: return@post call.respond(HttpStatusCode.Unauthorized)
             val user = UserRepository.findById(principal.userId)
                 ?: return@post call.respond(HttpStatusCode.Unauthorized)
-            val jwt = jwtService.generate(user.id, user.username, fromDeviceToken = true)
-            call.respond(AuthResponse(token = jwt, username = user.username, expiresIn = jwtService.validityMs))
+            call.respond(AuthResponse(username = user.username))
         }
 
         /**
@@ -230,13 +180,13 @@ fun Route.authRoutes(
          * escalation [RequirePasswordAuth] exists to stop. A thief using this only logs themselves
          * out, which is a strictly better outcome than the alternative.
          *
-         * Answers 204 whether or not a row was updated: the caller is un-enrolling either way, and
+         * Answers 204 whether or not a row was removed: the caller is un-enrolling either way, and
          * the only way to reach here at all is to have presented a live token.
          */
         post("/api/auth/token/revoke") {
             val principal = call.principal<DeviceTokenPrincipal>()
                 ?: return@post call.respond(HttpStatusCode.Unauthorized)
-            DeviceRepository.revokeToken(principal.userId, principal.deviceId)
+            DeviceRepository.removeDevice(principal.userId, principal.deviceId)
             call.respond(HttpStatusCode.NoContent)
         }
     }
@@ -245,7 +195,7 @@ fun Route.authRoutes(
      * Managing devices — listing, renaming, and revoking devices *other than* the caller. Session
      * only, deliberately: revoking is how a stolen device is removed, so it must not be reachable by
      * a credential that device holds. [RequirePasswordAuth] enforces the same rule a second way, in
-     * case this mount list gains JWT_AUTH later.
+     * case this mount list gains a sync credential later.
      *
      * The exception is /api/auth/token/revoke above, which takes no deviceId and so can only revoke
      * the caller itself. Revoking anyone else stays here, behind a password.
@@ -268,9 +218,13 @@ fun Route.authRoutes(
                 val renamed = DeviceRepository.renameDevice(call.userId(), call.parameters["deviceId"]!!, name)
                 if (renamed) call.respond(HttpStatusCode.NoContent) else call.respond(HttpStatusCode.NotFound)
             }
+            // Removes the row outright rather than clearing its token: revoking and forgetting are one
+            // act (see [DeviceRepository.removeDevice]). 404 now means what it says -- there was no such
+            // device -- where before it could not be reached at all, because nulling an already-null
+            // hash still matched the row and reported success.
             delete("/{deviceId}") {
-                val revoked = DeviceRepository.revokeToken(call.userId(), call.parameters["deviceId"]!!)
-                if (revoked) call.respond(HttpStatusCode.NoContent) else call.respond(HttpStatusCode.NotFound)
+                val removed = DeviceRepository.removeDevice(call.userId(), call.parameters["deviceId"]!!)
+                if (removed) call.respond(HttpStatusCode.NoContent) else call.respond(HttpStatusCode.NotFound)
             }
             post("/revoke-all") {
                 val count = DeviceRepository.revokeAllTokens(call.userId())
@@ -281,8 +235,8 @@ fun Route.authRoutes(
 }
 
 /**
- * Re-checks a session cookie against the user table on every request, the way the JWT provider
- * re-checks a token.
+ * Re-checks a session cookie against the user table on every request, the way the device-token
+ * provider re-checks a token against its row.
  *
  * A signed cookie proves only that we minted it, not that the account still exists or that its
  * password hasn't since been reset. Without this, deleting a user or resetting a compromised
@@ -293,8 +247,11 @@ fun Route.authRoutes(
  */
 suspend fun revalidateSession(session: UserSession): UserSession? {
     val user = UserRepository.findById(session.userId) ?: return null
-    // Whole-second granularity: session issuedAt is epoch seconds, as JWT `iat` is.
+    // Whole-second granularity: session issuedAt is epoch seconds.
     val changedSec = user.passwordChangedAt.toEpochSecond(java.time.ZoneOffset.UTC)
     if (session.issuedAt < changedSec) return null
-    return session
+    // isAdmin comes from the row, not the cookie. The cookie's copy is a snapshot from login, and
+    // user administration now happens in a live screen you can demote yourself from -- so a stale
+    // `true` would leave the demoted admin managing users until they happened to sign out.
+    return if (user.isAdmin == session.isAdmin) session else session.copy(isAdmin = user.isAdmin)
 }

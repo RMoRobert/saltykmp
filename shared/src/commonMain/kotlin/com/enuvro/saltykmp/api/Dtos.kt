@@ -88,22 +88,30 @@ data class AuthRequest(
     val username: String,
     val password: String,
     /**
-     * Sent by a client that wants a device sync token back, so it never has to store the password.
-     * Absent from older clients, which keep getting exactly the response they always did.
+     * The device to enrol. Required — signing in and enrolling are one act — but nullable on the wire
+     * so a client that omits it gets a 400 explaining itself rather than a deserialization failure.
      */
     val deviceId: String? = null,
     val deviceName: String? = null,
 )
 
+/**
+ * What a successful sign-in or token check returns.
+ *
+ * `token`/`expiresIn` used to sit here, carrying a short-lived JWT that clients presented on every
+ * sync request. There is no JWT any more — the device sync token authenticates those routes itself —
+ * so the fields are gone rather than left behind holding nothing.
+ */
 @Serializable
 data class AuthResponse(
-    val token: String,
     val username: String,
-    val expiresIn: Long,
     /**
-     * The device sync token, returned exactly once, and only when the request carried a deviceId.
-     * Safe to add: every client decoder ignores unknown fields (ApiJson sets ignoreUnknownKeys,
-     * and Swift's JSONDecoder and System.Text.Json both do by default).
+     * The device sync token, returned exactly once — on the login that enrols the device. Absent
+     * from `/api/auth/token/verify`, whose caller is already holding it.
+     *
+     * Nullable for a second reason too: it is what a client gets back from a server older than
+     * mandatory enrolment, and recognising that as "this server cannot enrol me" beats crashing on
+     * a missing field.
      */
     val deviceToken: String? = null,
 )

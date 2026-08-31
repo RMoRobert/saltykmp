@@ -1,15 +1,86 @@
-{{<layout.mustache}}
-{{$content}}
-<h1>Sign in</h1>
-{{#error}}<p class="error-text">Invalid username or password.</p>{{/error}}
-<form action="/login" method="post">
-    <label>Username
-        <input type="text" name="username" required>
-    </label>
-    <label>Password
-        <input type="password" name="password" required>
-    </label>
-    <button type="submit">Sign in</button>
-</form>
-{{/content}}
-{{/layout.mustache}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Salty - Sign in</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+
+    <!-- Web Awesome 3, matching the app. dist-cdn, not dist: the dist/ build has bare module
+         specifiers a browser can't resolve, and every component silently fails to upgrade. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/webawesome.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/themes/default.css">
+    <!-- native.css, and this page is the one place it earns its keep: it styles plain <input> and
+         <button> from the same tokens the components use. That is deliberate here — the form is
+         built from native controls rather than <wa-input>, so signing in does not depend on the
+         component loader running. If the CDN is unreachable this page loses its styling and stays
+         a working HTML form, which is the difference between "looks wrong" and "locked out". -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/native.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/utilities.css">
+
+    <!-- Web Awesome's themes switch on a `wa-dark` class; they do NOT follow prefers-color-scheme
+         on their own. Inline and ahead of first paint, or a dark-mode user gets a white flash. -->
+    <script>
+      (function () {
+        var m = window.matchMedia("(prefers-color-scheme: dark)");
+        var apply = function () { document.documentElement.classList.toggle("wa-dark", m.matches); };
+        apply();
+        m.addEventListener("change", apply);
+      })();
+    </script>
+
+    <script type="module"
+            src="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/webawesome.loader.js"></script>
+
+    <style>
+      /* Centring a single card is the whole layout, and Web Awesome has no component for it. Every
+         value below is a WA token, so the page tracks the theme rather than pinning its own. */
+      body {
+        display: grid;
+        place-items: center;
+        min-height: 100svh;
+        padding: var(--wa-space-l);
+        background-color: var(--wa-color-surface-default);
+      }
+      .signin { width: 100%; max-width: 24rem; }
+      .signin__brand {
+        margin-block-end: var(--wa-space-l);
+        font-size: var(--wa-font-size-2xl);
+        font-weight: var(--wa-font-weight-heading);
+        text-align: center;
+      }
+      .signin__field { display: block; margin-block-end: var(--wa-space-m); }
+      .signin__submit { width: 100%; }
+    </style>
+</head>
+<body>
+
+<main class="signin">
+    <h1 class="signin__brand"><span aria-hidden="true">&#129474;</span> Salty</h1>
+
+    <wa-card>
+        <h2 slot="header">Sign in</h2>
+
+        {{#error}}
+        <wa-callout variant="danger" class="signin__field">
+            <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
+            Invalid username or password.
+        </wa-callout>
+        {{/error}}
+
+        <form action="/login" method="post">
+            <label class="signin__field">Username
+                <input type="text" name="username" autocomplete="username"
+                       autocapitalize="none" autocorrect="off" spellcheck="false" required autofocus>
+            </label>
+            <label class="signin__field">Password
+                <input type="password" name="password" autocomplete="current-password" required>
+            </label>
+            <button type="submit" class="wa-brand signin__submit">Sign in</button>
+        </form>
+    </wa-card>
+</main>
+
+</body>
+</html>

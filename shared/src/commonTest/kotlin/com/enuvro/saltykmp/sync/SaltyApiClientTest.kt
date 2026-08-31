@@ -30,7 +30,7 @@ class SaltyApiClientTest {
         val engine = MockEngine { request ->
             when (request.url.encodedPath) {
                 "/api/auth/login" -> respond(
-                    apiJson.encodeToString(AuthResponse("tok-123", "tester", 1000)),
+                    apiJson.encodeToString(AuthResponse("tester", deviceToken = "salty_tok-123")),
                     HttpStatusCode.OK,
                     headersOf(HttpHeaders.ContentType, "application/json"),
                 )
@@ -48,13 +48,13 @@ class SaltyApiClientTest {
         val store = InMemoryTokenStore()
         val api = SaltyApiClient("http://test", store, engine)
 
-        val auth = api.login("tester", "pw")
-        assertEquals("tok-123", auth.token)
-        assertEquals("tok-123", store.token)
+        val auth = api.login("tester", "pw", deviceId = "dev-1")
+        assertEquals("salty_tok-123", auth.deviceToken)
+        assertEquals("salty_tok-123", store.token, "the device token IS the credential later calls carry")
 
         val manifest = api.fetchManifest()
         assertEquals(listOf("a", "b"), manifest.map { it.id })
-        assertEquals("Bearer tok-123", manifestAuth)
+        assertEquals("Bearer salty_tok-123", manifestAuth)
     }
 
     @Test
@@ -197,7 +197,7 @@ class SaltyApiClientTest {
         val engine = MockEngine { request ->
             sentBody = (request.body as io.ktor.http.content.TextContent).text
             respond(
-                apiJson.encodeToString(AuthResponse("jwt-1", "tester", 1000, deviceToken = "salty_abc")),
+                apiJson.encodeToString(AuthResponse("tester", deviceToken = "salty_abc")),
                 HttpStatusCode.OK,
                 headersOf(HttpHeaders.ContentType, "application/json"),
             )
@@ -210,34 +210,59 @@ class SaltyApiClientTest {
         assertTrue(sentBody!!.contains("Test Device"))
     }
 
-    /** An unmodified client sends no device fields and is not enrolled behind its back. */
+    /**
+     * Every login enrols, so the deviceId always goes out — there is no longer a way to ask for a
+     * password-only session, which is what let a client sync unenrolled and invisible.
+     */
     @Test
-    fun loginWithoutADeviceIdAsksForNoToken() = runTest {
+    fun everyLoginSendsADeviceId() = runTest {
         var sentBody: String? = null
         val engine = MockEngine { request ->
             sentBody = (request.body as io.ktor.http.content.TextContent).text
             respond(
-                apiJson.encodeToString(AuthResponse("jwt-1", "tester", 1000)),
+                apiJson.encodeToString(AuthResponse("tester", deviceToken = "salty_abc")),
                 HttpStatusCode.OK,
                 headersOf(HttpHeaders.ContentType, "application/json"),
             )
         }
         val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
-        assertEquals(null, api.login("tester", "pw").deviceToken)
-        assertTrue(!sentBody!!.contains("deviceId"), "no device fields should be sent: $sentBody")
+        api.login("tester", "pw", deviceId = "dev-9")
+        assertTrue(sentBody!!.contains("dev-9"), "the deviceId must always be sent: $sentBody")
     }
 
-    /** The ordinary path once enrolled: token in, JWT out, and it is used for later calls. */
+    /**
+     * A server old enough to answer without a token is recognised rather than papered over: the
+     * caller decides, and [AppModule] treats it as a hard failure instead of silently keeping the
+     * password — the exact behaviour that produced unenrolled, password-syncing clients.
+     */
     @Test
-    fun aDeviceTokenMintsAJwtThatIsThenUsed() = runTest {
-        var mintAuth: String? = null
+    fun aServerThatCannotEnrolReturnsNoDeviceToken() = runTest {
+        val engine = MockEngine {
+            respond(
+                apiJson.encodeToString(AuthResponse("tester")),
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
+        assertEquals(null, api.login("tester", "pw", deviceId = "dev-1").deviceToken)
+    }
+
+    /**
+     * The ordinary path once enrolled: the stored token verifies itself, then carries every later
+     * call. It used to be traded for a JWT at this point; now nothing is exchanged, so the credential
+     * on the manifest request is the same one that started the session.
+     */
+    @Test
+    fun aVerifiedDeviceTokenIsWhatLaterCallsCarry() = runTest {
+        var verifyAuth: String? = null
         var manifestAuth: String? = null
         val engine = MockEngine { request ->
             when (request.url.encodedPath) {
-                "/api/auth/token" -> {
-                    mintAuth = request.headers[HttpHeaders.Authorization]
+                "/api/auth/token/verify" -> {
+                    verifyAuth = request.headers[HttpHeaders.Authorization]
                     respond(
-                        apiJson.encodeToString(AuthResponse("jwt-fresh", "tester", 1000)),
+                        apiJson.encodeToString(AuthResponse("tester")),
                         HttpStatusCode.OK,
                         headersOf(HttpHeaders.ContentType, "application/json"),
                     )
@@ -252,10 +277,10 @@ class SaltyApiClientTest {
         val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
         val auth = api.loginWithDeviceToken("salty_abc")
 
-        assertEquals("jwt-fresh", auth?.token)
-        assertEquals("Bearer salty_abc", mintAuth, "the token itself authenticates the mint call")
+        assertEquals("tester", auth?.username)
+        assertEquals("Bearer salty_abc", verifyAuth, "the token authenticates its own check")
         api.fetchManifest()
-        assertEquals("Bearer jwt-fresh", manifestAuth, "later calls use the minted JWT")
+        assertEquals("Bearer salty_abc", manifestAuth, "and keeps authenticating everything after")
     }
 
     /**
