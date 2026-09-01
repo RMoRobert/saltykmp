@@ -64,7 +64,8 @@ direction, remembered per browser); the recipe list; the read view with scaling,
 numbered steps that skip headings, times, notes and variations; **chef mode** with the screen wake
 lock; the full editor including the **photo**, classifiers, rating, difficulty, ingredient and
 direction rows with headings and **drag-to-reorder**, times, notes, variations and nutrition;
-favourite and want-to-make toggles; delete; import from web; shopping lists in both shapes
+favourite and want-to-make toggles; delete, singly or **several at once by checkbox**; import from
+web; shopping lists in both shapes
 (checklist and markdown) with headings, importance, clear-completed, rename, delete and the
 **three-way conflict merge**; Organize library; **user administration** and **device management**;
 the password change; **addressable dialogs** so Back closes one; an **unsaved-changes guard** on
@@ -113,6 +114,12 @@ agrees. Settings is a single scrolling column rather than tabs, which is what th
 guidance asks for: "present content from top to bottom in a single column, scrollable if necessary",
 with related settings grouped under section headers. Tabs appear once, inside the classifier editor,
 which is also what the Compose app does.
+
+**One row, two gestures.** The recipe list is `List`/`ListItem` with `selectionMode="multiselect"`,
+which normally means a click toggles the checkbox. Salty needs a click to *open* the recipe and the
+checkbox to select it for a bulk delete. `ListItem` fires `onAction` before it toggles and skips the
+toggle when the handler calls `preventDefault()`, so both fit on one row with no mode switch and no
+custom event handling: checkbox and Space select, click and Enter open.
 
 **Branding is a ramp, not an override.** `createLightTheme`/`createDarkTheme` take a sixteen-step
 brand ramp and derive every brand token from it, so `theme.js` adds Salty's blue without overriding
@@ -174,7 +181,7 @@ used Alpine or Web Awesome.
 
 ## Tests
 
-`ReactUiSmokeTest` — 27 Playwright tests: the bundle mounts and lists recipes fetched with the
+`ReactUiSmokeTest` — 30 Playwright tests: the bundle mounts and lists recipes fetched with the
 session cookie; opening a recipe renders the read view with sections, numbered steps and times;
 scaling rewrites quantities and leaves un-quantified lines alone; the editor opens on the recipe
 being read and its save reaches the database; chef mode takes the other panes away and Escape brings

@@ -22,7 +22,9 @@ import {
   Add24Regular,
   ArrowLeft24Regular,
   ArrowSort24Regular,
-  BookOpen24Regular,
+  Delete24Regular,
+  Dismiss24Regular,
+  Food24Regular,
   Heart20Filled,
   Link24Regular,
   MoreHorizontal24Regular,
@@ -106,20 +108,25 @@ const useStyles = makeStyles({
  * Space -- all of which this file used to do by hand and less well. `checkmark={null}` drops the
  * selection tick, because the selected row is shown by its background, not by a mark.
  */
-function Row({ recipe, selected, styles, sortBy }) {
+function Row({ recipe, selected, styles, sortBy, onOpen }) {
   const thumb = thumbUrl(recipe);
   const sub = rowSubtitle(recipe, sortBy);
   return (
     <ListItem
       value={recipe.id}
-      checkmark={null}
       className={mergeClasses(styles.row, selected && styles.rowSelected)}
+      onAction={(e) => {
+        // preventDefault stops ListItem toggling the checkbox: a click on the row body opens the
+        // recipe, and only the checkbox (or Space) changes what is selected for a bulk action.
+        e.preventDefault();
+        onOpen(recipe.id);
+      }}
     >
       {thumb ? (
         <img className={styles.thumb} src={thumb} alt="" loading="lazy" />
       ) : (
         <div className={mergeClasses(styles.thumb, styles.thumbEmpty)} aria-hidden="true">
-          <BookOpen24Regular />
+          <Food24Regular />
         </div>
       )}
 
@@ -166,6 +173,9 @@ export default function RecipeList({
   onSort,
   selectedId,
   onSelect,
+  checkedIds,
+  onCheckedChange,
+  onDeleteChecked,
   onNew,
   onImport,
   onBack,
@@ -175,68 +185,90 @@ export default function RecipeList({
 
   return (
     <>
-      <div className={styles.head}>
-        {/* Compact only: the rail is a drawer there, so the list needs its own way back to it. */}
-        {onBack ? (
-          <Tooltip content="Library" relationship="label">
-            <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} />
+      {checkedIds.length > 0 ? (
+        <div className={styles.head}>
+          <Tooltip content="Clear selection" relationship="label">
+            <Button
+              appearance="subtle"
+              icon={<Dismiss24Regular />}
+              onClick={() => onCheckedChange([])}
+            />
           </Tooltip>
-        ) : null}
-        <Subtitle1 className={styles.title}>{title}</Subtitle1>
-
-        <Menu
-          checkedValues={{ field: [sortBy], dir: [sortAsc ? "asc" : "desc"] }}
-          onCheckedValueChange={(_, data) => {
-            if (data.name === "field") onSort(data.checkedItems[0], sortAsc);
-            else onSort(sortBy, data.checkedItems[0] === "asc");
-          }}
-        >
-          <MenuTrigger disableButtonEnhancement>
-            <Tooltip content="Sort" relationship="label">
-              <Button appearance="subtle" icon={<ArrowSort24Regular />} />
+          <Subtitle1 className={styles.title}>
+            {checkedIds.length} selected
+          </Subtitle1>
+          <Button
+            appearance="subtle"
+            icon={<Delete24Regular />}
+            onClick={() => onDeleteChecked(checkedIds)}
+          >
+            Delete
+          </Button>
+        </div>
+      ) : (
+        <div className={styles.head}>
+          {/* Compact only: the rail is a drawer there, so the list needs its own way back to it. */}
+          {onBack ? (
+            <Tooltip content="Library" relationship="label">
+              <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} />
             </Tooltip>
-          </MenuTrigger>
-          <MenuPopover>
-            <MenuList>
-              {SORT_OPTIONS.map((o) => (
-                <MenuItemRadio key={o.key} name="field" value={o.key}>
-                  {o.label}
+          ) : null}
+          <Subtitle1 className={styles.title}>{title}</Subtitle1>
+
+          <Menu
+            checkedValues={{ field: [sortBy], dir: [sortAsc ? "asc" : "desc"] }}
+            onCheckedValueChange={(_, data) => {
+              if (data.name === "field") onSort(data.checkedItems[0], sortAsc);
+              else onSort(sortBy, data.checkedItems[0] === "asc");
+            }}
+          >
+            <MenuTrigger disableButtonEnhancement>
+              <Tooltip content="Sort" relationship="label">
+                <Button appearance="subtle" icon={<ArrowSort24Regular />} />
+              </Tooltip>
+            </MenuTrigger>
+            <MenuPopover>
+              <MenuList>
+                {SORT_OPTIONS.map((o) => (
+                  <MenuItemRadio key={o.key} name="field" value={o.key}>
+                    {o.label}
+                  </MenuItemRadio>
+                ))}
+                <MenuDivider />
+                {/* The direction's wording follows the field: "Ascending" on a date says nothing. */}
+                <MenuItemRadio name="dir" value="asc">
+                  {active.asc}
                 </MenuItemRadio>
-              ))}
-              <MenuDivider />
-              {/* The direction's wording follows the field: "Ascending" on a date says nothing. */}
-              <MenuItemRadio name="dir" value="asc">
-                {active.asc}
-              </MenuItemRadio>
-              <MenuItemRadio name="dir" value="desc">
-                {active.desc}
-              </MenuItemRadio>
-            </MenuList>
-          </MenuPopover>
-        </Menu>
+                <MenuItemRadio name="dir" value="desc">
+                  {active.desc}
+                </MenuItemRadio>
+              </MenuList>
+            </MenuPopover>
+          </Menu>
 
-        <Tooltip content="New recipe" relationship="label">
-          <Button appearance="subtle" icon={<Add24Regular />} onClick={onNew} />
-        </Tooltip>
+          <Tooltip content="New recipe" relationship="label">
+            <Button appearance="subtle" icon={<Add24Regular />} onClick={onNew} />
+          </Tooltip>
 
-        <Menu>
-          <MenuTrigger disableButtonEnhancement>
-            <Tooltip content="Other ways to add" relationship="label">
-              <Button appearance="subtle" icon={<MoreHorizontal24Regular />} />
-            </Tooltip>
-          </MenuTrigger>
-          <MenuPopover>
-            <MenuList>
-              <MenuItem icon={<Add24Regular />} onClick={onNew}>
-                New recipe
-              </MenuItem>
-              <MenuItem icon={<Link24Regular />} onClick={onImport}>
-                Import from web…
-              </MenuItem>
-            </MenuList>
-          </MenuPopover>
-        </Menu>
-      </div>
+          <Menu>
+            <MenuTrigger disableButtonEnhancement>
+              <Tooltip content="Other ways to add" relationship="label">
+                <Button appearance="subtle" icon={<MoreHorizontal24Regular />} />
+              </Tooltip>
+            </MenuTrigger>
+            <MenuPopover>
+              <MenuList>
+                <MenuItem icon={<Add24Regular />} onClick={onNew}>
+                  New recipe
+                </MenuItem>
+                <MenuItem icon={<Link24Regular />} onClick={onImport}>
+                  Import from web…
+                </MenuItem>
+              </MenuList>
+            </MenuPopover>
+          </Menu>
+        </div>
+      )}
 
       <SearchBox
         className={styles.search}
@@ -258,12 +290,9 @@ export default function RecipeList({
           <List
             className={styles.list}
             aria-label="Recipes"
-            selectionMode="single"
-            selectedItems={selectedId ? [selectedId] : []}
-            onSelectionChange={(_, data) => {
-              const id = [...data.selectedItems][0];
-              if (id) onSelect(id);
-            }}
+            selectionMode="multiselect"
+            selectedItems={checkedIds}
+            onSelectionChange={(_, data) => onCheckedChange([...data.selectedItems])}
           >
             {rows.map((r) => (
               <Row
@@ -272,6 +301,7 @@ export default function RecipeList({
                 selected={r.id === selectedId}
                 styles={styles}
                 sortBy={sortBy}
+                onOpen={onSelect}
               />
             ))}
           </List>

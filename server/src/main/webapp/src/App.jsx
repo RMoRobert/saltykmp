@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Body1,
   FluentProvider,
   OverlayDrawer,
+  Subtitle1,
   Toast,
   ToastTitle,
   Toaster,
@@ -63,6 +65,14 @@ const useStyles = makeStyles({
     position: "relative",
   },
   detailPane: { backgroundColor: tokens.colorNeutralBackground1 },
+  bulk: {
+    height: "100%",
+    display: "grid",
+    placeContent: "center",
+    justifyItems: "center",
+    gap: tokens.spacingVerticalS,
+    color: tokens.colorNeutralForeground3,
+  },
   /* An 8px grab strip along the pane's inner edge.
      Inside the pane, not straddling its border: the pane clips its overflow, so the half of a
      straddling strip that hung over the neighbour was invisible to hit-testing and the drag landed
@@ -180,6 +190,8 @@ export default function App() {
   const [listWidth, setListWidth] = useState(() => Number(readStored(LIST_WIDTH_KEY, 360)) || 360);
 
   const [selectedId, setSelectedId] = useState(null);
+  /** The checkbox set, for bulk actions. Separate from `selectedId`, which is what is being read. */
+  const [checkedIds, setCheckedIds] = useState([]);
   const [current, setCurrent] = useState(null);
   const [mode, setMode] = useState("read"); // read | edit
   const [dirty, setDirty] = useState(false);
@@ -237,6 +249,7 @@ export default function App() {
         setSection("recipes");
         setMode("read");
         setPane("list");
+        setCheckedIds([]);
         setDrawerOpen(false);
         setFilter({ kind, id, label: label || "All Recipes" });
         // The detail column follows the list, as in the Swift client where detail is driven by
@@ -341,6 +354,53 @@ export default function App() {
     [notify],
   );
 
+  /**
+   * Checking exactly one row opens it, so "one selected" and "one being read" cannot disagree.
+   * Past one there is nothing sensible to show in the detail pane, which is why it steps aside.
+   */
+  const changeChecked = useCallback(
+    (ids) => {
+      setCheckedIds(ids);
+      if (ids.length === 1) openRecipe(ids[0]);
+    },
+    [openRecipe],
+  );
+
+  const deleteChecked = useCallback(
+    (ids) =>
+      ask({
+        title: ids.length === 1 ? "Delete recipe" : `Delete ${ids.length} recipes`,
+        body:
+          ids.length === 1
+            ? "It will be removed from your library on every device."
+            : `All ${ids.length} will be removed from your library on every device.`,
+        confirmLabel: "Delete",
+        onConfirm: async () => {
+          // Sequential rather than parallel: a partial failure should leave the list showing what
+          // actually survived, and the server is one small machine.
+          const failed = [];
+          for (const id of ids) {
+            try {
+              await api.recipes.remove(id);
+            } catch {
+              failed.push(id);
+            }
+          }
+          const gone = ids.filter((id) => !failed.includes(id));
+          setRecipes((list) => list.filter((r) => !gone.includes(r.id)));
+          setCheckedIds(failed);
+          if (gone.includes(selectedId)) {
+            setCurrent(null);
+            setSelectedId(null);
+            setMode("read");
+          }
+          if (failed.length) notify(`Deleted ${gone.length}; ${failed.length} could not be`, "error");
+          else notify(gone.length === 1 ? "Recipe deleted" : `Deleted ${gone.length} recipes`);
+        },
+      }),
+    [ask, notify, selectedId],
+  );
+
   const deleteRecipe = useCallback(
     (recipe) =>
       ask({
@@ -430,7 +490,14 @@ export default function App() {
   };
 
   const detail =
-    section === "lists" ? (
+    // More than one recipe checked: there is no single thing to show, and showing whichever was
+    // last opened would quietly disagree with the selection beside it.
+    section === "recipes" && checkedIds.length > 1 ? (
+      <div className={styles.bulk}>
+        <Subtitle1>{checkedIds.length} recipes selected</Subtitle1>
+        <Body1>Use Delete in the list header, or clear the selection to read one.</Body1>
+      </div>
+    ) : section === "lists" ? (
       <ShoppingListPane.Detail
         id={selectedListId}
         notify={notify}
@@ -529,6 +596,9 @@ export default function App() {
         }}
         selectedId={selectedId}
         onSelect={openRecipe}
+        checkedIds={checkedIds}
+        onCheckedChange={changeChecked}
+        onDeleteChecked={deleteChecked}
         onNew={newRecipe}
         onImport={() => openDialog("import")}
         onBack={compact ? () => setDrawerOpen(true) : null}

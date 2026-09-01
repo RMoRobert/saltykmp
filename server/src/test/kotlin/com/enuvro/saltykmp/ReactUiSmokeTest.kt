@@ -824,6 +824,70 @@ class ReactUiSmokeTest {
         page.close()
     }
 
+    /**
+     * The checkbox selects for a bulk action; the row itself still opens. Fluent's ListItem fires
+     * onAction before it toggles and skips the toggle when the handler prevents default, which is
+     * what lets both live on one row without a mode switch.
+     */
+    @Test
+    fun checkingSeveralRecipesDeletesThemTogether() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        val rows = page.locator("[role=option]")
+        rows.nth(1).getByRole(AriaRole.CHECKBOX).click()
+        rows.nth(2).getByRole(AriaRole.CHECKBOX).click()
+
+        // Past one there is nothing single to show, so the detail pane steps aside.
+        page.waitForSelector("text=2 recipes selected")
+        assertTrue(page.getByText("2 selected").isVisible, "the list header counts the selection")
+
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Delete")
+        ).first().click()
+        page.getByRole(AriaRole.DIALOG).getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Delete")
+        ).first().click()
+
+        page.waitForFunction("() => document.querySelectorAll('[role=option]').length === 2")
+        assertEquals(2, storedCount(), "both were deleted on the server, not just in the list")
+        assertEquals(emptyList<String>(), errors, "bulk delete should not log console errors")
+        page.close()
+    }
+
+    /** Clearing the selection puts the list header, and the detail pane, back as they were. */
+    @Test
+    fun clearingTheSelectionRestoresTheHeader() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        val rows = page.locator("[role=option]")
+        rows.nth(1).getByRole(AriaRole.CHECKBOX).click()
+        rows.nth(2).getByRole(AriaRole.CHECKBOX).click()
+        page.waitForSelector("text=2 recipes selected")
+
+        page.getByLabel("Clear selection").click()
+        page.waitForSelector("text=All Recipes")
+        assertEquals(0, page.getByText("2 selected").count(), "the selection bar is gone")
+        assertTrue(page.getByLabel("Sort").isVisible, "and the ordinary header is back")
+        page.close()
+    }
+
+    /** One checked row is still a recipe to read, so the detail pane keeps showing it. */
+    @Test
+    fun checkingOneRecipeOpensIt() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.locator("[role=option]").first().getByRole(AriaRole.CHECKBOX).click()
+        page.waitForSelector("text=Ingredients")
+        assertTrue(
+            page.getByText("Australian Mini Meat Pies").last().isVisible,
+            "checking a single row opens it rather than emptying the pane",
+        )
+        page.close()
+    }
+
     /** Dialogs are addressable, so Back closes one rather than leaving the app. */
     @Test
     fun dialogsAreAddressableAndBackClosesThem() {
