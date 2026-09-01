@@ -9,11 +9,10 @@ import {
   tokens,
   useId,
   useToastController,
-  webDarkTheme,
-  webLightTheme,
 } from "@fluentui/react-components";
 
 import { api, deleteImage, uploadImage } from "./api";
+import { saltyDarkTheme, saltyLightTheme } from "./theme";
 import { matchesFilter, uuidv7, visibleRecipes, wireNow } from "./model";
 import {
   readStored,
@@ -552,7 +551,7 @@ export default function App() {
     );
 
   return (
-    <FluentProvider theme={dark ? webDarkTheme : webLightTheme}>
+    <FluentProvider theme={dark ? saltyDarkTheme : saltyLightTheme}>
       <div
         className={`${styles.root} ${chefMode ? styles.chef : ""} ${compact && !chefMode ? styles.compact : ""}`}
         style={chefMode || compact ? undefined : rootStyle}

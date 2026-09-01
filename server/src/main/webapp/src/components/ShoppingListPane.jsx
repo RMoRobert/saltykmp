@@ -60,7 +60,7 @@ const useStyles = makeStyles({
     color: "inherit",
     ":hover": { backgroundColor: tokens.colorNeutralBackground1Hover },
   },
-  selected: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  selected: { backgroundColor: tokens.colorBrandBackground2 },
   sub: { color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 },
   bar: {
     display: "flex",

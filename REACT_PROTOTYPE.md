@@ -40,6 +40,7 @@ That serves <http://localhost:5173> with hot reload and forwards `/api`, `/login
 ```
 server/src/main/webapp/
   src/api.js                      fetch wrapper: CSRF on writes, 401 → /login, server error text
+  src/theme.js                    Salty's brand ramp, and why it is not simply Salty's blue
   src/model.js                    ids, wire timestamps, ingredient scaling, sorting, display rules
   src/App.jsx                     shell, data loading, panes, the three-column layout
   src/hooks.js                    addressable dialogs, the wake lock, the unload guard, storage
@@ -112,6 +113,19 @@ agrees. Settings is a single scrolling column rather than tabs, which is what th
 guidance asks for: "present content from top to bottom in a single column, scrollable if necessary",
 with related settings grouped under section headers. Tabs appear once, inside the classifier editor,
 which is also what the Compose app does.
+
+**Branding is a ramp, not an override.** `createLightTheme`/`createDarkTheme` take a sixteen-step
+brand ramp and derive every brand token from it, so `theme.js` adds Salty's blue without overriding
+a single component. The catch is accessibility: the app's #0097F5 carries white text at only
+3.11:1, under AA's 4.5, and Fluent puts brand80 behind primary buttons with white on it. So the
+ramp keeps the hue and lands slot 80 on the lightest shade of it that passes (#007BC7, 4.51:1);
+Salty's actual blue comes out at slot 90, which is where Fluent uses it for accents and hover. The
+one place the brand does real work is the selected row and rail item, through
+`colorBrandBackground2` — a stock token, pale tint in light and deep tint in dark.
+
+**The type is Fluent's, deliberately.** `fontFamilyBase` is already a per-platform stack: Segoe UI
+on Windows, `-apple-system` on macOS, Roboto on Android. Pinning Segoe everywhere would ship a
+webfont to make a Mac look like Windows.
 
 **About belongs in Settings, not in a menu.** Microsoft's
 [app-settings guidance](https://learn.microsoft.com/en-us/windows/apps/design/app-settings/guidelines-for-app-settings)

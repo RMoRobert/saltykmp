@@ -1,5 +1,7 @@
 import {
   Button,
+  List,
+  ListItem,
   Menu,
   MenuDivider,
   MenuItem,
@@ -40,27 +42,19 @@ const useStyles = makeStyles({
   search: { margin: `0 ${tokens.spacingHorizontalM} ${tokens.spacingVerticalS}`, width: "auto" },
   scroll: { flex: 1, overflow: "hidden auto", paddingBottom: tokens.spacingVerticalM },
   list: { listStyle: "none", margin: 0, padding: 0 },
+  /* Layout only. The press, hover, focus ring and cursor all come from ListItem. */
   row: {
     display: "flex",
     alignItems: "center",
     gap: tokens.spacingHorizontalS,
-    width: "100%",
-    // Griffel sets no global box-sizing, so a 100%-wide row plus inline padding overflows the
-    // pane and clips whatever sits at its end -- here, the favourite heart.
     boxSizing: "border-box",
     padding: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalM}`,
-    border: "none",
-    background: "none",
-    textAlign: "start",
     cursor: "pointer",
-    color: "inherit",
-    borderRadius: tokens.borderRadiusMedium,
-    ":hover": { backgroundColor: tokens.colorNeutralBackground1Hover },
   },
-  rowSelected: {
-    backgroundColor: tokens.colorNeutralBackground1Selected,
-    ":hover": { backgroundColor: tokens.colorNeutralBackground1Selected },
-  },
+  /* The brand's tint, not a neutral grey: colorBrandBackground2 is Fluent's own token for a
+     brand wash behind content, and it is the one place in this UI where Salty's blue does real
+     work rather than decoration. */
+  rowSelected: { backgroundColor: tokens.colorBrandBackground2 },
   thumb: {
     flex: "0 0 auto",
     width: "48px",
@@ -104,66 +98,60 @@ const useStyles = makeStyles({
   centre: { display: "grid", placeItems: "center", padding: tokens.spacingVerticalXXL },
 });
 
-function Row({ recipe, selected, onSelect, styles, sortBy, tabStop, onKeyNav }) {
+/**
+ * One recipe.
+ *
+ * Fluent's ListItem rather than a hand-rolled row: with `selectionMode="single"` on the List it
+ * renders listbox/option semantics, carries the roving focus and arrow keys, and handles Enter and
+ * Space -- all of which this file used to do by hand and less well. `checkmark={null}` drops the
+ * selection tick, because the selected row is shown by its background, not by a mark.
+ */
+function Row({ recipe, selected, styles, sortBy }) {
   const thumb = thumbUrl(recipe);
   const sub = rowSubtitle(recipe, sortBy);
   return (
-    <li>
-      <div
-        className={mergeClasses(styles.row, selected && styles.rowSelected)}
-        role="option"
-        aria-selected={selected}
-        // Roving tabindex: the list is ONE tab stop, and the arrow keys move within it. A list of
-        // two hundred recipes each taking a tab stop is a keyboard trap in all but name.
-        tabIndex={tabStop ? 0 : -1}
-        onClick={() => onSelect(recipe.id)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onSelect(recipe.id);
-          } else {
-            onKeyNav(e);
-          }
-        }}
-      >
-        {thumb ? (
-          <img className={styles.thumb} src={thumb} alt="" loading="lazy" />
-        ) : (
-          <div className={mergeClasses(styles.thumb, styles.thumbEmpty)} aria-hidden="true">
-            <BookOpen24Regular />
-          </div>
-        )}
-
-        <div className={styles.text}>
-          <div className={styles.name} title={recipe.name || "Untitled"}>
-            {recipe.name || "Untitled"}
-          </div>
-          {sub ? (
-            <div className={styles.sub} title={sub}>
-              {sub}
-            </div>
-          ) : null}
+    <ListItem
+      value={recipe.id}
+      checkmark={null}
+      className={mergeClasses(styles.row, selected && styles.rowSelected)}
+    >
+      {thumb ? (
+        <img className={styles.thumb} src={thumb} alt="" loading="lazy" />
+      ) : (
+        <div className={mergeClasses(styles.thumb, styles.thumbEmpty)} aria-hidden="true">
+          <BookOpen24Regular />
         </div>
+      )}
 
-        <div className={styles.trailing}>
-          {recipe.rating ? (
-            <RatingDisplay
-              value={recipe.rating}
-              max={5}
-              size="small"
-              color="marigold"
-              valueText={null}
-            />
-          ) : null}
-          {/* Marked favourites only, and as a mark rather than a control. An outline on every row
-              is a column of buttons asking to be pressed, when the row's job is to be chosen; the
-              place to change it is the recipe itself. */}
-          {recipe.isFavorite ? (
-            <Heart20Filled className={styles.heart} aria-label="Favorite" />
-          ) : null}
+      <div className={styles.text}>
+        <div className={styles.name} title={recipe.name || "Untitled"}>
+          {recipe.name || "Untitled"}
         </div>
+        {sub ? (
+          <div className={styles.sub} title={sub}>
+            {sub}
+          </div>
+        ) : null}
       </div>
-    </li>
+
+      <div className={styles.trailing}>
+        {recipe.rating ? (
+          <RatingDisplay
+            value={recipe.rating}
+            max={5}
+            size="small"
+            color="marigold"
+            valueText={null}
+          />
+        ) : null}
+        {/* Marked favourites only, and as a mark rather than a control. An outline on every row is
+            a column of buttons asking to be pressed, when the row's job is to be chosen; the place
+            to change it is the recipe itself. */}
+        {recipe.isFavorite ? (
+          <Heart20Filled className={styles.heart} aria-label="Favorite" />
+        ) : null}
+      </div>
+    </ListItem>
   );
 }
 
@@ -267,27 +255,26 @@ export default function RecipeList({
             {query ? "No recipes match that search." : "Nothing here yet."}
           </p>
         ) : (
-          <ul className={styles.list} role="listbox" aria-label="Recipes">
+          <List
+            className={styles.list}
+            aria-label="Recipes"
+            selectionMode="single"
+            selectedItems={selectedId ? [selectedId] : []}
+            onSelectionChange={(_, data) => {
+              const id = [...data.selectedItems][0];
+              if (id) onSelect(id);
+            }}
+          >
             {rows.map((r) => (
               <Row
                 key={r.id}
                 recipe={r}
                 selected={r.id === selectedId}
-                onSelect={onSelect}
                 styles={styles}
                 sortBy={sortBy}
-                tabStop={r.id === (selectedId ?? rows[0]?.id)}
-                onKeyNav={(e) => {
-                  const delta = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-                  if (!delta) return;
-                  e.preventDefault();
-                  const i = rows.findIndex((x) => x.id === r.id);
-                  const next = e.currentTarget.parentElement?.parentElement?.children[i + delta];
-                  next?.querySelector("[role=option]")?.focus();
-                }}
               />
             ))}
-          </ul>
+          </List>
         )}
       </div>
     </>

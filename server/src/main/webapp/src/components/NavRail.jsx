@@ -59,7 +59,7 @@ const useStyles = makeStyles({
   /* The rail's own selected state. Fluent's Tree selection renders radio/checkbox indicators,
      which is a different idea from "this is the filter you are looking at". */
   selected: {
-    backgroundColor: tokens.colorNeutralBackground1Selected,
+    backgroundColor: tokens.colorBrandBackground2,
     fontWeight: tokens.fontWeightSemibold,
   },
   empty: {
