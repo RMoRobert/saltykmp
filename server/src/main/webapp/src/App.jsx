@@ -490,7 +490,6 @@ export default function App() {
     section,
     filter,
     onFilter: applyFilter,
-    recipes,
     courses,
     categories,
     tags,

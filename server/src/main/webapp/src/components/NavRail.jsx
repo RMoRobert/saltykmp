@@ -62,12 +62,6 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground1Selected,
     fontWeight: tokens.fontWeightSemibold,
   },
-  count: {
-    marginInlineStart: "auto",
-    paddingInlineStart: tokens.spacingHorizontalS,
-    color: tokens.colorNeutralForeground3,
-    fontSize: tokens.fontSizeBase200,
-  },
   empty: {
     padding: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalXL}`,
     color: tokens.colorNeutralForeground3,
@@ -82,8 +76,8 @@ const useStyles = makeStyles({
   },
 });
 
-/** A classifier group: a branch whose children filter the list, with the row count beside each. */
-function ClassifierGroup({ styles, kind, label, icon, items, filter, onFilter, countFor }) {
+/** A classifier group: a branch whose children filter the list. */
+function ClassifierGroup({ styles, kind, label, icon, items, filter, onFilter }) {
   return (
     <TreeItem itemType="branch" value={kind}>
       <TreeItemLayout iconBefore={icon}>{label}</TreeItemLayout>
@@ -108,7 +102,6 @@ function ClassifierGroup({ styles, kind, label, icon, items, filter, onFilter, c
                 )}
               >
                 {it.name || "Untitled"}
-                <span className={styles.count}>{countFor(kind, it.id)}</span>
               </TreeItemLayout>
             </TreeItem>
           ))
@@ -126,7 +119,6 @@ export default function NavRail({
   section,
   filter,
   onFilter,
-  recipes,
   courses,
   categories,
   tags,
@@ -137,18 +129,6 @@ export default function NavRail({
   onPreferences,
 }) {
   const styles = useStyles();
-
-  const countFor = (kind, id) =>
-    recipes.filter((r) =>
-      kind === "course"
-        ? r.courseId === id
-        : kind === "category"
-          ? (r.categoryIds || []).includes(id)
-          : (r.tagIds || []).includes(id),
-    ).length;
-
-  const favourites = recipes.filter((r) => r.isFavorite).length;
-  const wantToMake = recipes.filter((r) => r.wantToMake).length;
 
   if (!open) {
     return (
@@ -203,7 +183,6 @@ export default function NavRail({
             )}
           >
             All Recipes
-            <span className={styles.count}>{recipes.length}</span>
           </TreeItemLayout>
         </TreeItem>
 
@@ -219,7 +198,6 @@ export default function NavRail({
             )}
           >
             Favorites
-            <span className={styles.count}>{favourites}</span>
           </TreeItemLayout>
         </TreeItem>
 
@@ -235,7 +213,6 @@ export default function NavRail({
             )}
           >
             Want to Make
-            <span className={styles.count}>{wantToMake}</span>
           </TreeItemLayout>
         </TreeItem>
 
@@ -247,7 +224,6 @@ export default function NavRail({
           items={categories}
           filter={filter}
           onFilter={onFilter}
-          countFor={countFor}
         />
         <ClassifierGroup
           styles={styles}
@@ -257,7 +233,6 @@ export default function NavRail({
           items={courses}
           filter={filter}
           onFilter={onFilter}
-          countFor={countFor}
         />
         <ClassifierGroup
           styles={styles}
@@ -267,7 +242,6 @@ export default function NavRail({
           items={tags}
           filter={filter}
           onFilter={onFilter}
-          countFor={countFor}
         />
 
         {/* Clicking the group shows the lists index, as well as expanding it. Expanding alone
