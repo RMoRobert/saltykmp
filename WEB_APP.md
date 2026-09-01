@@ -194,14 +194,23 @@ name without a visible label, use `aria-label`.
 **Icons need no Font Awesome kit.** `<wa-icon name="plus">` and the components' internal icons both
 resolve from the CDN build.
 
-**`wa-dialog` does not reliably close when you flip `open` from outside.** Its close path is
-`await animateWithClass(el, "hide")`, and in 3.12.0 the shadow stylesheet defines `show-dialog`,
-`show-backdrop` and `pulse` keyframes — and nothing for hide. That await never settles. Closing via a
-click happens to leave the dialog off screen anyway; clearing an Alpine flag from a `popstate`
-handler leaves it **visible**, with both `show` and `hide` classes on it. So every programmatic close
-goes through the component's own `requestClose()` (`dismissDialog()` in `app.js`), which is the call
-its close button makes. `wa-hide` fires synchronously from it, so the handler still owns the state
-and the URL.
+**Close a `wa-dialog` through `requestClose()`, not by flipping `open` from outside.** Flipping it
+does not leave the dialog on screen in 3.12.0 — `handleOpenChange()` catches `open` going false
+while the inner `<dialog>` is still open and reroutes it through `requestClose()` itself — but it
+gets there the long way round: it first sets `open` back to **true**, so the host attribute bounces
+off and on again, and in the close-button case the `wa-hide` handler's own flag clear re-enters
+`handleOpenChange()` and fires a second, redundant `requestClose()`. Measured in a browser test,
+that detour leaves the host `open` and the inner `<dialog>` `:modal` for roughly 200–450ms after the
+click — long enough that a screenshot taken straight after one looks exactly like a dialog that
+never closed. So every programmatic close goes through `requestClose()` (`dismissDialog()` and
+`dismissNewTag()` in `app.js`), which is the call its close button makes: one hide, no bounce.
+`wa-hide` fires synchronously from it, so the handler still owns the state and the URL.
+
+The reason to keep this a rule rather than a preference is `animateWithClass()`, which every close
+awaits: it returns early **without resolving** if the class it is asked to add is already on the
+element. A second `hide` that overlaps the first therefore awaits a promise that never settles, and
+that call never reaches `dialog.close()`. Today the first close still completes and the dialog goes
+away; the margin is not worth spending.
 
 **`wa-hide` fires when a dialog closes for *any* reason, including because a different one opened.**
 With one shared `dialog` field, the outgoing dialog's hide event closed its replacement in the same

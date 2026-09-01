@@ -698,12 +698,13 @@
 
   <!-- Nested inside nothing: a dialog opened from within the editor dialog would stack, so this
        is a sibling and the editor stays open behind it. -->
-  <wa-dialog label="New tag" :open="newTagOpen" @wa-hide="if ($event.target === $el) { newTagOpen = false; newTagName = ''; }">
+  <wa-dialog label="New tag" data-dialog="new-tag" :open="newTagOpen"
+             @wa-hide="if ($event.target === $el) { newTagOpen = false; newTagName = ''; }">
     <wa-input label="Tag name" with-label x-model="newTagName" autofocus
               @keydown.enter.prevent="createTagInline()"></wa-input>
-    <wa-button slot="footer" appearance="plain" @click="newTagOpen = false; newTagName = ''">Cancel</wa-button>
+    <wa-button slot="footer" appearance="plain" @click="dismissNewTag()">Cancel</wa-button>
     <wa-button slot="footer" appearance="accent" variant="brand" data-testid="create-tag"
-               :disabled="!newTagName.trim()" @click="createTagInline()">Add</wa-button>
+               :disabled="!newTagReady" @click="createTagInline()">Add</wa-button>
   </wa-dialog>
 
   <wa-dialog label="Delete list" :open="confirmDeleteList" @wa-hide="confirmDeleteList = false">

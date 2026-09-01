@@ -278,6 +278,7 @@ function saltyApp() {
     newClassifier: { category: "", course: "", tag: "" },
     newTagOpen: false,
     newTagName: "",
+    newTagCreating: false,
     // Image changes are staged, not applied on the spot. The editor is a modal with Save, Revert
     // and Done, and a control that wrote through immediately would sit outside that contract --
     // Revert would silently fail to undo it. Applied by applyImageChanges() during save().
@@ -1080,12 +1081,11 @@ function saltyApp() {
      * Hash is the source of truth; this pulls state into line with it (Back, or a pasted URL).
      *
      * The outgoing dialog is closed by calling the component's own requestClose(), NOT by letting
-     * the `:open` binding go false. Web Awesome 3.12's wa-dialog closes by awaiting
-     * `animateWithClass(el, "hide")`, and its shadow stylesheet defines show-dialog/show-backdrop
-     * keyframes but nothing for hide — so that await never settles. Closing through requestClose()
-     * still leaves the component believing it is open, but it does remove the visible dialog;
-     * flipping `open` from outside leaves it on screen. Every close therefore takes the same route
-     * the close button does.
+     * the `:open` binding go false. Web Awesome 3.12's wa-dialog does eventually close either way
+     * — handleOpenChange() catches `open` going false under it and reroutes to requestClose() —
+     * but only after setting `open` back to true first, so the attribute bounces and the modal
+     * stays up for a few hundred ms. See WEB_APP.md for the measurement. Every close therefore
+     * takes the same route the close button does.
      *
      * State is assigned BEFORE the close, so the wa-hide handler's own guard short-circuits rather
      * than racing this method for the URL.
@@ -1127,12 +1127,23 @@ function saltyApp() {
      * of the way" path calls.
      *
      * It goes through the component rather than clearing `dialog` and letting the `:open` binding
-     * do it, for the reason spelled out on applyHash(): wa-dialog does not reliably remove itself
-     * from the screen when `open` is flipped from outside. requestClose() dispatches wa-hide
+     * do it, for the reason spelled out on applyHash(): flipping `open` from outside takes a
+     * detour that leaves the modal up for a few hundred ms. requestClose() dispatches wa-hide
      * synchronously, so closeDialog() below still runs and still owns the state and the URL.
      */
     dismissDialog() {
       if (this.dialog) this._dismissDialogElement(this.dialog);
+    },
+
+    /**
+     * The same close for the one dialog that is not routed but is still closed from script: the
+     * New tag sheet, which createTagInline() dismisses once the tag is attached.
+     *
+     * It carries a `data-dialog` name of its own purely so this lookup has something to find; the
+     * name is not a route, and `routedDialogs` deliberately does not list it.
+     */
+    dismissNewTag() {
+      this._dismissDialogElement("new-tag");
     },
 
     /**
@@ -1383,31 +1394,45 @@ function saltyApp() {
     },
 
 
+    /** What Add is bound to, so the button greys out while the POST is in flight. */
+    get newTagReady() {
+      return !this.newTagCreating && this.newTagName.trim().length > 0;
+    },
+
     /**
      * Creates a tag and attaches it to the open recipe without leaving the editor. Tags get
      * invented while writing a recipe far more often than courses or categories do, which is why
      * this shortcut exists here and not for the others -- the library manager still handles those.
+     *
+     * `newTagCreating` is what stops a second Add landing while the first POST is out. The disabled
+     * button is not enough on its own: Enter in the name field reaches here too, and the duplicate
+     * check above it looks in `this.tags`, which the response has not been pushed into yet -- so
+     * two clicks read an empty result each and created two tags with the same name. It is set
+     * before the await and cleared in `finally`, the same shape createUser() uses.
      */
     async createTagInline() {
-      const name = (this.newTagName || "").trim();
-      if (!name) return;
+      if (!this.newTagReady) return;
+      const name = this.newTagName.trim();
       const existing = this.tags.find(t => (t.name || "").toLowerCase() === name.toLowerCase());
       if (existing) {
         this.attachTag(existing.id);
-        this.newTagOpen = false; this.newTagName = "";
+        this.dismissNewTag();
         this.notify(`"${existing.name}" already existed; attached it`);
         return;
       }
+      this.newTagCreating = true;
       try {
         const created = await api("POST", "/api/tags",
                                   { id: uuidv7(), name, lastModifiedDate: wireNow() });
         this.tags.push(created);
         this.tags.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
         this.attachTag(created.id);
-        this.newTagOpen = false; this.newTagName = "";
+        this.dismissNewTag();
         this.notify(`Added ${name}`);
       } catch (e) {
         this.notify(`Couldn't add tag: ${e.message}`, "danger");
+      } finally {
+        this.newTagCreating = false;
       }
     },
 

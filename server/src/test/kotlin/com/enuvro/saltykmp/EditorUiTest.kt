@@ -1645,6 +1645,21 @@ class EditorUiTest {
         page.waitForFunction(
             "() => Alpine.\$data(document.getElementById('app')).tags.some(t => t.name === 'Sheet Pan')")
 
+        // Adding a tag has to put the sheet away as well as create the tag. This went unasserted
+        // for a while, and it is not the kind of thing the rest of the test would catch: the tag
+        // lands, the toast fires and the recipe saves whether or not the modal is still covering
+        // the editor.
+        //
+        // On the component's own `open`, not isVisible() -- a wa-dialog host has no box of its
+        // own, for the reason spelled out on cancelAndSaveBothCloseTheDialog. And a wait rather
+        // than a bare assert, because closing is animated either way; the failure this guards
+        // against is a sheet that never closes, not one that takes a frame to.
+        page.waitForFunction(
+            "() => !document.querySelector('wa-dialog[data-dialog=\"new-tag\"]').hasAttribute('open')")
+        assertEquals(false, page.evaluate(
+            "() => Alpine.\$data(document.getElementById('app')).newTagOpen"),
+            "the sheet's own flag should be cleared by its wa-hide handler")
+
         page.locator("[data-testid=save]").click()
         page.waitForFunction("() => !Alpine.\$data(document.getElementById('app')).dirty")
 
@@ -1652,6 +1667,50 @@ class EditorUiTest {
             RecipeRepository.getById(UserRepository.findByUsername("tester")!!.id, RECIPE_ID)
         }
         assertEquals(1, stored?.tagIds?.size, "the new tag should be attached to the recipe")
+        page.close()
+    }
+
+    /**
+     * Two Adds in one tick must produce one tag, not two.
+     *
+     * The duplicate check in createTagInline() reads `this.tags`, which the POST's response has not
+     * been pushed into yet, so a second entry landing before the first returns finds nothing and
+     * posts again -- leaving two tags with the same name and no way to tell them apart in the UI.
+     *
+     * Driven through the name field's Enter binding rather than the button, because that is the
+     * route the disabled attribute does not cover: `:disabled` only stops the second *click*.
+     * Both keydowns are dispatched synchronously, which is what a held Enter key does.
+     */
+    @Test
+    fun addingATagTwiceInOneTickCreatesOneTag() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
+        page.locator("[data-testid=edit]").click()
+        page.waitForSelector(".edit")
+
+        page.locator("[data-testid=new-tag]").click()
+        page.waitForSelector("[data-testid=create-tag]")
+        page.locator("wa-dialog[data-dialog='new-tag'] wa-input").evaluate(
+            """el => {
+                 el.value = 'Sheet Pan';
+                 el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                 const enter = () => el.dispatchEvent(new KeyboardEvent(
+                     'keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+                 enter(); enter();
+               }"""
+        )
+        page.waitForFunction(
+            "() => !document.querySelector('wa-dialog[data-dialog=\"new-tag\"]').hasAttribute('open')")
+
+        val tags = runBlocking {
+            LibraryRepository.listTags(UserRepository.findByUsername("tester")!!.id)
+        }
+        assertEquals(
+            listOf("Sheet Pan"), tags.map { it.name },
+            "the second Enter should have been dropped while the first POST was in flight",
+        )
         page.close()
     }
 
