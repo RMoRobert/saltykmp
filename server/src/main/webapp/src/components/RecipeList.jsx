@@ -18,10 +18,10 @@ import {
 } from "@fluentui/react-components";
 import {
   Add24Regular,
+  ArrowLeft24Regular,
   ArrowSort24Regular,
   BookOpen24Regular,
   Heart20Filled,
-  Heart20Regular,
   Link24Regular,
   MoreHorizontal24Regular,
 } from "@fluentui/react-icons";
@@ -95,10 +95,7 @@ const useStyles = makeStyles({
     gap: tokens.spacingHorizontalXXS,
     flex: "0 0 auto",
   },
-  heart: {
-    minWidth: "24px",
-    color: tokens.colorPaletteRedForeground1,
-  },
+  heart: { color: tokens.colorPaletteRedForeground1 },
   empty: {
     padding: tokens.spacingHorizontalXXL,
     textAlign: "center",
@@ -107,21 +104,25 @@ const useStyles = makeStyles({
   centre: { display: "grid", placeItems: "center", padding: tokens.spacingVerticalXXL },
 });
 
-function Row({ recipe, selected, onSelect, onToggleFavorite, styles }) {
+function Row({ recipe, selected, onSelect, styles, sortBy, tabStop, onKeyNav }) {
   const thumb = thumbUrl(recipe);
-  const sub = rowSubtitle(recipe);
+  const sub = rowSubtitle(recipe, sortBy);
   return (
     <li>
       <div
         className={mergeClasses(styles.row, selected && styles.rowSelected)}
         role="option"
         aria-selected={selected}
-        tabIndex={0}
+        // Roving tabindex: the list is ONE tab stop, and the arrow keys move within it. A list of
+        // two hundred recipes each taking a tab stop is a keyboard trap in all but name.
+        tabIndex={tabStop ? 0 : -1}
         onClick={() => onSelect(recipe.id)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             onSelect(recipe.id);
+          } else {
+            onKeyNav(e);
           }
         }}
       >
@@ -154,21 +155,12 @@ function Row({ recipe, selected, onSelect, onToggleFavorite, styles }) {
               valueText={null}
             />
           ) : null}
-          <Tooltip
-            content={recipe.isFavorite ? "Remove from favorites" : "Add to favorites"}
-            relationship="label"
-          >
-            <Button
-              appearance="transparent"
-              size="small"
-              className={mergeClasses(recipe.isFavorite && styles.heart)}
-              icon={recipe.isFavorite ? <Heart20Filled /> : <Heart20Regular />}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleFavorite(recipe);
-              }}
-            />
-          </Tooltip>
+          {/* Marked favourites only, and as a mark rather than a control. An outline on every row
+              is a column of buttons asking to be pressed, when the row's job is to be chosen; the
+              place to change it is the recipe itself. */}
+          {recipe.isFavorite ? (
+            <Heart20Filled className={styles.heart} aria-label="Favorite" />
+          ) : null}
         </div>
       </div>
     </li>
@@ -188,7 +180,7 @@ export default function RecipeList({
   onSelect,
   onNew,
   onImport,
-  onToggleFavorite,
+  onBack,
 }) {
   const styles = useStyles();
   const active = SORT_OPTIONS.find((o) => o.key === sortBy) ?? SORT_OPTIONS[0];
@@ -196,6 +188,12 @@ export default function RecipeList({
   return (
     <>
       <div className={styles.head}>
+        {/* Compact only: the rail is a drawer there, so the list needs its own way back to it. */}
+        {onBack ? (
+          <Tooltip content="Library" relationship="label">
+            <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} />
+          </Tooltip>
+        ) : null}
         <Subtitle1 className={styles.title}>{title}</Subtitle1>
 
         <Menu
@@ -276,8 +274,17 @@ export default function RecipeList({
                 recipe={r}
                 selected={r.id === selectedId}
                 onSelect={onSelect}
-                onToggleFavorite={onToggleFavorite}
                 styles={styles}
+                sortBy={sortBy}
+                tabStop={r.id === (selectedId ?? rows[0]?.id)}
+                onKeyNav={(e) => {
+                  const delta = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+                  if (!delta) return;
+                  e.preventDefault();
+                  const i = rows.findIndex((x) => x.id === r.id);
+                  const next = e.currentTarget.parentElement?.parentElement?.children[i + delta];
+                  next?.querySelector("[role=option]")?.focus();
+                }}
               />
             ))}
           </ul>

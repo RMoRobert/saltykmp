@@ -21,6 +21,7 @@ import {
 import {
   Add20Regular,
   ArrowExit20Regular,
+  ArrowLeft24Regular,
   BookOpen48Regular,
   Bookmark20Filled,
   Bookmark20Regular,
@@ -46,6 +47,7 @@ const useStyles = makeStyles({
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   scroll: { flex: 1, overflow: "hidden auto" },
+  barSpace: { flex: 1 },
   doc: {
     maxWidth: "56rem",
     margin: "0 auto",
@@ -122,6 +124,7 @@ export default function RecipeDetail({
   recipe,
   courses,
   chefMode,
+  onBack,
   onEdit,
   onDelete,
   onToggleFavorite,
@@ -169,6 +172,12 @@ export default function RecipeDetail({
           </>
         ) : (
           <>
+            {onBack ? (
+              <Tooltip content="Back to the list" relationship="label">
+                <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} />
+              </Tooltip>
+            ) : null}
+            <span className={styles.barSpace} />
             <Button appearance="subtle" icon={<PlayCircle20Regular />} onClick={onEnterChefMode}>
               Chef mode
             </Button>

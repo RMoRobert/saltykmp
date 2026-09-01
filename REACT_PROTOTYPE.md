@@ -8,11 +8,11 @@ The Alpine app is gone from this branch — `app.js`, `app.css`, `icons.js` and 
 deleted. `main` still has all of it, and the in-progress `openDraft` work that was uncommitted is
 preserved on the `alpine-wip` branch.
 
-**What that costs, stated plainly:** `EditorUiTest`'s 58 tests went with it. They encoded real
-behaviour, and the nine smoke tests here do not replace them. This branch is green and it is less
-covered than `main` — those two facts are both true and the second is the one to remember. Recover
-any of them from `git show main:server/src/test/kotlin/com/enuvro/saltykmp/EditorUiTest.kt` when
-porting a behaviour back.
+`EditorUiTest`'s behaviours have since been **ported** — `ReactUiSmokeTest` is 27 tests, and the
+whole server suite is 172 and green. What did not come across was anything testing Web Awesome
+itself (component upgrade, the `wa-page` toggle, Alpine's `$data`), because those tested the library
+rather than Salty. The originals are still readable at
+`git show main:server/src/test/kotlin/com/enuvro/saltykmp/EditorUiTest.kt`.
 
 Notes are kept here rather than in `WEB_APP.md` because that file has your own in-progress edits;
 merging the two is a decision for whoever keeps this branch.
@@ -83,6 +83,15 @@ Parity with the Alpine app is reached. What is left is smaller than it was:
 - **Keyboard reordering by drag.** Rows drag with the mouse and move with the up/down buttons, so
   both routes exist, but there is no keyboard equivalent of the drag itself.
 
+Porting the tests found four things the app was missing outright, all now fixed: there was **no
+compact layout** at all (three fixed columns on a phone), the list did not swap its subtitle for the
+**last-made date** under that ordering, an emptied **nutrition** record was stored as an object of
+nulls instead of being removed, and a **tag could not be created from inside the editor**. It also
+found two real bugs: creating any classifier **400'd**, because the route receives a whole
+`ServerCategory` and its `id` is non-null while the app sent only a name; and the **divider could
+not be dragged**, because the pane clips its overflow and the strip straddled the border, so half of
+it — including the half being aimed at — was invisible to hit-testing.
+
 Drag-and-drop is hand-rolled on the HTML5 drag events rather than pulling in `@dnd-kit`: it is one
 handle, one drop indicator and about forty lines, against a dependency whose main draw — accessible
 keyboard dragging — the up/down buttons already cover.
@@ -93,6 +102,16 @@ keyboard dragging — the up/down buttons already cover.
 Fluent's *web components* v3 does not have: `Card`, `Toast`, an interactive `Rating` and
 `SpinButton`, plus `Tree` for the library rail. Nothing had to be hand-rolled to Fluent's spec,
 which was the whole reason for choosing v9 over the web components.
+
+**Where things go, when the other clients already decided.** Two placements were checked against
+the Compose app rather than argued from taste. "Edit Classifiers" sits at the bottom of the rail
+beside Settings because that is where the Compose drawer puts it, for a reason its own comment
+gives: editing classifiers is rare and app-level, so it is one row rather than an "Edit…" hung off
+each of the three groups, and the recipe list's toolbar is for actions on the list. The Uno app
+agrees. Settings is a single scrolling column rather than tabs, which is what the same Microsoft
+guidance asks for: "present content from top to bottom in a single column, scrollable if necessary",
+with related settings grouped under section headers. Tabs appear once, inside the classifier editor,
+which is also what the Compose app does.
 
 **About belongs in Settings, not in a menu.** Microsoft's
 [app-settings guidance](https://learn.microsoft.com/en-us/windows/apps/design/app-settings/guidelines-for-app-settings)
@@ -141,7 +160,7 @@ used Alpine or Web Awesome.
 
 ## Tests
 
-`ReactUiSmokeTest` — nine Playwright tests: the bundle mounts and lists recipes fetched with the
+`ReactUiSmokeTest` — 27 Playwright tests: the bundle mounts and lists recipes fetched with the
 session cookie; opening a recipe renders the read view with sections, numbered steps and times;
 scaling rewrites quantities and leaves un-quantified lines alone; the editor opens on the recipe
 being read and its save reaches the database; chef mode takes the other panes away and Escape brings
@@ -151,7 +170,7 @@ rather than anywhere more prominent. Most assert **no console errors**, which ma
 more here than in the Alpine app: a React component that throws during render unmounts its subtree
 and leaves a blank pane, and a blank pane looks exactly like an empty one in a screenshot.
 
-The whole server suite is **153 tests in about 70 seconds**. It was 45 minutes while `EditorUiTest`
+The whole server suite is **172 tests in about 100 seconds**. It was 45 minutes while `EditorUiTest`
 was still here, because each of its 58 tests waited out Playwright's 30-second default on a selector
 the React app never renders.
 

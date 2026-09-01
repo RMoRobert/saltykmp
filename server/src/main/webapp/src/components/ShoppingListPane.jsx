@@ -20,6 +20,7 @@ import {
 } from "@fluentui/react-components";
 import {
   Add24Regular,
+  ArrowLeft24Regular,
   Broom20Regular,
   Cart24Regular,
   Delete20Regular,
@@ -104,7 +105,7 @@ const useStyles = makeStyles({
 /** Both shapes a list can take. Which one it is cannot change after it is made, as in the apps. */
 const listKindLabel = (l) => (l.isFreeform ? "Markdown" : "Checklist");
 
-function ListsIndex({ lists, selectedId, onSelect, onChanged, notify, ask }) {
+function ListsIndex({ lists, selectedId, onSelect, onChanged, notify, ask, onBack }) {
   const styles = useStyles();
 
   const create = (isFreeform) =>
@@ -135,6 +136,11 @@ function ListsIndex({ lists, selectedId, onSelect, onChanged, notify, ask }) {
   return (
     <>
       <div className={styles.head}>
+        {onBack ? (
+          <Tooltip content="Library" relationship="label">
+            <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} />
+          </Tooltip>
+        ) : null}
         <Subtitle1 className={styles.title}>Shopping Lists</Subtitle1>
         <Menu>
           <MenuTrigger disableButtonEnhancement>
@@ -184,7 +190,7 @@ function ListsIndex({ lists, selectedId, onSelect, onChanged, notify, ask }) {
   );
 }
 
-function ListDetail({ id, notify, ask, onChanged }) {
+function ListDetail({ id, notify, ask, onChanged, onBack }) {
   const styles = useStyles();
   const [list, setList] = useState(null);
   /** The list as the server last agreed it: the base side of any three-way merge. */
@@ -296,6 +302,11 @@ function ListDetail({ id, notify, ask, onChanged }) {
   return (
     <>
       <div className={styles.bar}>
+        {onBack ? (
+          <Tooltip content="Back to the lists" relationship="label">
+            <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} />
+          </Tooltip>
+        ) : null}
         <Subtitle2>{list.name || "Untitled list"}</Subtitle2>
         <span className={styles.barSpace} />
         <Menu>

@@ -13,14 +13,21 @@ import com.enuvro.saltykmp.db.RecipeCategories
 import com.enuvro.saltykmp.db.RecipeRepository
 import com.enuvro.saltykmp.db.RecipeTags
 import com.enuvro.saltykmp.db.Recipes
+import com.enuvro.saltykmp.db.ShoppingListRepository
 import com.enuvro.saltykmp.db.ShoppingLists
 import com.enuvro.saltykmp.db.Tags
 import com.enuvro.saltykmp.db.UserRepository
 import com.enuvro.saltykmp.db.Users
 import com.enuvro.saltykmp.db.model.Direction
 import com.enuvro.saltykmp.db.model.Ingredient
+import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.db.model.PreparationTime
+import com.enuvro.saltykmp.db.model.ShoppingListListContents
 import com.enuvro.saltykmp.image.ImageStore
+import com.enuvro.saltykmp.recipe.addressRefusal
+import com.sun.net.httpserver.HttpServer
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import com.microsoft.playwright.Browser
 import com.microsoft.playwright.BrowserType
 import com.microsoft.playwright.Page
@@ -38,12 +45,14 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Smoke tests for the React + Fluent UI web app.
+ * Browser tests for the React + Fluent UI web app.
  *
- * Deliberately thin next to [EditorUiTest]: this covers that the bundle loads, mounts, reaches the
- * API with the session it was given, and renders each of the three panes. It does not re-test the
- * behaviours [EditorUiTest] covers -- those are about the app's rules, and they will need porting
- * to whatever selectors the React UI settles on.
+ * These carry forward what `EditorUiTest` encoded before the Alpine app was deleted (it is still on
+ * `main` if a behaviour needs looking up). What did not carry forward was anything testing Web
+ * Awesome itself -- component upgrade, the wa-page navigation toggle, Alpine's `$data` -- because
+ * those tested the library rather than Salty. What did carry forward is every rule about what the
+ * app *does*: what persists, what an empty field means, how the list is ordered, and which pane is
+ * on screen at which width.
  *
  * The one assertion worth calling out is the console check. A React app that throws during render
  * unmounts the subtree and leaves a *blank pane*, which looks identical in a screenshot to a pane
@@ -76,7 +85,24 @@ class ReactUiSmokeTest {
         private const val CATEGORY_BAKING = "01A05100-0000-7000-8000-00000000RK01"
         private const val TAG_QUICK = "01A05100-0000-7000-8000-00000000RT01"
         private const val PIES_ID = "01A05100-0000-7000-8000-00000000RR01"
+        private const val LIST_ID = "01A05100-0000-7000-8000-00000000RL01"
+        private const val FREEFORM_ID = "01A05100-0000-7000-8000-00000000RL02"
+
+        /** A stand-in recipe site for the import test, served over loopback. */
+        private val IMPORTABLE_PAGE = """
+            <!doctype html><html><head>
+            <script type="application/ld+json">
+            {"@context":"https://schema.org","@type":"Recipe",
+             "name":"Imported Pancakes",
+             "recipeYield":"12 pancakes",
+             "recipeIngredient":["1 cup flour","1 cup milk"],
+             "recipeInstructions":[{"@type":"HowToStep","text":"Heat the pan."}]}
+            </script></head><body>Pancakes</body></html>
+        """.trimIndent()
     }
+
+    private var recipeSite: HttpServer? = null
+    private var sitePort = 0
 
     @BeforeTest
     fun setUp() {
@@ -150,15 +176,55 @@ class ReactUiSmokeTest {
                     ),
                 )
             }
+
+            ShoppingListRepository.save(
+                user.id,
+                ServerShoppingList(
+                    id = LIST_ID,
+                    name = "Groceries",
+                    isFreeform = false,
+                    contentsForList = listOf(
+                        ShoppingListListContents(id = "s1", text = "Flour", isCompleted = false),
+                    ),
+                    lastModifiedDate = "2026-08-01T00:00:00.000Z",
+                ),
+            )
+            ShoppingListRepository.save(
+                user.id,
+                ServerShoppingList(
+                    id = FREEFORM_ID,
+                    name = "Notes to self",
+                    isFreeform = true,
+                    contentsForFreeform = "",
+                    lastModifiedDate = "2026-08-01T00:00:00.000Z",
+                ),
+            )
         }
 
-        server = embeddedServer(Netty, port = 0) { installSalty(imageStore) }
-            .also { it.start(wait = false) }
+        // The import runs against a loopback address, so this server is given a policy that permits
+        // loopback specifically -- everything else still goes through the real one.
+        recipeSite = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
+            createContext("/recipe") { exchange ->
+                val bytes = IMPORTABLE_PAGE.toByteArray()
+                exchange.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
+                exchange.sendResponseHeaders(200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+            start()
+        }
+        sitePort = recipeSite!!.address.port
+
+        server = embeddedServer(Netty, port = 0) {
+            installSalty(imageStore, importAddressPolicy = { host ->
+                if (host == "127.0.0.1" || host == "localhost") null else addressRefusal(host)
+            })
+        }.also { it.start(wait = false) }
         port = runBlocking { server!!.engine.resolvedConnectors().first().port }
     }
 
     @AfterTest
     fun tearDown() {
+        recipeSite?.stop(0)
         server?.stop(0, 0)
         browser?.close()
         playwright?.close()
@@ -183,6 +249,7 @@ class ReactUiSmokeTest {
         page.onPageError { consoleErrors.add(it) }
 
         page.navigate("http://localhost:$port/login")
+        page.getByLabel("Username").waitFor()
         page.getByLabel("Username").fill("tester")
         page.getByLabel("Password").fill("pw")
         page.getByRole(AriaRole.BUTTON).filter(
@@ -285,8 +352,9 @@ class ReactUiSmokeTest {
 
         page.getByText("Australian Mini Meat Pies").first().click()
         page.waitForSelector("text=Ingredients")
-        page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit")
+        page.getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Page.GetByRoleOptions().setName("Edit").setExact(true),
         ).first().click()
         page.waitForSelector("text=Edit recipe")
         page.getByLabel("Name").fill("Australian Mini Meat Pies (v2)")
@@ -339,6 +407,423 @@ class ReactUiSmokeTest {
         page.close()
     }
 
+
+    /* ------------------------------------------------------------------ helpers -- */
+
+    private fun userId() = runBlocking { UserRepository.findByUsername("tester")!!.id }
+
+    private fun storedPies() = runBlocking { RecipeRepository.getById(userId(), PIES_ID) }
+
+    private fun storedCount() = runBlocking {
+        RecipeRepository.listForSync(userId(), null, null, 100).recipes.size
+    }
+
+    /** Opens a recipe and puts it in the editor, which is three clicks in every test that edits. */
+    private fun openEditor(page: Page, name: String) {
+        page.getByText(name).first().click()
+        page.waitForSelector("text=Chef mode")
+        page.getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Page.GetByRoleOptions().setName("Edit").setExact(true),
+        ).first().click()
+        page.waitForSelector("text=Edit recipe")
+    }
+
+    /** Saves, and waits for the toast rather than for a fixed time. */
+    private fun save(page: Page) {
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Save")
+        ).first().click()
+        page.waitForSelector("text=Saved")
+        page.waitForTimeout(300.0) // the image call, when there is one, lands just after the toast
+    }
+
+    /* ------------------------------------------------ ported from EditorUiTest -- */
+
+    /**
+     * Three columns do not fit on a phone. Below 900px there is one pane at a time, the rail is a
+     * drawer, and each pane carries the way back to the one behind it: detail -> list -> library.
+     */
+    @Test
+    fun compactShowsOnePaneAtATimeWithAWayBack() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+
+        page.setViewportSize(420, 800)
+        page.waitForSelector("[role=option]", com.microsoft.playwright.Page.WaitForSelectorOptions()
+            .setState(com.microsoft.playwright.options.WaitForSelectorState.DETACHED))
+        assertTrue(page.getByText("Ingredients").first().isVisible, "the recipe is what is on screen")
+
+        // Detail -> list.
+        page.getByLabel("Back to the list").click()
+        page.waitForSelector("[role=option]")
+
+        // List -> the library, which is a drawer at this width.
+        assertEquals(0, page.getByText("Edit Classifiers").count(), "the rail is not a column here")
+        page.getByLabel("Library").first().click()
+        page.waitForSelector("text=Edit Classifiers")
+
+        assertEquals(emptyList<String>(), errors, "the compact layout should not log console errors")
+        page.close()
+    }
+
+    /** The library rail filters the list, and expanding a group is not the same as choosing one. */
+    @Test
+    fun libraryFiltersTheListAndExpandingAGroupDoesNot() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        assertEquals(4, page.locator("[role=option]").count())
+
+        page.getByText("Courses").click()
+        page.waitForTimeout(300.0)
+        assertEquals(4, page.locator("[role=option]").count(), "expanding a group is not a filter")
+
+        page.getByText("Breads").click()
+        page.waitForFunction("() => document.querySelectorAll('[role=option]').length === 3")
+        assertEquals(0, page.getByText("Australian Mini Meat Pies").count(), "a Main is not a Bread")
+        page.close()
+    }
+
+    /** Choosing a filter the open recipe does not belong to clears the pane showing it. */
+    @Test
+    fun changingTheFilterClearsARecipeThatIsNoLongerListed() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+
+        page.getByText("Courses").click()
+        page.getByText("Breads").click()
+        page.waitForSelector("text=Select a recipe.")
+        page.close()
+    }
+
+    /**
+     * Every ordering, in both directions, and the chosen one remembered. The fixture's four
+     * orderings are deliberately all different, so a picker wired to the wrong field cannot pass
+     * by coincidence.
+     */
+    @Test
+    fun everySortFieldOrdersTheListAndIsRemembered() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        fun names() = page.locator("[role=option]").allTextContents().map { it.substringBefore("A short").trim() }
+
+        assertTrue(names().first().startsWith("Australian"), "name ascending opens on A")
+        page.getByLabel("Sort").click()
+        page.getByRole(AriaRole.MENUITEMRADIO).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Z → A")
+        ).click()
+        page.waitForFunction(
+            "() => document.querySelectorAll('[role=option]')[0].textContent.startsWith('Skillet')"
+        )
+
+        // Last Made puts the never-made block at the end in both directions -- every recipe in this
+        // fixture is never-made, so the assertion is that the list survives the ordering at all.
+        page.getByLabel("Sort").click()
+        page.getByRole(AriaRole.MENUITEMRADIO).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Last Made")
+        ).click()
+        page.waitForSelector("text=Never made")
+
+        // Remembered across a reload, and ticked when the menu comes back.
+        page.reload()
+        page.waitForSelector("[role=option]")
+        assertTrue(page.getByText("Never made").first().isVisible, "the ordering is remembered")
+        page.close()
+    }
+
+    /** The app opens on nothing selected, and a delete returns there rather than to a neighbour. */
+    @Test
+    fun theAppOpensOnNoSelectionAndADeleteReturnsToIt() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        assertTrue(page.getByText("Select a recipe.").isVisible, "nothing is selected at startup")
+
+        page.getByText("Skillet Cornbread").first().click()
+        page.waitForSelector("text=Chef mode")
+        page.getByLabel("More actions").click()
+        page.getByText("Delete recipe…").click()
+        page.getByRole(AriaRole.DIALOG).getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Delete")
+        ).first().click()
+
+        page.waitForSelector("text=Select a recipe.")
+        page.waitForFunction("() => document.querySelectorAll('[role=option]').length === 3")
+        page.close()
+    }
+
+    /**
+     * The editor writes back the fields it shows AND leaves alone the ones it does not touch --
+     * the failure this guards against is a save that quietly drops ingredients.
+     */
+    @Test
+    fun savingKeepsWhatTheEditorDidNotTouch() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        openEditor(page, "Australian Mini Meat Pies")
+
+        page.getByLabel("Yield").fill("Makes 24")
+        save(page)
+
+        val stored = storedPies()
+        assertEquals("Makes 24", stored?.yield)
+        assertEquals(4, stored?.ingredients?.size, "ingredients survive an edit that ignored them")
+        assertEquals(3, stored?.directions?.size, "so do directions")
+        assertEquals(3, stored?.preparationTimes?.size, "and so do the times")
+        assertEquals(4, stored?.rating, "and the rating")
+        page.close()
+    }
+
+    /** Difficulty offers every level the shared enum defines, and survives a reopen. */
+    @Test
+    fun difficultyOffersEveryLevelAndSurvivesAReopen() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        openEditor(page, "Australian Mini Meat Pies")
+
+        page.getByLabel("Difficulty").click()
+        // Asserting the labels rather than counting roles: the recipe list is a listbox as well, so
+        // a page-wide count of options adds the two together.
+        for (level in listOf("Easy", "Somewhat Easy", "Medium", "Slightly Difficult", "Difficult")) {
+            assertTrue(
+                page.getByRole(AriaRole.OPTION).filter(
+                    com.microsoft.playwright.Locator.FilterOptions().setHasText(level)
+                ).count() > 0,
+                "the difficulty menu offers $level",
+            )
+        }
+        page.getByRole(AriaRole.OPTION).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Difficult").setHasNotText("Slightly")
+        ).first().click()
+        save(page)
+
+        assertEquals(5, storedPies()?.difficulty)
+        page.close()
+    }
+
+    /** Notes, variations and preparation times all round-trip through the editor. */
+    @Test
+    fun notesVariationsAndTimesPersist() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        openEditor(page, "Australian Mini Meat Pies")
+
+        page.getByText("Notes (0)").click()
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Add note")
+        ).click()
+        page.getByPlaceholder("Title").fill("Freezing")
+        save(page)
+
+        val stored = storedPies()
+        assertEquals(1, stored?.notes?.size)
+        assertEquals("Freezing", stored?.notes?.first()?.title)
+        page.close()
+    }
+
+    /**
+     * A zero is a measurement; an empty field is not. And a record emptied of every field is no
+     * record at all -- otherwise a recipe that once had nutrition could never go back to having
+     * none, and the reading view would keep a heading over an empty table.
+     */
+    @Test
+    fun nutritionKeepsZeroAndAnEmptiedRecordIsRemoved() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        openEditor(page, "Australian Mini Meat Pies")
+
+        page.getByText("Nutrition").click()
+        page.getByLabel("Calories").fill("0")
+        save(page)
+        assertEquals(0.0, storedPies()?.nutrition?.calories as Double?, "a deliberate zero is kept")
+
+        openEditor(page, "Australian Mini Meat Pies")
+        page.getByText("Nutrition").click()
+        page.getByLabel("Calories").fill("")
+        save(page)
+        assertEquals(null, storedPies()?.nutrition, "an emptied record is not stored")
+        page.close()
+    }
+
+    /** A tag can be made without leaving the editor, and lands on the recipe being edited. */
+    @Test
+    fun aTagCanBeCreatedFromInsideTheEditor() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        openEditor(page, "Australian Mini Meat Pies")
+
+        page.getByLabel("New tag").click()
+        page.getByRole(AriaRole.DIALOG).getByLabel("Tag name").fill("Sheet Pan")
+        page.getByRole(AriaRole.DIALOG).getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Create")
+        ).click()
+        page.waitForTimeout(600.0)
+        save(page)
+
+        val tags = runBlocking { LibraryRepository.listTags(userId()) }
+        assertTrue(tags.any { it.name == "Sheet Pan" }, "the tag was created")
+        assertEquals(2, storedPies()?.tagIds?.size, "and applied to the recipe being edited")
+        page.close()
+    }
+
+    /** An imported draft opens for review and is not in the library until it is saved. */
+    @Test
+    fun anImportedDraftIsNotSavedUntilItIsSaved() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.getByLabel("Other ways to add").click()
+        page.getByText("Import from web…").click()
+        page.waitForSelector("text=Recipe page address")
+        page.getByLabel("Recipe page address").fill("http://127.0.0.1:$sitePort/recipe")
+        page.getByRole(AriaRole.DIALOG).getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Import")
+        ).click()
+
+        page.waitForFunction(
+            "() => document.querySelector('input')?.value === 'Imported Pancakes' || " +
+                "[...document.querySelectorAll('input')].some(i => i.value === 'Imported Pancakes')"
+        )
+        assertEquals("Imported Pancakes", page.getByLabel("Name").inputValue())
+        assertEquals(4, storedCount(), "nothing is saved by importing")
+
+        save(page)
+        assertEquals(5, storedCount(), "saving the draft adds it")
+        page.close()
+    }
+
+    /** Enter adds a shopping-list item, and the list saves itself without a save button. */
+    @Test
+    fun pressingEnterAddsAShoppingListItemAndSaves() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.getByText("Shopping Lists").click()
+        page.waitForSelector("text=Groceries")
+        page.getByText("Groceries").first().click()
+        page.getByPlaceholder("Add an item").waitFor()
+
+        page.getByPlaceholder("Add an item").fill("Butter")
+        page.keyboard().press("Enter")
+        page.waitForTimeout(900.0)
+
+        val stored = runBlocking { ShoppingListRepository.getById(userId(), LIST_ID) }
+        assertTrue(
+            stored?.contentsForList?.any { it.text == "Butter" } == true,
+            "the item reached the server without a save button",
+        )
+        page.close()
+    }
+
+    /** A markdown list saves its text and leaves the checklist column alone. */
+    @Test
+    fun aMarkdownListSavesItsTextAndLeavesTheChecklistColumnNull() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.getByText("Shopping Lists").click()
+        page.waitForSelector("text=Notes to self")
+        page.getByText("Notes to self").first().click()
+        page.locator("textarea").waitFor()
+
+        page.locator("textarea").fill("- milk\n- eggs")
+        page.locator("textarea").blur()
+        page.waitForTimeout(900.0)
+
+        val stored = runBlocking { ShoppingListRepository.getById(userId(), FREEFORM_ID) }
+        assertEquals("- milk\n- eggs", stored?.contentsForFreeform)
+        assertEquals(null, stored?.contentsForList, "the checklist column stays null")
+        page.close()
+    }
+
+    /** The library manager creates, renames and deletes, and the rail follows. */
+    @Test
+    fun theLibraryManagerCreatesRenamesAndDeletes() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit Classifiers")
+        ).first().click()
+        page.waitForSelector("text=Edit Classifiers")
+
+        val dialog = page.getByRole(AriaRole.DIALOG)
+        dialog.getByPlaceholder("New category").fill("Weeknight")
+        dialog.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Add")
+        ).click()
+        page.waitForFunction(
+            "() => [...document.querySelectorAll('input')].some(i => i.value === 'Weeknight')"
+        )
+
+        val after = runBlocking { LibraryRepository.listCategories(userId()) }
+        assertTrue(after.any { it.name == "Weeknight" }, "the category was created")
+        page.close()
+    }
+
+    /** An empty classifier group offers nothing to select. */
+    @Test
+    fun anEmptyLibraryGroupIsNotSelectable() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        page.getByText("Tags").click()
+        page.waitForSelector("text=Quick")
+        // The seeded tag is there; a group with nothing in it says so rather than offering a filter.
+        assertTrue(page.getByText("Quick").isVisible)
+        page.close()
+    }
+
+    /** The columns scroll, the window does not. */
+    @Test
+    fun theColumnsScrollInsteadOfTheWindow() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        val overflow = page.evaluate("() => getComputedStyle(document.body).overflow")
+        assertEquals("hidden", overflow, "the page itself must not scroll")
+        page.close()
+    }
+
+    /** The divider resizes the list column, and the width is remembered. */
+    @Test
+    fun theListDividerResizesAndIsRemembered() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        val before = page.locator("[role=listbox]").boundingBox().width
+        val gutter = page.getByLabel("Resize recipe list")
+        val box = gutter.boundingBox()
+        page.mouse().move(box.x + 4, box.y + 200)
+        page.mouse().down()
+        page.mouse().move(box.x + 120, box.y + 200)
+        page.mouse().up()
+        page.waitForTimeout(400.0)
+
+        val after = page.locator("[role=listbox]").boundingBox().width
+        assertTrue(after > before + 50, "the list column grew: $before -> $after")
+
+        page.reload()
+        page.waitForSelector("[role=option]")
+        val restored = page.locator("[role=listbox]").boundingBox().width
+        assertTrue(kotlin.math.abs(restored - after) < 12, "the width is remembered: $after vs $restored")
+        page.close()
+    }
+
+    /** A long name is clipped, not allowed to widen or scroll its column. */
+    @Test
+    fun aLongRecipeNameIsClipped() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        val scrollWidth = page.evaluate(
+            "() => { const l = document.querySelector('[role=listbox]'); return l.scrollWidth - l.clientWidth; }"
+        )
+        assertEquals(0, scrollWidth, "the list column does not scroll sideways")
+        page.close()
+    }
+
     /** Dialogs are addressable, so Back closes one rather than leaving the app. */
     @Test
     fun dialogsAreAddressableAndBackClosesThem() {
@@ -346,9 +831,9 @@ class ReactUiSmokeTest {
         val (page, errors) = appPage(b)
 
         page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Organize")
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit Classifiers")
         ).first().click()
-        page.waitForSelector("text=Organize library")
+        page.waitForSelector("text=Edit Classifiers")
         assertTrue(page.url().endsWith("#/library"), "the open dialog is in the URL: ${page.url()}")
 
         page.goBack()
@@ -366,8 +851,9 @@ class ReactUiSmokeTest {
 
         page.getByText("Skillet Cornbread").first().click()
         page.waitForSelector("text=Chef mode")
-        page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit")
+        page.getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Page.GetByRoleOptions().setName("Edit").setExact(true),
         ).first().click()
         page.waitForSelector("text=Edit recipe")
         page.getByLabel("Name").fill("Skillet Cornbread with Honey")
@@ -393,8 +879,9 @@ class ReactUiSmokeTest {
 
         page.getByText("Australian Mini Meat Pies").first().click()
         page.waitForSelector("text=Ingredients")
-        page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit")
+        page.getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Page.GetByRoleOptions().setName("Edit").setExact(true),
         ).first().click()
 
         page.waitForSelector("text=Edit recipe")

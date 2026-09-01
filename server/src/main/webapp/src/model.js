@@ -171,9 +171,34 @@ export const DIFFICULTIES = [
 export const difficultyLabel = (n) =>
   DIFFICULTIES.find((d) => d.value === n && d.value !== 0)?.label ?? null;
 
-/** The subtitle under a name in the list: whatever the recipe can say about itself in one line. */
-export const rowSubtitle = (r) =>
-  (r.introduction || r.source || r.sourceDetails || "").trim();
+/**
+ * The row's second line.
+ *
+ * Sorting by "Last Made" swaps it for the date being sorted on, as the Compose app does and for the
+ * same reason: otherwise that ordering has no visible explanation, and the block of never-made
+ * recipes at the end reads as a bug rather than as the point.
+ */
+export function rowSubtitle(r, sortBy) {
+  if (sortBy === "prepared") {
+    return everMade(r) ? `Made ${relativeDate(r.lastPrepared)}` : "Never made";
+  }
+  return (r.introduction || r.source || r.sourceDetails || "").trim();
+}
+
+/**
+ * Nutrition, or nothing.
+ *
+ * An emptied record must not be stored: leaving an object of nulls behind would mean a recipe that
+ * once had nutrition can never go back to having none, and the reading view would keep a heading
+ * over an empty table. Anything actually set -- including a deliberate zero -- keeps the record.
+ */
+export function cleanNutrition(n) {
+  if (!n) return null;
+  const hasValue = Object.entries(n).some(
+    ([k, v]) => k !== "id" && v !== null && v !== undefined && v !== "",
+  );
+  return hasValue ? n : null;
+}
 
 /** Section headings are list items too, so a direction's number is not its index. */
 export function stepNumbers(directions) {

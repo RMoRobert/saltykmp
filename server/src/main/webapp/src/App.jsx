@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FluentProvider,
+  OverlayDrawer,
   Toast,
   ToastTitle,
   Toaster,
@@ -14,7 +15,14 @@ import {
 
 import { api, deleteImage, uploadImage } from "./api";
 import { matchesFilter, uuidv7, visibleRecipes, wireNow } from "./model";
-import { readStored, useHashDialog, useUnloadGuard, useWakeLock, writeStored } from "./hooks";
+import {
+  readStored,
+  useCompact,
+  useHashDialog,
+  useUnloadGuard,
+  useWakeLock,
+  writeStored,
+} from "./hooks";
 import ConfirmDialog from "./components/ConfirmDialog";
 import NavRail from "./components/NavRail";
 import RecipeList from "./components/RecipeList";
@@ -40,6 +48,9 @@ const useStyles = makeStyles({
   // Chef mode is the same detail pane with the other two columns taken away, rather than a separate
   // screen: the recipe on show must not reflow or re-fetch just because the panes around it went.
   chef: { gridTemplateColumns: "1fr" },
+  /* Below 900px there is room for one pane, not three. Which one is on screen is state, not CSS,
+     so the panes that are not showing are unmounted rather than merely hidden. */
+  compact: { gridTemplateColumns: "1fr" },
   pane: {
     minWidth: 0,
     height: "100vh",
@@ -53,12 +64,15 @@ const useStyles = makeStyles({
     position: "relative",
   },
   detailPane: { backgroundColor: tokens.colorNeutralBackground1 },
-  /* A 6px grab strip straddling the border, so the divider is easy to hit without being visible. */
+  /* An 8px grab strip along the pane's inner edge.
+     Inside the pane, not straddling its border: the pane clips its overflow, so the half of a
+     straddling strip that hung over the neighbour was invisible to hit-testing and the drag landed
+     on the detail pane instead. */
   gutter: {
     position: "absolute",
     insetBlock: 0,
-    insetInlineEnd: "-3px",
-    width: "6px",
+    insetInlineEnd: 0,
+    width: "8px",
     cursor: "col-resize",
     zIndex: 2,
     ":hover": { backgroundColor: tokens.colorNeutralStroke1 },
@@ -172,6 +186,11 @@ export default function App() {
   const [dirty, setDirty] = useState(false);
   const [selectedListId, setSelectedListId] = useState(null);
 
+  const compact = useCompact();
+  /** Which single pane is on screen when compact. Ignored at full width. */
+  const [pane, setPane] = useState("list"); // list | detail
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
   const [chefMode, setChefMode] = useState(false);
   const [wakeLockPref, setWakeLockPref] = useState(() => readStored(WAKE_LOCK_KEY, "1") !== "0");
   useWakeLock(chefMode && wakeLockPref);
@@ -218,6 +237,8 @@ export default function App() {
       guard(() => {
         setSection("recipes");
         setMode("read");
+        setPane("list");
+        setDrawerOpen(false);
         setFilter({ kind, id, label: label || "All Recipes" });
         // The detail column follows the list, as in the Swift client where detail is driven by
         // selection *within* the current list. Otherwise the right pane goes on showing a recipe
@@ -237,6 +258,7 @@ export default function App() {
         setSelectedId(id);
         setMode("read");
         setDirty(false);
+        setPane("detail");
         try {
           setCurrent(await api.recipes.get(id));
         } catch (e) {
@@ -271,6 +293,7 @@ export default function App() {
         setSelectedId(null); // nothing in the list to highlight until it is saved
         setMode("edit");
         setDirty(true);
+        setPane("detail");
       }),
     [guard],
   );
@@ -379,20 +402,28 @@ export default function App() {
 
   /* -------------------------------------------------------------- resizing -- */
 
-  const dragging = useRef(false);
-  const onGutterDown = (e) => {
-    dragging.current = true;
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-  };
-  const onGutterMove = (e) => {
-    if (!dragging.current) return;
-    setListWidth(
-      Math.max(260, Math.min(620, e.clientX - (railOpen ? RAIL_OPEN : RAIL_COLLAPSED))),
-    );
-  };
-  const onGutterUp = () => {
-    dragging.current = false;
-  };
+  /*
+   * Dragging is tracked on the window, not on the 6px strip.
+   *
+   * A pointer leaves a strip that thin almost immediately, and pointer capture on it proved
+   * unreliable -- the drag simply did nothing. Listening on the window for the duration is the
+   * ordinary way to do this and does not depend on the cursor staying anywhere in particular.
+   */
+  const onGutterDown = useCallback(
+    (e) => {
+      e.preventDefault();
+      const railWidth = railOpen ? RAIL_OPEN : RAIL_COLLAPSED;
+      const onMove = (ev) =>
+        setListWidth(Math.max(260, Math.min(620, ev.clientX - railWidth)));
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [railOpen],
+  );
 
   const rootStyle = {
     "--rail": `${railOpen ? RAIL_OPEN : RAIL_COLLAPSED}px`,
@@ -401,7 +432,13 @@ export default function App() {
 
   const detail =
     section === "lists" ? (
-      <ShoppingListPane.Detail id={selectedListId} notify={notify} ask={ask} onChanged={reloadLists} />
+      <ShoppingListPane.Detail
+        id={selectedListId}
+        notify={notify}
+        ask={ask}
+        onChanged={reloadLists}
+        onBack={compact ? () => setPane("list") : null}
+      />
     ) : mode === "edit" && current ? (
       <RecipeEditor
         recipe={current}
@@ -409,6 +446,22 @@ export default function App() {
         categories={categories}
         tags={tags}
         onDirtyChange={setDirty}
+        onCreateTag={(then) =>
+          ask({
+            title: "New tag",
+            prompt: "Tag name",
+            confirmLabel: "Create",
+            onConfirm: async (name) => {
+              try {
+                const created = await api.classifiers.create("tag", name);
+                await reloadClassifiers();
+                await then(created);
+              } catch (e) {
+                notify(e.message || "Could not create that tag", "error");
+              }
+            },
+          })
+        }
         onCancel={() =>
           guard(() => {
             setMode("read");
@@ -423,6 +476,7 @@ export default function App() {
         recipe={current}
         courses={courses}
         chefMode={chefMode}
+        onBack={compact ? () => setPane("list") : null}
         onEdit={() => setMode("edit")}
         onDelete={deleteRecipe}
         onToggleFavorite={(r) => toggleFlag(r, "isFavorite")}
@@ -432,87 +486,106 @@ export default function App() {
       />
     );
 
+  const railProps = {
+    section,
+    filter,
+    onFilter: applyFilter,
+    recipes,
+    courses,
+    categories,
+    tags,
+    shoppingLists,
+    selectedListId,
+    onSelectList: (id) =>
+      guard(() => {
+        setSection("lists");
+        setSelectedListId(id);
+        setPane("detail");
+        setDrawerOpen(false);
+      }),
+    onShoppingLists: () =>
+      guard(() => {
+        setSection("lists");
+        setSelectedListId(null);
+        setPane("list");
+        setDrawerOpen(false);
+      }),
+    onManageLibrary: () => openDialog("library"),
+    onPreferences: () => openDialog("preferences"),
+    onUsers: () => openDialog("users"),
+  };
+
+  const listPane =
+    section === "recipes" ? (
+      <RecipeList
+        title={filter.label}
+        rows={rows}
+        loading={loading}
+        query={query}
+        onQuery={setQuery}
+        sortBy={sortBy}
+        sortAsc={sortAsc}
+        onSort={(by, asc) => {
+          setSortBy(by);
+          setSortAsc(asc);
+        }}
+        selectedId={selectedId}
+        onSelect={openRecipe}
+        onNew={newRecipe}
+        onImport={() => openDialog("import")}
+        onBack={compact ? () => setDrawerOpen(true) : null}
+      />
+    ) : (
+      <ShoppingListPane.List
+        lists={shoppingLists}
+        selectedId={selectedListId}
+        onSelect={(id) =>
+          guard(() => {
+            setSelectedListId(id);
+            setPane("detail");
+          })
+        }
+        onChanged={reloadLists}
+        notify={notify}
+        ask={ask}
+        onBack={compact ? () => setDrawerOpen(true) : null}
+      />
+    );
+
   return (
     <FluentProvider theme={dark ? webDarkTheme : webLightTheme}>
       <div
-        className={`${styles.root} ${chefMode ? styles.chef : ""}`}
-        style={chefMode ? undefined : rootStyle}
+        className={`${styles.root} ${chefMode ? styles.chef : ""} ${compact && !chefMode ? styles.compact : ""}`}
+        style={chefMode || compact ? undefined : rootStyle}
       >
-        {chefMode ? null : (
-          <>
-            <NavRail
-              open={railOpen}
-              onToggle={() => setRailOpen((v) => !v)}
-              section={section}
-              filter={filter}
-              onFilter={applyFilter}
-              recipes={recipes}
-              courses={courses}
-              categories={categories}
-              tags={tags}
-              shoppingLists={shoppingLists}
-              selectedListId={selectedListId}
-              onSelectList={(id) =>
-                guard(() => {
-                  setSection("lists");
-                  setSelectedListId(id);
-                })
-              }
-              onShoppingLists={() =>
-                guard(() => {
-                  setSection("lists");
-                  setSelectedListId(null);
-                })
-              }
-              onManageLibrary={() => openDialog("library")}
-              onPreferences={() => openDialog("preferences")}
-              onUsers={() => openDialog("users")}
-            />
+        {/* At full width the rail is a column; compact, it is a drawer over the one pane there is
+            room for. Same component either way -- only where it is mounted changes. */}
+        {compact ? (
+          <OverlayDrawer open={drawerOpen} onOpenChange={(_, d) => setDrawerOpen(d.open)}>
+            <NavRail open onToggle={() => setDrawerOpen(false)} {...railProps} />
+          </OverlayDrawer>
+        ) : chefMode ? null : (
+          <NavRail open={railOpen} onToggle={() => setRailOpen((v) => !v)} {...railProps} />
+        )}
 
-            <div className={`${styles.pane} ${styles.listPane}`}>
-              {section === "recipes" ? (
-                <RecipeList
-                  title={filter.label}
-                  rows={rows}
-                  loading={loading}
-                  query={query}
-                  onQuery={setQuery}
-                  sortBy={sortBy}
-                  sortAsc={sortAsc}
-                  onSort={(by, asc) => {
-                    setSortBy(by);
-                    setSortAsc(asc);
-                  }}
-                  selectedId={selectedId}
-                  onSelect={openRecipe}
-                  onNew={newRecipe}
-                  onImport={() => openDialog("import")}
-                  onToggleFavorite={(r) => toggleFlag(r, "isFavorite")}
-                />
-              ) : (
-                <ShoppingListPane.List
-                  lists={shoppingLists}
-                  selectedId={selectedListId}
-                  onSelect={(id) => guard(() => setSelectedListId(id))}
-                  onChanged={reloadLists}
-                  notify={notify}
-                  ask={ask}
-                />
-              )}
+        {chefMode || (compact && pane === "detail") ? null : (
+          <div className={`${styles.pane} ${styles.listPane}`}>
+            {listPane}
+            {compact ? null : (
               <div
                 className={styles.gutter}
-                onPointerDown={onGutterDown}
-                onPointerMove={onGutterMove}
-                onPointerUp={onGutterUp}
+                onMouseDown={onGutterDown}
                 role="separator"
                 aria-orientation="vertical"
                 aria-label="Resize recipe list"
               />
-            </div>
-          </>
+            )}
+          </div>
         )}
 
-        <div className={`${styles.pane} ${styles.detailPane}`}>{detail}</div>
+        {compact && pane === "list" && !chefMode ? null : (
+          <div className={`${styles.pane} ${styles.detailPane}`}>{detail}</div>
+        )}
       </div>
 
       <Toaster toasterId={toasterId} position="bottom-end" />

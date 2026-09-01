@@ -145,3 +145,25 @@ export const writeStored = (key, value) => {
     /* a remembered preference is not worth an exception */
   }
 };
+
+/**
+ * Whether the window is too narrow for three columns.
+ *
+ * 900px, the same breakpoint the Alpine app used. Below it the layout is one pane at a time and the
+ * rail becomes a drawer, because 248 + 360 + a readable recipe does not fit on a phone and shrinking
+ * all three leaves three unusable columns instead of one usable one.
+ */
+export function useCompact(maxWidth = 900) {
+  const query = `(max-width: ${maxWidth}px)`;
+  const [compact, setCompact] = useState(
+    () => window.matchMedia?.(query).matches ?? false,
+  );
+  useEffect(() => {
+    const m = window.matchMedia(query);
+    const onChange = (e) => setCompact(e.matches);
+    m.addEventListener("change", onChange);
+    setCompact(m.matches);
+    return () => m.removeEventListener("change", onChange);
+  }, [query]);
+  return compact;
+}

@@ -311,13 +311,17 @@ export default function NavRail({
       <div className={styles.spacer} />
 
       <div className={styles.foot}>
+        {/* Down here with Settings, for the reason the Compose app gives in its own drawer:
+            editing the classifiers is rare and app-level, so it is one row rather than an "Edit…"
+            hung off each of the three groups above. The recipe list's toolbar is for actions on
+            the list. Label matches the Compose app's. */}
         <Button
           appearance="subtle"
           icon={<Options24Regular />}
           className={styles.footButton}
           onClick={onManageLibrary}
         >
-          Organize
+          Edit Classifiers
         </Button>
         <Button
           appearance="subtle"

@@ -30,7 +30,7 @@ import {
 } from "@fluentui/react-icons";
 
 import { IMAGE_TYPES, MAX_IMAGE_BYTES, imageUrl } from "../api";
-import { NUTRITION_GROUPS, DIFFICULTIES, newRow } from "../model";
+import { DIFFICULTIES, NUTRITION_GROUPS, cleanNutrition, newRow } from "../model";
 
 const useStyles = makeStyles({
   bar: {
@@ -86,6 +86,7 @@ const useStyles = makeStyles({
   dragging: { opacity: 0.4 },
   handle: { cursor: "grab", color: tokens.colorNeutralForeground3, display: "flex" },
   imageRow: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalM },
+  tagRow: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalXS },
   preview: {
     width: "120px",
     height: "120px",
@@ -316,6 +317,7 @@ export default function RecipeEditor({
   onCancel,
   onSave,
   onDirtyChange,
+  onCreateTag,
   notify,
 }) {
   const styles = useStyles();
@@ -348,7 +350,8 @@ export default function RecipeEditor({
 
   const save = async () => {
     setSaving(true);
-    await onSave(draft, { imageFile, imageRemoved });
+    // Cleared to nothing means no record, not a record full of nulls -- see cleanNutrition.
+    await onSave({ ...draft, nutrition: cleanNutrition(draft.nutrition) }, { imageFile, imageRemoved });
     setSaving(false);
   };
 
@@ -496,22 +499,38 @@ export default function RecipeEditor({
             </Field>
 
             <Field label="Tags">
-              <Dropdown
-                multiselect
-                placeholder="None"
-                value={tags
-                  .filter((t) => (draft.tagIds ?? []).includes(t.id))
-                  .map((t) => t.name)
-                  .join(", ")}
-                selectedOptions={draft.tagIds ?? []}
-                onOptionSelect={(_, d) => set({ tagIds: d.selectedOptions })}
-              >
-                {tags.map((t) => (
-                  <Option key={t.id} value={t.id}>
-                    {t.name || "Untitled"}
-                  </Option>
-                ))}
-              </Dropdown>
+              <div className={styles.tagRow}>
+                <Dropdown
+                  className={styles.rowInput}
+                  multiselect
+                  placeholder="None"
+                  value={tags
+                    .filter((t) => (draft.tagIds ?? []).includes(t.id))
+                    .map((t) => t.name)
+                    .join(", ")}
+                  selectedOptions={draft.tagIds ?? []}
+                  onOptionSelect={(_, d) => set({ tagIds: d.selectedOptions })}
+                >
+                  {tags.map((t) => (
+                    <Option key={t.id} value={t.id}>
+                      {t.name || "Untitled"}
+                    </Option>
+                  ))}
+                </Dropdown>
+                {/* Tagging is the one classifier you reach for mid-edit, when the tag you want does
+                    not exist yet. Sending someone to Organize and back loses the edit's thread. */}
+                <Tooltip content="New tag" relationship="label">
+                  <Button
+                    data-testid="new-tag"
+                    icon={<Add20Regular />}
+                    onClick={() =>
+                      onCreateTag(async (created) => {
+                        if (created) set({ tagIds: [...(draft.tagIds ?? []), created.id] });
+                      })
+                    }
+                  />
+                </Tooltip>
+              </div>
             </Field>
           </div>
 

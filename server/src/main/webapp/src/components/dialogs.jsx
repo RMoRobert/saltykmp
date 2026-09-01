@@ -545,7 +545,7 @@ export function ManageLibraryDialog({
               </Tooltip>
             }
           >
-            Organize library
+            Edit Classifiers
           </DialogTitle>
           <DialogContent>
             <TabList selectedValue={kind} onTabSelect={(_, d) => setKind(d.value)}>

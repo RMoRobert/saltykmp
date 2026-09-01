@@ -7,6 +7,8 @@
  * non-2xx body into an Error carrying the server's own message.
  */
 
+import { uuidv7 } from "./model";
+
 /**
  * Config the server rendered into the page. Read from data attributes rather than a script literal:
  * Mustache escapes for HTML, which is right for an attribute and wrong inside <script>, where a
@@ -81,7 +83,13 @@ export const api = {
   },
   classifiers: {
     list: (kind) => get(`/api/${CLASSIFIER_PATH[kind]}`),
-    create: (kind, name) => post(`/api/${CLASSIFIER_PATH[kind]}`, { name }),
+    /**
+     * The id is minted here, not by the server: the route receives a whole ServerCategory/Course/Tag
+     * and its id is non-null, so a body of just a name fails to deserialize and comes back 400.
+     * Client-minted ids are the rule everywhere else in Salty too -- they are UUIDv7, so they sort
+     * by creation, and creation is this moment.
+     */
+    create: (kind, name) => post(`/api/${CLASSIFIER_PATH[kind]}`, { id: uuidv7(), name }),
     rename: (kind, id, name) =>
       put(`/api/${CLASSIFIER_PATH[kind]}/${encodeURIComponent(id)}`, { id, name }),
     remove: (kind, id) => del(`/api/${CLASSIFIER_PATH[kind]}/${encodeURIComponent(id)}`),
