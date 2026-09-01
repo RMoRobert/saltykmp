@@ -899,6 +899,31 @@ class ReactUiSmokeTest {
         page.close()
     }
 
+    /**
+     * A favourite is marked in the list and a non-favourite carries nothing at all -- no outline,
+     * no empty slot, and in neither case anything clickable. Changing it is the recipe's own menu.
+     */
+    @Test
+    fun theListMarksFavouritesAndOnlyFavourites() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        val favourite = page.locator("[role=option]").filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Australian Mini Meat Pies")
+        )
+        val plain = page.locator("[role=option]").filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Skillet Cornbread")
+        )
+
+        assertEquals(1, favourite.getByLabel("Favorite").count(), "the favourite is marked")
+        assertEquals(0, plain.getByLabel("Favorite").count(), "the non-favourite is not")
+        assertEquals(
+            0, favourite.getByRole(AriaRole.BUTTON).count(),
+            "and the mark is not a button",
+        )
+        page.close()
+    }
+
     /** Dialogs are addressable, so Back closes one rather than leaving the app. */
     @Test
     fun dialogsAreAddressableAndBackClosesThem() {
