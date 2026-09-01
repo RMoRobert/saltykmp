@@ -245,6 +245,120 @@ class ReactUiSmokeTest {
         page.close()
     }
 
+    /**
+     * Chef mode is the read view with the panes around it taken away, so what proves it is that the
+     * recipe survives the transition: same document, no re-fetch, and a way back out.
+     */
+    @Test
+    fun chefModeHidesTheOtherPanesAndComesBack() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+        assertTrue(page.locator("[role=option]").count() > 0, "the list is showing to begin with")
+
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Chef mode")
+        ).first().click()
+        page.waitForSelector("text=Exit chef mode")
+
+        assertEquals(0, page.locator("[role=option]").count(), "the list pane goes away in chef mode")
+        assertTrue(page.getByText("Fill the tins and bake 25 minutes.").isVisible,
+            "the recipe is still on screen")
+
+        // Escape is the other way out, and the one a pair of floury hands is likelier to find.
+        page.keyboard().press("Escape")
+        page.waitForSelector("[role=option]")
+        assertEquals(emptyList<String>(), errors, "chef mode should not log console errors")
+        page.close()
+    }
+
+    /**
+     * The guard the browser cannot provide: navigating *inside* the app never reaches beforeunload,
+     * so an unsaved edit has to be defended in React or not at all.
+     */
+    @Test
+    fun leavingAnUnsavedEditAsksFirst() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit")
+        ).first().click()
+        page.waitForSelector("text=Edit recipe")
+        page.getByLabel("Name").fill("Australian Mini Meat Pies (v2)")
+
+        page.getByText("Skillet Cornbread").first().click()
+        page.waitForSelector("text=Discard unsaved changes?")
+
+        // Scoped to the dialog: the editor has a Cancel of its own, sitting behind the backdrop
+        // where it can never be clicked -- an unscoped locator finds that one and waits forever.
+        val dialog = page.getByRole(AriaRole.DIALOG)
+
+        // Keeping the edit leaves the editor exactly where it was, holding the typed value.
+        dialog.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Cancel")
+        ).first().click()
+        assertEquals("Australian Mini Meat Pies (v2)", page.getByLabel("Name").inputValue())
+
+        page.getByText("Skillet Cornbread").first().click()
+        page.getByRole(AriaRole.DIALOG).getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Discard")
+        ).first().click()
+        page.waitForSelector("text=Chef mode")
+        page.close()
+    }
+
+    /** Dialogs are addressable, so Back closes one rather than leaving the app. */
+    @Test
+    fun dialogsAreAddressableAndBackClosesThem() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Organize")
+        ).first().click()
+        page.waitForSelector("text=Organize library")
+        assertTrue(page.url().endsWith("#/library"), "the open dialog is in the URL: ${page.url()}")
+
+        page.goBack()
+        page.waitForSelector("text=Organize library", com.microsoft.playwright.Page.WaitForSelectorOptions()
+            .setState(com.microsoft.playwright.options.WaitForSelectorState.DETACHED))
+        assertEquals(emptyList<String>(), errors, "dialog routing should not log console errors")
+        page.close()
+    }
+
+    /** Editing a recipe writes through to the API, not just to the pane. */
+    @Test
+    fun savingAnEditReachesTheServer() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.getByText("Skillet Cornbread").first().click()
+        page.waitForSelector("text=Chef mode")
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit")
+        ).first().click()
+        page.waitForSelector("text=Edit recipe")
+        page.getByLabel("Name").fill("Skillet Cornbread with Honey")
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Save")
+        ).first().click()
+        page.waitForSelector("text=Saved")
+
+        val stored = runBlocking {
+            RecipeRepository.getById(
+                UserRepository.findByUsername("tester")!!.id,
+                "01A05100-0000-7000-8000-00000000RR04",
+            )
+        }
+        assertEquals("Skillet Cornbread with Honey", stored?.name, "the edit should have been saved")
+        page.close()
+    }
+
     @Test
     fun theEditorOpensWithTheRecipeLoaded() {
         val b = requireBrowser()

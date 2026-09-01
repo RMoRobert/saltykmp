@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Body1,
   Button,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogBody,
@@ -12,21 +13,32 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
+  Spinner,
+  Subtitle2,
+  Switch,
   Tab,
   TabList,
   Tooltip,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { Add20Regular, Delete20Regular, Dismiss24Regular } from "@fluentui/react-icons";
+import {
+  Add20Regular,
+  Delete20Regular,
+  Dismiss24Regular,
+  Key20Regular,
+  Rename20Regular,
+} from "@fluentui/react-icons";
 
 import { SALTY, api } from "../api";
-import { uuidv7, wireNow } from "../model";
+import { relativeDate, uuidv7, wireNow } from "../model";
 
 const useStyles = makeStyles({
   rows: { display: "grid", gap: tokens.spacingVerticalXS, marginTop: tokens.spacingVerticalM },
   row: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalXS },
   rowInput: { flex: 1 },
+  rowText: { flex: 1, minWidth: 0 },
+  sub: { color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 },
   count: {
     minWidth: "5.5rem",
     textAlign: "end",
@@ -37,6 +49,8 @@ const useStyles = makeStyles({
   fields: { display: "grid", gap: tokens.spacingVerticalM },
   kv: { display: "grid", gridTemplateColumns: "auto 1fr", gap: tokens.spacingHorizontalM },
   key: { color: tokens.colorNeutralForeground3 },
+  section: { marginTop: tokens.spacingVerticalL },
+  wide: { maxWidth: "44rem" },
 });
 
 /* ------------------------------------------------------------------- about -- */
@@ -55,7 +69,10 @@ export function AboutDialog({ open, onClose }) {
               <span className={styles.key}>Built</span>
               <span>{SALTY.buildTime || "—"}</span>
               <span className={styles.key}>Signed in as</span>
-              <span>{SALTY.username || "—"}</span>
+              <span>
+                {SALTY.username || "—"}
+                {SALTY.isAdmin ? " (admin)" : ""}
+              </span>
             </div>
           </DialogContent>
           <DialogActions>
@@ -69,22 +86,125 @@ export function AboutDialog({ open, onClose }) {
   );
 }
 
+/* ------------------------------------------------------------------ devices -- */
+
+/**
+ * Sync enrolments: one row per native client that has ever synced against this account.
+ *
+ * Revoked rows stay listed. Signing a device out and forgetting it happened are different things,
+ * and the second is rarely what anyone wants -- "which phone was that?" is a question you ask
+ * after revoking, not before.
+ */
+function Devices({ notify, ask }) {
+  const styles = useStyles();
+  const [rows, setRows] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      setRows((await api.devices.list()) || []);
+    } catch (e) {
+      notify(e.message || "Could not load your devices", "error");
+      setRows([]);
+    }
+  }, [notify]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (rows === null) return <Spinner size="tiny" label="Loading devices…" />;
+  if (rows.length === 0) return <Body1>No device has synced with this account yet.</Body1>;
+
+  return (
+    <div className={styles.rows}>
+      {rows.map((d) => (
+        <div key={d.deviceId} className={styles.row}>
+          <div className={styles.rowText}>
+            <div>{d.deviceName || "Unnamed device"}</div>
+            <div className={styles.sub}>
+              {d.hasToken ? "Signed in" : "Signed out"}
+              {d.tokenLastUsed ? ` · last used ${relativeDate(d.tokenLastUsed)}` : ""}
+            </div>
+          </div>
+          <Tooltip content="Rename" relationship="label">
+            <Button
+              appearance="subtle"
+              icon={<Rename20Regular />}
+              onClick={() =>
+                ask({
+                  title: "Rename device",
+                  prompt: "Device name",
+                  initialValue: d.deviceName || "",
+                  confirmLabel: "Rename",
+                  onConfirm: async (name) => {
+                    await api.devices.rename(d.deviceId, name);
+                    load();
+                  },
+                })
+              }
+            />
+          </Tooltip>
+          <Tooltip content="Remove" relationship="label">
+            <Button
+              appearance="subtle"
+              icon={<Delete20Regular />}
+              onClick={() =>
+                ask({
+                  title: "Remove app",
+                  body: `${d.deviceName || "This device"} will have to sign in again to sync.`,
+                  confirmLabel: "Remove",
+                  onConfirm: async () => {
+                    await api.devices.remove(d.deviceId);
+                    load();
+                    notify("Device removed");
+                  },
+                })
+              }
+            />
+          </Tooltip>
+        </div>
+      ))}
+      <div className={styles.addRow}>
+        <Button
+          onClick={() =>
+            ask({
+              title: "Sign every app out",
+              body: "Every device will need to sign in again before it can sync.",
+              confirmLabel: "Sign all out",
+              onConfirm: async () => {
+                const res = await api.devices.revokeAll();
+                load();
+                notify(`Signed out ${res?.revoked ?? 0} device(s)`);
+              },
+            })
+          }
+        >
+          Sign every app out
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------- preferences -- */
 
-export function PreferencesDialog({ open, onClose, notify }) {
+export function PreferencesDialog({ open, onClose, notify, ask, wakeLockPref, onWakeLockPref }) {
   const styles = useStyles();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [busy, setBusy] = useState(false);
 
   const tooShort = newPassword.length > 0 && newPassword.length < SALTY.minPasswordLength;
+  // Secure-context only, so a Salty reached over plain http on the LAN -- a normal way to run this
+  // -- does not have it at all. Better said out loud than offered as a switch that does nothing.
+  const wakeLockSupported = typeof navigator !== "undefined" && "wakeLock" in navigator;
 
   const submit = async () => {
     setBusy(true);
     try {
       await api.account.changePassword(currentPassword, newPassword);
-      // The server signs every *other* device out and leaves this session alone; say so, because a
-      // password change that silently revoked your phone would be a surprise worth avoiding.
+      // The server signs every *other* device out and leaves this session alone. Worth saying:
+      // a password change that silently revoked your phone would be a surprise.
       notify("Password changed. Other devices have been signed out.");
       setCurrentPassword("");
       setNewPassword("");
@@ -98,9 +218,17 @@ export function PreferencesDialog({ open, onClose, notify }) {
 
   return (
     <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
-      <DialogSurface>
+      <DialogSurface className={styles.wide}>
         <DialogBody>
-          <DialogTitle>Settings</DialogTitle>
+          <DialogTitle
+            action={
+              <Tooltip content="Close" relationship="label">
+                <Button appearance="subtle" icon={<Dismiss24Regular />} onClick={onClose} />
+              </Tooltip>
+            }
+          >
+            Settings
+          </DialogTitle>
           <DialogContent>
             <div className={styles.fields}>
               <MessageBar intent="info">
@@ -109,6 +237,23 @@ export function PreferencesDialog({ open, onClose, notify }) {
                 </MessageBarBody>
               </MessageBar>
 
+              <Subtitle2 as="h3">Chef mode</Subtitle2>
+              <Switch
+                checked={wakeLockPref}
+                disabled={!wakeLockSupported}
+                onChange={(_, d) => onWakeLockPref(d.checked)}
+                label="Keep the screen awake in chef mode"
+              />
+              {wakeLockSupported ? null : (
+                <MessageBar intent="warning">
+                  <MessageBarBody>
+                    This browser only offers the wake lock over HTTPS, so Salty cannot hold the
+                    screen on here.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
+
+              <Subtitle2 as="h3">Password</Subtitle2>
               <Field label="Current password">
                 <Input
                   type="password"
@@ -129,20 +274,195 @@ export function PreferencesDialog({ open, onClose, notify }) {
                   onChange={(_, d) => setNewPassword(d.value)}
                 />
               </Field>
+              <div>
+                <Button
+                  appearance="primary"
+                  disabled={busy || !currentPassword || !newPassword || tooShort}
+                  onClick={submit}
+                >
+                  Change password
+                </Button>
+              </div>
+
+              <Subtitle2 as="h3">Apps and devices</Subtitle2>
+              {open ? <Devices notify={notify} ask={ask} /> : null}
             </div>
           </DialogContent>
-          <DialogActions>
-            <Button appearance="secondary" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button
-              appearance="primary"
-              disabled={busy || !currentPassword || !newPassword || tooShort}
-              onClick={submit}
-            >
-              Change password
-            </Button>
-          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
+  );
+}
+
+/* -------------------------------------------------------------------- users -- */
+
+export function UsersDialog({ open, onClose, notify, ask }) {
+  const styles = useStyles();
+  const [rows, setRows] = useState(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setRows((await api.users.list()) || []);
+    } catch (e) {
+      notify(e.message || "Could not load users", "error");
+      setRows([]);
+    }
+  }, [notify]);
+
+  useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+
+  const create = async () => {
+    try {
+      await api.users.create(username.trim(), password, isAdmin);
+      setUsername("");
+      setPassword("");
+      setIsAdmin(false);
+      load();
+      notify("User added");
+    } catch (e) {
+      notify(e.message || "Could not add that user", "error");
+    }
+  };
+
+  const tooShort = password.length > 0 && password.length < SALTY.minPasswordLength;
+
+  return (
+    <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
+      <DialogSurface className={styles.wide}>
+        <DialogBody>
+          <DialogTitle
+            action={
+              <Tooltip content="Close" relationship="label">
+                <Button appearance="subtle" icon={<Dismiss24Regular />} onClick={onClose} />
+              </Tooltip>
+            }
+          >
+            Users
+          </DialogTitle>
+          <DialogContent>
+            {rows === null ? (
+              <Spinner size="tiny" label="Loading users…" />
+            ) : (
+              <div className={styles.rows}>
+                {rows.map((u) => (
+                  <div key={u.id} className={styles.row}>
+                    <div className={styles.rowText}>
+                      <div>
+                        {u.username}
+                        {u.isSelf ? " (you)" : ""}
+                      </div>
+                      <div className={styles.sub}>{u.isAdmin ? "Administrator" : "User"}</div>
+                    </div>
+
+                    {/* The server refuses to demote or delete the last administrator; the UI does
+                        not try to predict that, it just reports what comes back. */}
+                    <Tooltip
+                      content={u.isAdmin ? "Remove administrator" : "Make administrator"}
+                      relationship="label"
+                    >
+                      <Button
+                        appearance="subtle"
+                        onClick={async () => {
+                          try {
+                            await api.users.setAdmin(u.id, !u.isAdmin);
+                            load();
+                          } catch (e) {
+                            notify(e.message || "Could not change that", "error");
+                          }
+                        }}
+                      >
+                        {u.isAdmin ? "Demote" : "Promote"}
+                      </Button>
+                    </Tooltip>
+
+                    <Tooltip content="Reset password" relationship="label">
+                      <Button
+                        appearance="subtle"
+                        icon={<Key20Regular />}
+                        onClick={() =>
+                          ask({
+                            title: `Reset password for ${u.username}`,
+                            body: "Their apps will be signed out and they will need the new password.",
+                            prompt: "New password",
+                            confirmLabel: "Reset",
+                            onConfirm: async (value) => {
+                              try {
+                                await api.users.setPassword(u.id, value);
+                                notify("Password reset");
+                              } catch (e) {
+                                notify(e.message || "Could not reset the password", "error");
+                              }
+                            },
+                          })
+                        }
+                      />
+                    </Tooltip>
+
+                    <Tooltip content="Delete user" relationship="label">
+                      <Button
+                        appearance="subtle"
+                        icon={<Delete20Regular />}
+                        disabled={u.isSelf}
+                        onClick={() =>
+                          ask({
+                            title: "Delete user",
+                            body: `${u.username} and all of their recipes will be deleted.`,
+                            confirmLabel: "Delete",
+                            onConfirm: async () => {
+                              try {
+                                await api.users.remove(u.id);
+                                load();
+                                notify("User deleted");
+                              } catch (e) {
+                                notify(e.message || "Could not delete that user", "error");
+                              }
+                            },
+                          })
+                        }
+                      />
+                    </Tooltip>
+                  </div>
+                ))}
+
+                <div className={styles.section}>
+                  <Subtitle2 as="h3">Add a user</Subtitle2>
+                  <div className={styles.addRow}>
+                    <Input
+                      className={styles.rowInput}
+                      placeholder="Username"
+                      value={username}
+                      onChange={(_, d) => setUsername(d.value)}
+                    />
+                    <Input
+                      className={styles.rowInput}
+                      type="password"
+                      placeholder={`Password (${SALTY.minPasswordLength}+ characters)`}
+                      value={password}
+                      onChange={(_, d) => setPassword(d.value)}
+                    />
+                    <Checkbox
+                      label="Admin"
+                      checked={isAdmin}
+                      onChange={(_, d) => setIsAdmin(!!d.checked)}
+                    />
+                    <Button
+                      appearance="primary"
+                      icon={<Add20Regular />}
+                      disabled={!username.trim() || !password || tooShort}
+                      onClick={create}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </DialogContent>
         </DialogBody>
       </DialogSurface>
     </Dialog>
@@ -166,6 +486,7 @@ export function ManageLibraryDialog({
   recipes,
   onChanged,
   notify,
+  ask,
 }) {
   const styles = useStyles();
   const [kind, setKind] = useState("category");
@@ -194,18 +515,23 @@ export function ManageLibraryDialog({
     }
   };
 
-  const remove = async (item) => {
+  const remove = (item) => {
     const n = countFor(item.id);
-    const warning = n
-      ? `${item.name} is used by ${n} recipe${n === 1 ? "" : "s"}. Delete it anyway?`
-      : `Delete ${item.name}?`;
-    if (!window.confirm(warning)) return;
-    try {
-      await api.classifiers.remove(kind, item.id);
-      await onChanged();
-    } catch (e) {
-      notify(e.message || "Could not delete", "error");
-    }
+    ask({
+      title: "Delete from library",
+      body: n
+        ? `${item.name} is used by ${n} recipe${n === 1 ? "" : "s"}. They keep their other details.`
+        : `${item.name} is not used by any recipe.`,
+      confirmLabel: "Delete",
+      onConfirm: async () => {
+        try {
+          await api.classifiers.remove(kind, item.id);
+          await onChanged();
+        } catch (e) {
+          notify(e.message || "Could not delete", "error");
+        }
+      },
+    });
   };
 
   const add = async () => {
@@ -222,7 +548,7 @@ export function ManageLibraryDialog({
 
   return (
     <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
-      <DialogSurface style={{ maxWidth: "42rem" }}>
+      <DialogSurface className={styles.wide}>
         <DialogBody>
           <DialogTitle
             action={
@@ -277,7 +603,12 @@ export function ManageLibraryDialog({
                 onChange={(_, d) => setDraftName(d.value)}
                 onKeyDown={(e) => e.key === "Enter" && add()}
               />
-              <Button appearance="primary" icon={<Add20Regular />} disabled={!draftName.trim()} onClick={add}>
+              <Button
+                appearance="primary"
+                icon={<Add20Regular />}
+                disabled={!draftName.trim()}
+                onClick={add}
+              >
                 Add
               </Button>
             </div>

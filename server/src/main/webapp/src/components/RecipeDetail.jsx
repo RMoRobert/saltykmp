@@ -10,7 +10,9 @@ import {
   MenuTrigger,
   RatingDisplay,
   Subtitle2,
+  Title1,
   Title2,
+  Title3,
   Tooltip,
   makeStyles,
   mergeClasses,
@@ -18,6 +20,7 @@ import {
 } from "@fluentui/react-components";
 import {
   Add20Regular,
+  ArrowExit20Regular,
   BookOpen48Regular,
   Bookmark20Filled,
   Bookmark20Regular,
@@ -26,6 +29,7 @@ import {
   Heart20Filled,
   Heart20Regular,
   MoreHorizontal24Regular,
+  PlayCircle20Regular,
   Subtract20Regular,
 } from "@fluentui/react-icons";
 
@@ -99,6 +103,10 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
   },
   favActive: { color: tokens.colorPaletteRedForeground1 },
+  /* Chef mode: the same document, sized for reading it from across a kitchen. Fluent's ramp does
+     not go this large, so the two values here are the only hand-picked sizes in the app. */
+  chefDoc: { fontSize: "1.35rem", lineHeight: "2rem", maxWidth: "64rem" },
+  chefBar: { justifyContent: "space-between" },
 });
 
 function Placeholder({ styles }) {
@@ -113,13 +121,21 @@ function Placeholder({ styles }) {
 export default function RecipeDetail({
   recipe,
   courses,
+  chefMode,
   onEdit,
   onDelete,
   onToggleFavorite,
   onToggleWantToMake,
+  onEnterChefMode,
+  onExitChefMode,
 }) {
   const styles = useStyles();
   const [scaleIdx, setScaleIdx] = useState(1);
+
+  // Fluent's type ramp is in rem, so enlarging the document leaves fixed-size headings looking
+  // smaller than the body they head. Moving up the ramp keeps the hierarchy the right way round.
+  const Heading = chefMode ? Title3 : Subtitle2;
+  const PageTitle = chefMode ? Title1 : Title2;
 
   // A scale belongs to the recipe you were reading, not to the pane.
   useEffect(() => setScaleIdx(1), [recipe?.id]);
@@ -141,49 +157,60 @@ export default function RecipeDetail({
 
   return (
     <>
-      <div className={styles.bar}>
-        <Button appearance="outline" icon={<Edit20Regular />} onClick={onEdit}>
-          Edit
-        </Button>
-        <Menu>
-          <MenuTrigger disableButtonEnhancement>
-            <Tooltip content="More actions" relationship="label">
-              <Button appearance="subtle" icon={<MoreHorizontal24Regular />} />
-            </Tooltip>
-          </MenuTrigger>
-          <MenuPopover>
-            <MenuList>
-              <MenuItem
-                icon={recipe.isFavorite ? <Heart20Filled /> : <Heart20Regular />}
-                onClick={() => onToggleFavorite(recipe)}
-              >
-                {recipe.isFavorite ? "Remove from favorites" : "Add to favorites"}
-              </MenuItem>
-              <MenuItem
-                icon={recipe.wantToMake ? <Bookmark20Filled /> : <Bookmark20Regular />}
-                onClick={() => onToggleWantToMake(recipe)}
-              >
-                {recipe.wantToMake ? "Remove from Want to Make" : "Add to Want to Make"}
-              </MenuItem>
-              <MenuDivider />
-              <MenuItem
-                icon={<Delete20Regular />}
-                onClick={() => {
-                  if (window.confirm(`Delete “${recipe.name || "Untitled"}”?`)) onDelete(recipe.id);
-                }}
-              >
-                Delete recipe…
-              </MenuItem>
-            </MenuList>
-          </MenuPopover>
-        </Menu>
+      <div className={mergeClasses(styles.bar, chefMode && styles.chefBar)}>
+        {chefMode ? (
+          <>
+            {/* Nothing else belongs here while cooking: the way out is the only thing worth
+                offering, and everything in the overflow menu is an editing action. */}
+            <span />
+            <Button appearance="primary" icon={<ArrowExit20Regular />} onClick={onExitChefMode}>
+              Exit chef mode
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button appearance="subtle" icon={<PlayCircle20Regular />} onClick={onEnterChefMode}>
+              Chef mode
+            </Button>
+            <Button appearance="outline" icon={<Edit20Regular />} onClick={onEdit}>
+              Edit
+            </Button>
+            <Menu>
+              <MenuTrigger disableButtonEnhancement>
+                <Tooltip content="More actions" relationship="label">
+                  <Button appearance="subtle" icon={<MoreHorizontal24Regular />} />
+                </Tooltip>
+              </MenuTrigger>
+              <MenuPopover>
+                <MenuList>
+                  <MenuItem
+                    icon={recipe.isFavorite ? <Heart20Filled /> : <Heart20Regular />}
+                    onClick={() => onToggleFavorite(recipe)}
+                  >
+                    {recipe.isFavorite ? "Remove from favorites" : "Add to favorites"}
+                  </MenuItem>
+                  <MenuItem
+                    icon={recipe.wantToMake ? <Bookmark20Filled /> : <Bookmark20Regular />}
+                    onClick={() => onToggleWantToMake(recipe)}
+                  >
+                    {recipe.wantToMake ? "Remove from Want to Make" : "Add to Want to Make"}
+                  </MenuItem>
+                  <MenuDivider />
+                  <MenuItem icon={<Delete20Regular />} onClick={() => onDelete(recipe)}>
+                    Delete recipe…
+                  </MenuItem>
+                </MenuList>
+              </MenuPopover>
+            </Menu>
+          </>
+        )}
       </div>
 
       <div className={styles.scroll}>
-        <article className={styles.doc}>
+        <article className={mergeClasses(styles.doc, chefMode && styles.chefDoc)}>
           {img ? <img className={styles.image} src={img} alt="" /> : null}
 
-          <Title2 as="h1">{recipe.name || "Untitled"}</Title2>
+          <PageTitle as="h1">{recipe.name || "Untitled"}</PageTitle>
 
           {recipe.rating ? (
             <div>
@@ -219,7 +246,7 @@ export default function RecipeDetail({
           {ingredients.length ? (
             <section className={styles.section}>
               <div className={styles.sectionHead}>
-                <Subtitle2 as="h2">Ingredients</Subtitle2>
+                <Heading as="h2">Ingredients</Heading>
                 <div className={styles.scaler}>
                   <Tooltip content="Scale down" relationship="label">
                     <Button
@@ -273,7 +300,7 @@ export default function RecipeDetail({
 
           {directions.length ? (
             <section className={styles.section}>
-              <Subtitle2 as="h2">Directions</Subtitle2>
+              <Heading as="h2">Directions</Heading>
               {/* A <ul> with explicit numbers, not an <ol>: section headings are list items too,
                   and an <ol> counts them, so every heading shifts the numbering. */}
               <ul className={styles.list}>
@@ -295,7 +322,7 @@ export default function RecipeDetail({
 
           {times.length ? (
             <section className={styles.section}>
-              <Subtitle2 as="h2">Times</Subtitle2>
+              <Heading as="h2">Times</Heading>
               <dl className={styles.pairs}>
                 {times.map((t) => (
                   <div key={t.id}>
@@ -309,7 +336,7 @@ export default function RecipeDetail({
 
           {(recipe.notes ?? []).length ? (
             <section className={styles.section}>
-              <Subtitle2 as="h2">Notes</Subtitle2>
+              <Heading as="h2">Notes</Heading>
               {recipe.notes.map((n) => (
                 <div key={n.id} className={styles.block}>
                   <strong>{n.title}</strong>
@@ -321,7 +348,7 @@ export default function RecipeDetail({
 
           {(recipe.variations ?? []).length ? (
             <section className={styles.section}>
-              <Subtitle2 as="h2">Variations</Subtitle2>
+              <Heading as="h2">Variations</Heading>
               {recipe.variations.map((v) => (
                 <div key={v.id} className={styles.block}>
                   <strong>{v.variationName}</strong>

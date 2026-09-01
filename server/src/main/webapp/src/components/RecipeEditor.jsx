@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Accordion,
   AccordionHeader,
@@ -16,6 +16,7 @@ import {
   Textarea,
   Tooltip,
   makeStyles,
+  mergeClasses,
   tokens,
 } from "@fluentui/react-components";
 import {
@@ -23,9 +24,12 @@ import {
   ArrowDown20Regular,
   ArrowUp20Regular,
   Delete20Regular,
+  Image20Regular,
+  ReOrderDotsVertical20Regular,
   TextT20Regular,
 } from "@fluentui/react-icons";
 
+import { IMAGE_TYPES, MAX_IMAGE_BYTES, imageUrl } from "../api";
 import { NUTRITION_GROUPS, DIFFICULTIES, newRow } from "../model";
 
 const useStyles = makeStyles({
@@ -76,12 +80,107 @@ const useStyles = makeStyles({
     marginBottom: tokens.spacingVerticalXS,
   },
   blockRow: { marginBottom: tokens.spacingVerticalM, display: "grid", gap: tokens.spacingVerticalXS },
+  /* Where the row will land if dropped now. A line, not a reflowed list: moving rows around on
+     every dragover makes the target you are aiming at slide out from under the cursor. */
+  dropTarget: { borderTop: `2px solid ${tokens.colorBrandStroke1}` },
+  dragging: { opacity: 0.4 },
+  handle: { cursor: "grab", color: tokens.colorNeutralForeground3, display: "flex" },
+  imageRow: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalM },
+  preview: {
+    width: "120px",
+    height: "120px",
+    objectFit: "cover",
+    borderRadius: tokens.borderRadiusMedium,
+    backgroundColor: tokens.colorNeutralBackground3,
+  },
 });
 
-/** One editable line of a list: the text, what kind of line it is, and where it sits. */
-function ListRow({ styles, row, index, count, onChange, onMove, onRemove, allowMain }) {
+/**
+ * The recipe photo.
+ *
+ * Nothing is sent until Save. A picked file is previewed from a blob URL and staged; a removal is
+ * staged the same way. That keeps "Cancel leaves no trace" true of the image as well as the text,
+ * which it would not be if the upload fired on selection.
+ */
+function ImageField({ styles, recipe, file, removed, onPick, onRemove, notify }) {
+  const input = useRef(null);
+  const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
+
+  // A blob URL is held by the document until revoked, so trying five photos would leak five of them.
+  useEffect(() => () => previewUrl && URL.revokeObjectURL(previewUrl), [previewUrl]);
+
+  const shown = previewUrl || (removed ? null : imageUrl(recipe));
+
+  const pick = (e) => {
+    const chosen = e.target.files?.[0];
+    e.target.value = ""; // so picking the same file twice still fires a change
+    if (!chosen) return;
+    // Mirrors the server, which identifies the format from the bytes and caps the request size.
+    // Checking here turns a 25 MB round trip ending in 415 into an immediate, specific message.
+    if (!IMAGE_TYPES.includes(chosen.type)) {
+      notify("Images must be JPEG, PNG or GIF", "error");
+      return;
+    }
+    if (chosen.size > MAX_IMAGE_BYTES) {
+      notify("That image is larger than 25 MB", "error");
+      return;
+    }
+    onPick(chosen);
+  };
+
   return (
-    <div className={styles.row}>
+    <Field label="Photo">
+      <div className={styles.imageRow}>
+        {shown ? (
+          <img className={styles.preview} src={shown} alt="" />
+        ) : (
+          <div className={styles.preview} aria-hidden="true" />
+        )}
+        <div className={styles.rowActions}>
+          <input ref={input} type="file" accept={IMAGE_TYPES.join(",")} hidden onChange={pick} />
+          <Button icon={<Image20Regular />} onClick={() => input.current?.click()}>
+            {shown ? "Replace…" : "Choose…"}
+          </Button>
+          {shown ? (
+            <Button appearance="subtle" icon={<Delete20Regular />} onClick={onRemove}>
+              Remove
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </Field>
+  );
+}
+
+/** One editable line of a list: the text, what kind of line it is, and where it sits. */
+function ListRow({ styles, row, index, count, onChange, onMove, onRemove, allowMain, drag }) {
+  return (
+    <div
+      className={mergeClasses(
+        styles.row,
+        drag.overIndex === index && styles.dropTarget,
+        drag.fromIndex === index && styles.dragging,
+      )}
+      onDragOver={(e) => {
+        e.preventDefault();
+        drag.setOverIndex(index);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        drag.drop(index);
+      }}
+    >
+      {/* Only the handle is draggable, not the row: a draggable row swallows text selection in the
+          input, which is where most of the time in this editor is spent. */}
+      <span
+        className={styles.handle}
+        draggable
+        aria-hidden="true"
+        onDragStart={() => drag.setFromIndex(index)}
+        onDragEnd={drag.end}
+      >
+        <ReOrderDotsVertical20Regular />
+      </span>
       <Input
         className={styles.rowInput}
         input={row.isHeading ? { className: styles.headingInput } : undefined}
@@ -90,7 +189,7 @@ function ListRow({ styles, row, index, count, onChange, onMove, onRemove, allowM
         onChange={(_, d) => onChange({ ...row, text: d.value })}
       />
       <div className={styles.rowActions}>
-        {allowMain ? (
+        {allowMain && !row.isHeading ? (
           <Tooltip content="Main ingredient" relationship="label">
             <Button
               appearance={row.isMain ? "primary" : "subtle"}
@@ -131,7 +230,10 @@ function ListRow({ styles, row, index, count, onChange, onMove, onRemove, allowM
   );
 }
 
-function EditableList({ styles, title, rows, onRows, allowMain }) {
+function EditableList({ styles, title, rows, onRows, allowMain, addLabel }) {
+  const [fromIndex, setFromIndex] = useState(null);
+  const [overIndex, setOverIndex] = useState(null);
+
   const set = (i, next) => onRows(rows.map((r, j) => (j === i ? next : r)));
   const move = (i, d) => {
     const next = [...rows];
@@ -140,6 +242,27 @@ function EditableList({ styles, title, rows, onRows, allowMain }) {
     onRows(next);
   };
   const remove = (i) => onRows(rows.filter((_, j) => j !== i));
+
+  const drag = {
+    fromIndex,
+    overIndex,
+    setFromIndex,
+    setOverIndex,
+    end: () => {
+      setFromIndex(null);
+      setOverIndex(null);
+    },
+    drop: (to) => {
+      if (fromIndex !== null && fromIndex !== to) {
+        const next = [...rows];
+        const [item] = next.splice(fromIndex, 1);
+        next.splice(to, 0, item);
+        onRows(next);
+      }
+      setFromIndex(null);
+      setOverIndex(null);
+    },
+  };
 
   return (
     <section className={styles.section}>
@@ -157,34 +280,63 @@ function EditableList({ styles, title, rows, onRows, allowMain }) {
           onMove={move}
           onRemove={remove}
           allowMain={allowMain}
+          drag={drag}
         />
       ))}
       <div className={styles.addRow}>
         <Button
           appearance="subtle"
           icon={<Add20Regular />}
-          onClick={() => onRows([...rows, newRow("", allowMain ? { isHeading: false, isMain: false } : { isHeading: false })])}
+          onClick={() =>
+            onRows([
+              ...rows,
+              newRow("", allowMain ? { isHeading: false, isMain: false } : { isHeading: false }),
+            ])
+          }
         >
-          Add line
+          {addLabel}
         </Button>
         <Button
           appearance="subtle"
           icon={<Add20Regular />}
           onClick={() => onRows([...rows, newRow("New section", { isHeading: true })])}
         >
-          Add section
+          Add section heading
         </Button>
       </div>
     </section>
   );
 }
 
-export default function RecipeEditor({ recipe, courses, categories, tags, onCancel, onSave }) {
+export default function RecipeEditor({
+  recipe,
+  courses,
+  categories,
+  tags,
+  onCancel,
+  onSave,
+  onDirtyChange,
+  notify,
+}) {
   const styles = useStyles();
   const [draft, setDraft] = useState(recipe);
+  const [imageFile, setImageFile] = useState(null);
+  const [imageRemoved, setImageRemoved] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => setDraft(recipe), [recipe]);
+  useEffect(() => {
+    setDraft(recipe);
+    setImageFile(null);
+    setImageRemoved(false);
+  }, [recipe]);
+
+  // What the unsaved-changes guard reads. Comparing the whole draft rather than setting a flag on
+  // every edit means typing a character and typing it back again leaves nothing to warn about.
+  useEffect(() => {
+    onDirtyChange?.(
+      JSON.stringify(draft) !== JSON.stringify(recipe) || !!imageFile || imageRemoved,
+    );
+  }, [draft, recipe, imageFile, imageRemoved, onDirtyChange]);
 
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const ingredients = draft.ingredients ?? [];
@@ -196,9 +348,8 @@ export default function RecipeEditor({ recipe, courses, categories, tags, onCanc
 
   const save = async () => {
     setSaving(true);
-    const ok = await onSave(draft);
+    await onSave(draft, { imageFile, imageRemoved });
     setSaving(false);
-    if (!ok) return;
   };
 
   return (
@@ -223,6 +374,22 @@ export default function RecipeEditor({ recipe, courses, categories, tags, onCanc
               placeholder="What is it called?"
             />
           </Field>
+
+          <ImageField
+            styles={styles}
+            recipe={draft}
+            file={imageFile}
+            removed={imageRemoved}
+            notify={notify}
+            onPick={(f) => {
+              setImageFile(f);
+              setImageRemoved(false);
+            }}
+            onRemove={() => {
+              setImageFile(null);
+              setImageRemoved(true);
+            }}
+          />
 
           <div className={styles.grid}>
             <Field label="Source">
@@ -364,6 +531,7 @@ export default function RecipeEditor({ recipe, courses, categories, tags, onCanc
           <EditableList
             styles={styles}
             title="Ingredients"
+            addLabel="Add ingredient"
             rows={ingredients}
             onRows={(rows) => set({ ingredients: rows })}
             allowMain
@@ -372,6 +540,7 @@ export default function RecipeEditor({ recipe, courses, categories, tags, onCanc
           <EditableList
             styles={styles}
             title="Directions"
+            addLabel="Add step"
             rows={directions}
             onRows={(rows) => set({ directions: rows })}
           />

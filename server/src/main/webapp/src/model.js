@@ -227,3 +227,20 @@ export const NUTRITION_GROUPS = [
     ],
   },
 ];
+
+/**
+ * "3 days ago", for dates the reader only needs to place roughly. Exact stamps are for the API;
+ * a device list wants to answer "recently?" at a glance.
+ */
+export function relativeDate(iso) {
+  const then = Date.parse(iso || "");
+  if (!Number.isFinite(then)) return "";
+  const days = Math.round((Date.now() - then) / 86_400_000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months} month${months === 1 ? "" : "s"} ago`;
+  const years = Math.round(days / 365);
+  return `${years} year${years === 1 ? "" : "s"} ago`;
+}

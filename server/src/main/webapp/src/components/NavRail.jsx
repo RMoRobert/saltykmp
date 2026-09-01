@@ -1,5 +1,11 @@
 import {
   Button,
+  Divider,
+  Menu,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
   Tooltip,
   Tree,
   TreeItem,
@@ -9,6 +15,7 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import {
+  ArrowExit24Regular,
   Bookmark24Regular,
   BookOpen24Regular,
   Cart24Regular,
@@ -18,9 +25,14 @@ import {
   Info24Regular,
   Navigation24Regular,
   Options24Regular,
+  Person24Regular,
+  People24Regular,
   Settings24Regular,
   Tag24Regular,
+  TableSimple24Regular,
 } from "@fluentui/react-icons";
+
+import { SALTY } from "../api";
 
 const useStyles = makeStyles({
   rail: {
@@ -110,6 +122,8 @@ function ClassifierGroup({ styles, kind, label, icon, items, filter, onFilter, c
 export default function NavRail({
   open,
   onToggle,
+  onUsers,
+  onShoppingLists,
   section,
   filter,
   onFilter,
@@ -258,8 +272,15 @@ export default function NavRail({
           countFor={countFor}
         />
 
-        <TreeItem itemType="branch" value="lists">
-          <TreeItemLayout iconBefore={<Cart24Regular />}>Shopping Lists</TreeItemLayout>
+        {/* Clicking the group shows the lists index, as well as expanding it. Expanding alone
+            left no route to the index pane -- you could only reach a list you could already name. */}
+        <TreeItem itemType="branch" value="lists" onClick={onShoppingLists}>
+          <TreeItemLayout
+            iconBefore={<Cart24Regular />}
+            className={mergeClasses(section === "lists" && !selectedListId && styles.selected)}
+          >
+            Shopping Lists
+          </TreeItemLayout>
           <Tree>
             {shoppingLists.length === 0 ? (
               <TreeItem itemType="leaf" value="lists:none" disabled>
@@ -316,6 +337,43 @@ export default function NavRail({
         >
           About
         </Button>
+
+        <Divider />
+
+        {/* The account's own actions, kept apart from the library's: signing out and administering
+            users are not things you do to a recipe collection. */}
+        <Menu>
+          <MenuTrigger disableButtonEnhancement>
+            <Button appearance="subtle" icon={<Person24Regular />} className={styles.footButton}>
+              {SALTY.username || "Account"}
+            </Button>
+          </MenuTrigger>
+          <MenuPopover>
+            <MenuList>
+              {SALTY.isAdmin ? (
+                <MenuItem icon={<People24Regular />} onClick={onUsers}>
+                  Manage users…
+                </MenuItem>
+              ) : null}
+              <MenuItem
+                icon={<TableSimple24Regular />}
+                onClick={() => {
+                  window.location.href = "/classic";
+                }}
+              >
+                Classic view
+              </MenuItem>
+              <MenuItem
+                icon={<ArrowExit24Regular />}
+                onClick={() => {
+                  window.location.href = "/logout";
+                }}
+              >
+                Log out
+              </MenuItem>
+            </MenuList>
+          </MenuPopover>
+        </Menu>
       </div>
     </nav>
   );

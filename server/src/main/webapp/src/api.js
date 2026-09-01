@@ -91,12 +91,83 @@ export const api = {
     get: (id) => get(`/api/shoppingLists/${encodeURIComponent(id)}`),
     save: (l) => put(`/api/shoppingLists/${encodeURIComponent(l.id)}`, l),
     remove: (id) => del(`/api/shoppingLists/${encodeURIComponent(id)}`),
+    /**
+     * Three-way merge, run on the server.
+     *
+     * The native clients keep a `syncedSnapshot` of the last agreed state and merge locally. The
+     * server keeps no such column for the web, so the browser holds the base itself and hands both
+     * sides over -- the merge that runs is the same shared one, not a web-only rule.
+     */
+    resolve: (id, base, local) =>
+      post(`/api/shoppingLists/${encodeURIComponent(id)}/resolve`, { base, local }),
   },
   account: {
     changePassword: (currentPassword, newPassword) =>
       post("/api/account/password", { currentPassword, newPassword }),
   },
+  /** Sync enrolments: one row per native client that has ever synced against this account. */
+  devices: {
+    list: () => get("/api/auth/devices"),
+    rename: (deviceId, deviceName) =>
+      request("PATCH", `/api/auth/devices/${encodeURIComponent(deviceId)}`, { deviceName }),
+    remove: (deviceId) => del(`/api/auth/devices/${encodeURIComponent(deviceId)}`),
+    revokeAll: () => post("/api/auth/devices/revoke-all"),
+  },
+  users: {
+    list: () => get("/api/users"),
+    create: (username, password, isAdmin) => post("/api/users", { username, password, isAdmin }),
+    setPassword: (id, password) => post(`/api/users/${encodeURIComponent(id)}/password`, { password }),
+    setAdmin: (id, isAdmin) => request("PATCH", `/api/users/${encodeURIComponent(id)}`, { isAdmin }),
+    remove: (id) => del(`/api/users/${encodeURIComponent(id)}`),
+  },
 };
+
+/**
+ * Images do not go through `request`: the body is multipart, so the browser has to set
+ * Content-Type itself in order to add the boundary. Setting it by hand produces a request the
+ * server cannot parse.
+ *
+ * `lastModifiedImageDate` is bumped independently of the recipe's own stamp, so a text-only edit
+ * never re-transfers the image and an image-only edit never re-transfers the body. The pair has to
+ * travel together, which is why the caller passes the stamp in rather than letting each side guess.
+ */
+export async function uploadImage(recipeId, file, stamp) {
+  const body = new FormData();
+  body.append("file", file, file.name || "image");
+  body.append("lastModifiedImageDate", stamp);
+  const resp = await fetch(`/api/recipes/${encodeURIComponent(recipeId)}/image`, {
+    method: "POST",
+    headers: { "X-CSRF-Token": SALTY.csrfToken },
+    credentials: "same-origin",
+    body,
+  });
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`;
+    try {
+      const j = await resp.json();
+      if (j?.error) detail = j.error;
+    } catch {
+      /* keep the status line */
+    }
+    throw new Error(detail);
+  }
+  return resp.json();
+}
+
+export const deleteImage = (recipeId, stamp) =>
+  request(
+    "DELETE",
+    `/api/recipes/${encodeURIComponent(recipeId)}/image` +
+      `?lastModifiedImageDate=${encodeURIComponent(stamp)}`,
+  );
+
+/**
+ * Mirrors the server: ImageStore identifies the format from the BYTES and stores only these three,
+ * and MAX_IMAGE_UPLOAD_BYTES caps the request. Checking here as well turns a 25 MB round trip that
+ * ends in 415 into an immediate, specific message.
+ */
+export const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif"];
+export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
 /**
  * The list asks for thumbnails, not full images: the server generates and caches those, so a

@@ -1,25 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FluentProvider,
+  Toast,
+  ToastTitle,
   Toaster,
   makeStyles,
   tokens,
   useId,
   useToastController,
-  Toast,
-  ToastTitle,
   webDarkTheme,
   webLightTheme,
 } from "@fluentui/react-components";
 
-import { api } from "./api";
-import { matchesFilter, visibleRecipes, uuidv7, wireNow } from "./model";
+import { api, deleteImage, uploadImage } from "./api";
+import { matchesFilter, uuidv7, visibleRecipes, wireNow } from "./model";
+import { readStored, useHashDialog, useUnloadGuard, useWakeLock, writeStored } from "./hooks";
+import ConfirmDialog from "./components/ConfirmDialog";
 import NavRail from "./components/NavRail";
 import RecipeList from "./components/RecipeList";
 import RecipeDetail from "./components/RecipeDetail";
 import RecipeEditor from "./components/RecipeEditor";
 import ShoppingListPane from "./components/ShoppingListPane";
-import { AboutDialog, ManageLibraryDialog, PreferencesDialog, ImportDialog } from "./components/dialogs";
+import {
+  AboutDialog,
+  ImportDialog,
+  ManageLibraryDialog,
+  PreferencesDialog,
+  UsersDialog,
+} from "./components/dialogs";
 
 const useStyles = makeStyles({
   root: {
@@ -30,6 +38,9 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2,
     color: tokens.colorNeutralForeground1,
   },
+  // Chef mode is the same detail pane with the other two columns taken away, rather than a separate
+  // screen: the recipe on show must not reflow or re-fetch just because the panes around it went.
+  chef: { gridTemplateColumns: "1fr" },
   pane: {
     minWidth: 0,
     height: "100vh",
@@ -63,22 +74,9 @@ const RAIL_COLLAPSED = 48;
 const LIST_WIDTH_KEY = "salty.listWidth";
 const SORT_KEY = "salty.recipeSort";
 const SORT_ASC_KEY = "salty.recipeSortAsc";
+const WAKE_LOCK_KEY = "salty.chefWakeLock";
 
-const readStored = (k, fallback) => {
-  try {
-    const v = localStorage.getItem(k);
-    return v === null ? fallback : v;
-  } catch {
-    return fallback;
-  }
-};
-const writeStored = (k, v) => {
-  try {
-    localStorage.setItem(k, String(v));
-  } catch {
-    /* private mode: a remembered width is not worth an exception */
-  }
-};
+const DIALOGS = ["library", "import", "preferences", "users", "about"];
 
 /** Follows the OS rather than offering a switch, matching what the Mustache shell does pre-paint. */
 function usePrefersDark() {
@@ -111,6 +109,10 @@ export default function App() {
     [dispatchToast],
   );
 
+  /** Every confirmation and one-field prompt in the app goes through this. See ConfirmDialog. */
+  const [confirmRequest, setConfirmRequest] = useState(null);
+  const ask = useCallback((request) => setConfirmRequest(request), []);
+
   /* ------------------------------------------------------------------ data -- */
 
   const [recipes, setRecipes] = useState([]);
@@ -129,6 +131,10 @@ export default function App() {
     setCourses(c || []);
     setCategories(k || []);
     setTags(t || []);
+  }, []);
+
+  const reloadLists = useCallback(async () => {
+    setShoppingLists((await api.shoppingLists.list()) || []);
   }, []);
 
   useEffect(() => {
@@ -164,74 +170,135 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [current, setCurrent] = useState(null);
   const [mode, setMode] = useState("read"); // read | edit
-  const [dialog, setDialog] = useState(null); // about | preferences | library | import
+  const [dirty, setDirty] = useState(false);
   const [selectedListId, setSelectedListId] = useState(null);
+
+  const [chefMode, setChefMode] = useState(false);
+  const [wakeLockPref, setWakeLockPref] = useState(() => readStored(WAKE_LOCK_KEY, "1") !== "0");
+  useWakeLock(chefMode && wakeLockPref);
+
+  const [dialog, openDialog, closeDialog] = useHashDialog(DIALOGS);
+  useUnloadGuard(dirty);
 
   useEffect(() => writeStored(SORT_KEY, sortBy), [sortBy]);
   useEffect(() => writeStored(SORT_ASC_KEY, sortAsc), [sortAsc]);
   useEffect(() => writeStored(LIST_WIDTH_KEY, listWidth), [listWidth]);
+  useEffect(() => writeStored(WAKE_LOCK_KEY, wakeLockPref ? "1" : "0"), [wakeLockPref]);
 
   const rows = useMemo(
     () => visibleRecipes(recipes, filter, query, sortBy, sortAsc),
     [recipes, filter, query, sortBy, sortAsc],
   );
 
-  const applyFilter = useCallback(
-    (kind, id, label) => {
-      setSection("recipes");
-      setFilter({ kind, id, label: label || "All Recipes" });
-      // The detail column follows the list, as in the Swift client where detail is driven by
-      // selection *within* the current list. Otherwise the right pane goes on showing a recipe the
-      // middle column no longer lists, and the two quietly disagree about where you are.
-      setCurrent((c) => (c && !matchesFilter(c, { kind, id }) ? null : c));
-      setSelectedId((s) => {
-        const c = recipes.find((r) => r.id === s);
-        return c && !matchesFilter(c, { kind, id }) ? null : s;
+  /**
+   * Anything that would replace what the editor is holding asks first. The browser's own unload
+   * prompt cannot see in-app navigation, so this is the half of the guard that catches clicking
+   * another recipe, another filter, or Back.
+   */
+  const guard = useCallback(
+    (proceed) => {
+      if (!(mode === "edit" && dirty)) {
+        proceed();
+        return;
+      }
+      ask({
+        title: "Discard unsaved changes?",
+        body: "This recipe has edits that have not been saved.",
+        confirmLabel: "Discard",
+        onConfirm: () => {
+          setDirty(false);
+          proceed();
+        },
       });
     },
-    [recipes],
+    [ask, dirty, mode],
+  );
+
+  const applyFilter = useCallback(
+    (kind, id, label) =>
+      guard(() => {
+        setSection("recipes");
+        setMode("read");
+        setFilter({ kind, id, label: label || "All Recipes" });
+        // The detail column follows the list, as in the Swift client where detail is driven by
+        // selection *within* the current list. Otherwise the right pane goes on showing a recipe
+        // the middle column no longer lists, and the two quietly disagree about where you are.
+        setCurrent((c) => (c && !matchesFilter(c, { kind, id }) ? null : c));
+        setSelectedId((s) => {
+          const c = recipes.find((r) => r.id === s);
+          return c && !matchesFilter(c, { kind, id }) ? null : s;
+        });
+      }),
+    [guard, recipes],
   );
 
   const openRecipe = useCallback(
-    async (id) => {
-      setSelectedId(id);
-      setMode("read");
-      try {
-        const full = await api.recipes.get(id);
-        setCurrent(full);
-      } catch (e) {
-        notify(e.message || "Could not open that recipe", "error");
-      }
-    },
-    [notify],
+    (id) =>
+      guard(async () => {
+        setSelectedId(id);
+        setMode("read");
+        setDirty(false);
+        try {
+          setCurrent(await api.recipes.get(id));
+        } catch (e) {
+          notify(e.message || "Could not open that recipe", "error");
+        }
+      }),
+    [guard, notify],
   );
 
   /* ----------------------------------------------------------------- edits -- */
 
-  const newRecipe = useCallback(() => {
-    const now = wireNow();
-    setCurrent({
-      id: uuidv7(),
-      name: "",
-      createdDate: now,
-      lastModifiedDate: now,
-      ingredients: [],
-      directions: [],
-      notes: [],
-      variations: [],
-      preparationTimes: [],
-      categoryIds: [],
-      tagIds: [],
-    });
-    setSelectedId(null); // nothing in the list to highlight until it is saved
-    setMode("edit");
-  }, []);
+  const newRecipe = useCallback(
+    () =>
+      guard(() => {
+        const now = wireNow();
+        // Both ways of making a recipe open a draft that exists only in this tab: nothing is
+        // written until Save, so Cancel leaves no trace. The id is minted here because ids sort by
+        // creation and this is the moment of creation, not whenever the save lands.
+        setCurrent({
+          id: uuidv7(),
+          name: "",
+          createdDate: now,
+          lastModifiedDate: now,
+          ingredients: [],
+          directions: [],
+          notes: [],
+          variations: [],
+          preparationTimes: [],
+          categoryIds: [],
+          tagIds: [],
+        });
+        setSelectedId(null); // nothing in the list to highlight until it is saved
+        setMode("edit");
+        setDirty(true);
+      }),
+    [guard],
+  );
 
+  /**
+   * Saves the body first, then the image.
+   *
+   * Order matters: the body PUT carries the recipe's copy of `imageFilename`, so uploading first
+   * would let that stale value overwrite what the upload just set.
+   */
   const saveRecipe = useCallback(
-    async (draft) => {
-      const body = { ...draft, lastModifiedDate: wireNow() };
+    async (draft, { imageFile, imageRemoved } = {}) => {
       try {
-        const saved = (await api.recipes.save(body)) || body;
+        const body = { ...draft, lastModifiedDate: wireNow() };
+        let saved = (await api.recipes.save(body)) || body;
+
+        if (imageFile || imageRemoved) {
+          const stamp = wireNow();
+          if (imageFile) {
+            const { filename } = await uploadImage(saved.id, imageFile, stamp);
+            saved = { ...saved, imageFilename: filename, lastModifiedImageDate: stamp };
+          } else {
+            await deleteImage(saved.id, stamp);
+            saved = { ...saved, imageFilename: null, lastModifiedImageDate: stamp };
+          }
+        }
+
         setRecipes((list) => {
           const i = list.findIndex((r) => r.id === saved.id);
           if (i === -1) return [...list, saved];
@@ -242,6 +309,7 @@ export default function App() {
         setCurrent(saved);
         setSelectedId(saved.id);
         setMode("read");
+        setDirty(false);
         notify("Saved");
         return true;
       } catch (e) {
@@ -253,37 +321,62 @@ export default function App() {
   );
 
   const deleteRecipe = useCallback(
-    async (id) => {
-      try {
-        await api.recipes.remove(id);
-        setRecipes((list) => list.filter((r) => r.id !== id));
-        setCurrent(null);
-        setSelectedId(null);
-        setMode("read");
-        notify("Recipe deleted");
-      } catch (e) {
-        notify(e.message || "Could not delete", "error");
-      }
-    },
-    [notify],
+    (recipe) =>
+      ask({
+        title: "Delete recipe",
+        body: `“${recipe.name || "Untitled"}” will be removed from your library on every device.`,
+        confirmLabel: "Delete",
+        onConfirm: async () => {
+          try {
+            await api.recipes.remove(recipe.id);
+            setRecipes((list) => list.filter((r) => r.id !== recipe.id));
+            setCurrent(null);
+            setSelectedId(null);
+            setMode("read");
+            setDirty(false);
+            notify("Recipe deleted");
+          } catch (e) {
+            notify(e.message || "Could not delete", "error");
+          }
+        },
+      }),
+    [ask, notify],
   );
 
   /** Favourite and want-to-make are one-field writes, so they patch rather than round-trip a form. */
   const toggleFlag = useCallback(
     async (recipe, field) => {
-      const next = { ...recipe, [field]: !recipe[field], lastModifiedDate: wireNow() };
-      setRecipes((list) => list.map((r) => (r.id === next.id ? { ...r, [field]: next[field] } : r)));
-      setCurrent((c) => (c && c.id === next.id ? { ...c, [field]: next[field] } : c));
+      const value = !recipe[field];
+      setRecipes((list) => list.map((r) => (r.id === recipe.id ? { ...r, [field]: value } : r)));
+      setCurrent((c) => (c && c.id === recipe.id ? { ...c, [field]: value } : c));
       try {
-        // The list rows are summaries; send the full row the server last gave us for this recipe.
-        const full = current && current.id === recipe.id ? current : await api.recipes.get(recipe.id);
-        await api.recipes.save({ ...full, [field]: next[field], lastModifiedDate: next.lastModifiedDate });
+        // List rows are summaries; send the full row rather than writing a partial one back.
+        const full =
+          current && current.id === recipe.id ? current : await api.recipes.get(recipe.id);
+        await api.recipes.save({ ...full, [field]: value, lastModifiedDate: wireNow() });
       } catch (e) {
         notify(e.message || "Could not update", "error");
       }
     },
     [current, notify],
   );
+
+  /* -------------------------------------------------------------- chef mode -- */
+
+  /**
+   * Only from a recipe that is open and being read: chef mode takes the detail bar away, so there
+   * would be no way out of an editor entered underneath it, and nothing to show with no recipe.
+   */
+  const enterChefMode = useCallback(() => {
+    if (current && mode === "read") setChefMode(true);
+  }, [current, mode]);
+
+  useEffect(() => {
+    if (!chefMode) return undefined;
+    const onKey = (e) => e.key === "Escape" && setChefMode(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chefMode]);
 
   /* -------------------------------------------------------------- resizing -- */
 
@@ -294,8 +387,9 @@ export default function App() {
   };
   const onGutterMove = (e) => {
     if (!dragging.current) return;
-    const railWidth = railOpen ? RAIL_OPEN : RAIL_COLLAPSED;
-    setListWidth(Math.max(260, Math.min(620, e.clientX - railWidth)));
+    setListWidth(
+      Math.max(260, Math.min(620, e.clientX - (railOpen ? RAIL_OPEN : RAIL_COLLAPSED))),
+    );
   };
   const onGutterUp = () => {
     dragging.current = false;
@@ -306,122 +400,158 @@ export default function App() {
     "--list": `${listWidth}px`,
   };
 
+  const detail =
+    section === "lists" ? (
+      <ShoppingListPane.Detail id={selectedListId} notify={notify} ask={ask} onChanged={reloadLists} />
+    ) : mode === "edit" && current ? (
+      <RecipeEditor
+        recipe={current}
+        courses={courses}
+        categories={categories}
+        tags={tags}
+        onDirtyChange={setDirty}
+        onCancel={() =>
+          guard(() => {
+            setMode("read");
+            if (!selectedId) setCurrent(null);
+          })
+        }
+        onSave={saveRecipe}
+        notify={notify}
+      />
+    ) : (
+      <RecipeDetail
+        recipe={current}
+        courses={courses}
+        chefMode={chefMode}
+        onEdit={() => setMode("edit")}
+        onDelete={deleteRecipe}
+        onToggleFavorite={(r) => toggleFlag(r, "isFavorite")}
+        onToggleWantToMake={(r) => toggleFlag(r, "wantToMake")}
+        onEnterChefMode={enterChefMode}
+        onExitChefMode={() => setChefMode(false)}
+      />
+    );
+
   return (
     <FluentProvider theme={dark ? webDarkTheme : webLightTheme}>
-      <div className={styles.root} style={rootStyle}>
-        <NavRail
-          open={railOpen}
-          onToggle={() => setRailOpen((v) => !v)}
-          section={section}
-          filter={filter}
-          onFilter={applyFilter}
-          onShoppingLists={() => setSection("lists")}
-          recipes={recipes}
-          courses={courses}
-          categories={categories}
-          tags={tags}
-          shoppingLists={shoppingLists}
-          selectedListId={selectedListId}
-          onSelectList={(id) => {
-            setSection("lists");
-            setSelectedListId(id);
-          }}
-          onManageLibrary={() => setDialog("library")}
-          onPreferences={() => setDialog("preferences")}
-          onAbout={() => setDialog("about")}
-        />
-
-        <div className={`${styles.pane} ${styles.listPane}`}>
-          {section === "recipes" ? (
-            <RecipeList
-              title={filter.label}
-              rows={rows}
-              loading={loading}
-              query={query}
-              onQuery={setQuery}
-              sortBy={sortBy}
-              sortAsc={sortAsc}
-              onSort={(by, asc) => {
-                setSortBy(by);
-                setSortAsc(asc);
-              }}
-              selectedId={selectedId}
-              onSelect={openRecipe}
-              onNew={newRecipe}
-              onImport={() => setDialog("import")}
-              onToggleFavorite={(r) => toggleFlag(r, "isFavorite")}
-            />
-          ) : (
-            <ShoppingListPane.List
-              lists={shoppingLists}
-              selectedId={selectedListId}
-              onSelect={setSelectedListId}
-              onChanged={async () => setShoppingLists((await api.shoppingLists.list()) || [])}
-              notify={notify}
-            />
-          )}
-          <div
-            className={styles.gutter}
-            onPointerDown={onGutterDown}
-            onPointerMove={onGutterMove}
-            onPointerUp={onGutterUp}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize recipe list"
-          />
-        </div>
-
-        <div className={`${styles.pane} ${styles.detailPane}`}>
-          {section === "lists" ? (
-            <ShoppingListPane.Detail id={selectedListId} notify={notify} />
-          ) : mode === "edit" && current ? (
-            <RecipeEditor
-              recipe={current}
+      <div
+        className={`${styles.root} ${chefMode ? styles.chef : ""}`}
+        style={chefMode ? undefined : rootStyle}
+      >
+        {chefMode ? null : (
+          <>
+            <NavRail
+              open={railOpen}
+              onToggle={() => setRailOpen((v) => !v)}
+              section={section}
+              filter={filter}
+              onFilter={applyFilter}
+              recipes={recipes}
               courses={courses}
               categories={categories}
               tags={tags}
-              onCancel={() => {
-                setMode("read");
-                if (!selectedId) setCurrent(null);
-              }}
-              onSave={saveRecipe}
+              shoppingLists={shoppingLists}
+              selectedListId={selectedListId}
+              onSelectList={(id) =>
+                guard(() => {
+                  setSection("lists");
+                  setSelectedListId(id);
+                })
+              }
+              onShoppingLists={() =>
+                guard(() => {
+                  setSection("lists");
+                  setSelectedListId(null);
+                })
+              }
+              onManageLibrary={() => openDialog("library")}
+              onPreferences={() => openDialog("preferences")}
+              onUsers={() => openDialog("users")}
+              onAbout={() => openDialog("about")}
             />
-          ) : (
-            <RecipeDetail
-              recipe={current}
-              courses={courses}
-              onEdit={() => setMode("edit")}
-              onDelete={deleteRecipe}
-              onToggleFavorite={(r) => toggleFlag(r, "isFavorite")}
-              onToggleWantToMake={(r) => toggleFlag(r, "wantToMake")}
-            />
-          )}
-        </div>
+
+            <div className={`${styles.pane} ${styles.listPane}`}>
+              {section === "recipes" ? (
+                <RecipeList
+                  title={filter.label}
+                  rows={rows}
+                  loading={loading}
+                  query={query}
+                  onQuery={setQuery}
+                  sortBy={sortBy}
+                  sortAsc={sortAsc}
+                  onSort={(by, asc) => {
+                    setSortBy(by);
+                    setSortAsc(asc);
+                  }}
+                  selectedId={selectedId}
+                  onSelect={openRecipe}
+                  onNew={newRecipe}
+                  onImport={() => openDialog("import")}
+                  onToggleFavorite={(r) => toggleFlag(r, "isFavorite")}
+                />
+              ) : (
+                <ShoppingListPane.List
+                  lists={shoppingLists}
+                  selectedId={selectedListId}
+                  onSelect={(id) => guard(() => setSelectedListId(id))}
+                  onChanged={reloadLists}
+                  notify={notify}
+                  ask={ask}
+                />
+              )}
+              <div
+                className={styles.gutter}
+                onPointerDown={onGutterDown}
+                onPointerMove={onGutterMove}
+                onPointerUp={onGutterUp}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize recipe list"
+              />
+            </div>
+          </>
+        )}
+
+        <div className={`${styles.pane} ${styles.detailPane}`}>{detail}</div>
       </div>
 
       <Toaster toasterId={toasterId} position="bottom-end" />
 
-      <AboutDialog open={dialog === "about"} onClose={() => setDialog(null)} />
-      <PreferencesDialog open={dialog === "preferences"} onClose={() => setDialog(null)} notify={notify} />
+      <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />
+
+      <AboutDialog open={dialog === "about"} onClose={closeDialog} />
+      <PreferencesDialog
+        open={dialog === "preferences"}
+        onClose={closeDialog}
+        notify={notify}
+        ask={ask}
+        wakeLockPref={wakeLockPref}
+        onWakeLockPref={setWakeLockPref}
+      />
+      <UsersDialog open={dialog === "users"} onClose={closeDialog} notify={notify} ask={ask} />
       <ManageLibraryDialog
         open={dialog === "library"}
-        onClose={() => setDialog(null)}
+        onClose={closeDialog}
         courses={courses}
         categories={categories}
         tags={tags}
         recipes={recipes}
         onChanged={reloadClassifiers}
         notify={notify}
+        ask={ask}
       />
       <ImportDialog
         open={dialog === "import"}
-        onClose={() => setDialog(null)}
+        onClose={closeDialog}
         notify={notify}
         onImported={(draft) => {
-          setDialog(null);
+          closeDialog();
           setCurrent(draft);
           setSelectedId(null);
           setMode("edit");
+          setDirty(true);
         }}
       />
     </FluentProvider>
