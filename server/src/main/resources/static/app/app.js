@@ -301,15 +301,22 @@ function saltyApp() {
       return [
         // `singular` is explicit rather than derived: stripping a trailing "s" turns Categories
         // into "Categorie".
-        // `outline` marks the icons that really have a regular variant in the free icon set, so
-        // the outline-unless-selected convention only applies where it would actually show. Asking
-        // for variant="regular" on utensils or tag silently renders the solid glyph instead.
-        { kind: "category", label: "Categories", singular: "category", icon: "folder",
-          outline: true, items: this.categories },
+        // These three used to carry an `outline` flag, because Font Awesome Free ships a regular
+        // cut for only some of its icons and asking for variant="regular" on utensils or tag
+        // silently rendered the solid glyph -- so the flag marked which rows could be outlined at
+        // all. Material Symbols has both cuts for every icon, so all three are simply outlined and
+        // the flag is gone; the template no longer picks a variant per group.
+        // `category` is a Material name written directly rather than a Font Awesome one the alias
+        // table translates: it is the icon the Compose app uses for this row
+        // (Icons.Outlined.Category), and no Font Awesome name means the same thing. Courses and
+        // Tags need no such treatment -- utensils and tag already alias to restaurant and sell,
+        // which is what the Compose app draws.
+        { kind: "category", label: "Categories", singular: "category", icon: "category",
+          items: this.categories },
         { kind: "course", label: "Courses", singular: "course", icon: "utensils",
-          outline: false, items: this.courses },
+          items: this.courses },
         { kind: "tag", label: "Tags", singular: "tag", icon: "tag",
-          outline: false, items: this.tags },
+          items: this.tags },
       ];
     },
 

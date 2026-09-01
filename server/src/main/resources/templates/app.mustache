@@ -33,6 +33,11 @@
       })();
     </script>
 
+    <!-- Repoints <wa-icon> at Material Symbols, so the web UI and the Compose app draw the same
+         icons. Ahead of the loader: registering a library re-renders icons that already resolved,
+         so a late registration would only mean a visible flicker from Font Awesome to Material. -->
+    <script type="module" src="/static/app/icons.js"></script>
+
     <script type="module"
             src="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/webawesome.loader.js"></script>
 
@@ -151,7 +156,7 @@
           <template x-for="item in group.items" :key="item.id">
             <wa-tree-item :data-kind="group.kind" :data-id="item.id"
                           :selected="filter.kind === group.kind && filter.id === item.id">
-              <wa-icon :name="group.icon" :variant="group.outline ? 'regular' : 'solid'"></wa-icon>
+              <wa-icon :name="group.icon"></wa-icon>
               <span x-text="item.name || 'Untitled'" @mouseenter="titleIfClipped($el)"></span>
             </wa-tree-item>
           </template>

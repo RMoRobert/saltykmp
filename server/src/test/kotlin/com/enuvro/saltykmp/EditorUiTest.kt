@@ -2335,4 +2335,41 @@ class EditorUiTest {
         assertEquals(12, stored()?.servings, "the number input's value must round-trip through the save")
         page.close()
     }
+
+    /**
+     * Icons come from Material Symbols (static/app/icons.js), reached through an alias table keyed
+     * by the Font Awesome names the markup still uses. A name missing from that table does not
+     * throw and does not render an empty box -- it silently falls back to the old Font Awesome
+     * icon, which is the failure this asserts on, because a single wrong-family glyph among 70 is
+     * exactly the kind of thing that survives a screenshot review.
+     *
+     * The two families are told apart by viewBox: Material Symbols draws on "0 -960 960 960",
+     * Font Awesome on "0 0 640 640".
+     */
+    @Test
+    fun everyIconResolvesToMaterialSymbols() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+
+        // Waited for, not sampled: <wa-icon> fetches its SVG, and an icon slotted into a dropdown
+        // re-renders when the dropdown claims it, so there is a window in which a perfectly good
+        // icon has no <svg> yet. A single evaluate() lands in that window often enough to matter.
+        val settled = """() => {
+                 const all = [...document.querySelectorAll('wa-icon')];
+                 return all.length > 10 && all.every(i => i.shadowRoot?.querySelector('svg')
+                          ?.getAttribute('viewBox') === '0 -960 960 960');
+               }"""
+        try {
+            page.waitForFunction(settled)
+        } catch (e: com.microsoft.playwright.TimeoutError) {
+            val stuck = page.evaluate(
+                """() => [...new Set([...document.querySelectorAll('wa-icon')]
+                         .filter(i => i.shadowRoot?.querySelector('svg')
+                                       ?.getAttribute('viewBox') !== '0 -960 960 960')
+                         .map(i => i.getAttribute('name')))]"""
+            )
+            throw AssertionError("no Material Symbols mapping in icons.js for: $stuck", e)
+        }
+        page.close()
+    }
 }

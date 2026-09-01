@@ -32,6 +32,11 @@
       })();
     </script>
 
+    <!-- The one <wa-icon> on this page is the bad-password callout's. It goes through the same
+         Material Symbols registration as /app so the two pages don't disagree about what an error
+         icon looks like; if it fails to load, the callout is still a callout. -->
+    <script type="module" src="/static/app/icons.js"></script>
+
     <script type="module"
             src="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/webawesome.loader.js"></script>
 

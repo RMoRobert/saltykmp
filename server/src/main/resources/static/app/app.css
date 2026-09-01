@@ -15,6 +15,28 @@
 html, body { height: 100%; margin: 0; }
 body { background: var(--wa-color-surface-default); }
 
+/* ----------------------------------------------------------------- icons -- */
+
+/* Material Symbols are drawn smaller inside their box than Font Awesome's are, and this restores
+   the size the layout was built against. It is not a taste correction: Material's grid puts a 24dp
+   icon inside a 20dp live area, so the ink measures 0.833 of the viewBox where a Font Awesome
+   glyph measures ~1.0 (checked across settings, account_circle, search, edit and favorite -- the
+   containing ones all land on exactly 0.833, which is 20/24 -- the live area of Material's grid, so
+   it is structural, not a quirk of the sample; heavier cuts bleed slightly past it, to about 0.85
+   at weight 600). 1 / 0.833 = 1.2. Without it the appbar's gear and
+   account icons read as noticeably undersized, because every button in the app sizes its icon from
+   its own font-size and that number was chosen when the glyph filled its box.
+
+   Scaling the box rather than cropping the viewBox: the padding is not uniform. Wide icons such as
+   menu_book are allowed to spill into it (0.917 of the width), so a crop tight enough to fix the
+   round ones would clip the wide ones.
+
+   This does not reach Web Awesome's internal icons -- a dropdown's caret, a tree item's expand
+   chevron. They live in shadow roots that document CSS cannot address, and they are still Font
+   Awesome, so they are already the right size. */
+:root { --salty-icon-scale: 1.2; }
+wa-icon { font-size: calc(1em * var(--salty-icon-scale)); }
+
 /* --------------------------------------------------------------- structure -- */
 
 /* wa-page owns the outer frame — header, the navigation area and its mobile drawer. What's left
@@ -296,7 +318,8 @@ wa-page::part(navigation-toggle) {
 .rrow__thumb { flex: 0 0 3rem; block-size: 3rem;
                border-radius: var(--wa-border-radius-m);
                background: var(--wa-color-neutral-fill-quiet); }
-.rrow__noimage { color: var(--wa-color-neutral-on-quiet); font-size: 1.1rem; }
+.rrow__noimage { color: var(--wa-color-neutral-on-quiet);
+                 font-size: calc(1.1rem * var(--salty-icon-scale)); }
 
 /* The text column must be allowed to shrink, or a long introduction pushes the row wider than the
    pane instead of ellipsing. */
@@ -334,7 +357,8 @@ wa-page::part(navigation-toggle) {
 
 .empty-state { text-align: center; color: var(--wa-color-neutral-on-quiet);
                padding: var(--wa-space-3xl) var(--wa-space-m); }
-.empty-state__icon { font-size: 2rem; opacity: 0.35; display: block; margin: 0 auto var(--wa-space-s); }
+.empty-state__icon { font-size: calc(2rem * var(--salty-icon-scale)); opacity: 0.35;
+                     display: block; margin: 0 auto var(--wa-space-s); }
 
 /* --------------------------------------------------------------- read view -- */
 /* Structure only; type and colour come from wa-prose and the theme. */
@@ -590,7 +614,7 @@ wa-page::part(navigation-toggle) {
                   color: var(--wa-color-neutral-on-quiet);
                   border: var(--wa-border-width-s, 1px) dashed var(--wa-color-surface-border);
                   border-radius: var(--wa-border-radius-m); }
-.imgedit__icon { font-size: 1.75rem; }
+.imgedit__icon { font-size: calc(1.75rem * var(--salty-icon-scale)); }
 
 .imgedit__hint { font-size: var(--wa-font-size-s); color: var(--wa-color-brand-on-quiet); }
 .imgedit__note { margin: 0; font-size: var(--wa-font-size-s);
