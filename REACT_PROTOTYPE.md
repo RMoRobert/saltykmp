@@ -115,11 +115,12 @@ guidance asks for: "present content from top to bottom in a single column, scrol
 with related settings grouped under section headers. Tabs appear once, inside the classifier editor,
 which is also what the Compose app does.
 
-**One row, two gestures.** The recipe list is `List`/`ListItem` with `selectionMode="multiselect"`,
-which normally means a click toggles the checkbox. Salty needs a click to *open* the recipe and the
-checkbox to select it for a bulk delete. `ListItem` fires `onAction` before it toggles and skips the
-toggle when the handler calls `preventDefault()`, so both fit on one row with no mode switch and no
-custom event handling: checkbox and Space select, click and Enter open.
+**Selecting is a mode, not a column.** The recipe list is `List`/`ListItem`, and its
+`selectionMode` is flipped between `"single"` and `"multiselect"` by a Select mode entered from the
+list's overflow menu. Normally the selection *is* the recipe being read and there are no
+checkboxes; in Select mode it is the set a bulk delete will act on and every row carries one. That
+is one prop rather than a hand-rolled column, and it keeps a permanent checkbox gutter — 28px off
+every recipe name, for a gesture almost nobody wants — out of the ordinary case.
 
 **Branding is a ramp, not an override.** `createLightTheme`/`createDarkTheme` take a sixteen-step
 brand ramp and derive every brand token from it, so `theme.js` adds Salty's blue without overriding

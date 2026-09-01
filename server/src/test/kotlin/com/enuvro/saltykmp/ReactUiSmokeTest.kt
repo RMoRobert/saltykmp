@@ -834,6 +834,10 @@ class ReactUiSmokeTest {
         val b = requireBrowser()
         val (page, errors) = appPage(b)
 
+        page.getByLabel("Other ways to add").click()
+        page.getByText("Select recipes…").click()
+        page.waitForSelector("text=Select recipes")
+
         val rows = page.locator("[role=option]")
         rows.nth(1).getByRole(AriaRole.CHECKBOX).click()
         rows.nth(2).getByRole(AriaRole.CHECKBOX).click()
@@ -861,30 +865,37 @@ class ReactUiSmokeTest {
         val b = requireBrowser()
         val (page, _) = appPage(b)
 
+        page.getByLabel("Other ways to add").click()
+        page.getByText("Select recipes…").click()
+        page.waitForSelector("text=Select recipes")
+
         val rows = page.locator("[role=option]")
         rows.nth(1).getByRole(AriaRole.CHECKBOX).click()
         rows.nth(2).getByRole(AriaRole.CHECKBOX).click()
         page.waitForSelector("text=2 recipes selected")
 
-        page.getByLabel("Clear selection").click()
+        page.getByLabel("Done selecting").click()
         page.waitForSelector("text=All Recipes")
         assertEquals(0, page.getByText("2 selected").count(), "the selection bar is gone")
         assertTrue(page.getByLabel("Sort").isVisible, "and the ordinary header is back")
+        assertEquals(0, page.getByRole(AriaRole.CHECKBOX).count(), "and the checkboxes with it")
         page.close()
     }
 
-    /** One checked row is still a recipe to read, so the detail pane keeps showing it. */
+    /** Outside select mode there are no checkboxes at all, and a click reads a recipe. */
     @Test
-    fun checkingOneRecipeOpensIt() {
+    fun thereAreNoCheckboxesUntilSelectModeIsEntered() {
         val b = requireBrowser()
         val (page, _) = appPage(b)
 
-        page.locator("[role=option]").first().getByRole(AriaRole.CHECKBOX).click()
+        assertEquals(0, page.getByRole(AriaRole.CHECKBOX).count(), "no checkbox column by default")
+        page.getByText("Australian Mini Meat Pies").first().click()
         page.waitForSelector("text=Ingredients")
-        assertTrue(
-            page.getByText("Australian Mini Meat Pies").last().isVisible,
-            "checking a single row opens it rather than emptying the pane",
-        )
+
+        page.getByLabel("Other ways to add").click()
+        page.getByText("Select recipes…").click()
+        page.waitForSelector("text=Select recipes")
+        assertEquals(4, page.getByRole(AriaRole.CHECKBOX).count(), "one per row, once asked for")
         page.close()
     }
 

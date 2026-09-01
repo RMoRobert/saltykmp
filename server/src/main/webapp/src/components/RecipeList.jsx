@@ -24,7 +24,8 @@ import {
   ArrowSort24Regular,
   Delete24Regular,
   Dismiss24Regular,
-  Food24Regular,
+  SelectAllOn24Regular,
+  TextBulletListSquare24Regular,
   Heart20Filled,
   Link24Regular,
   MoreHorizontal24Regular,
@@ -108,25 +109,22 @@ const useStyles = makeStyles({
  * Space -- all of which this file used to do by hand and less well. `checkmark={null}` drops the
  * selection tick, because the selected row is shown by its background, not by a mark.
  */
-function Row({ recipe, selected, styles, sortBy, onOpen }) {
+function Row({ recipe, selected, styles, sortBy, selectMode }) {
   const thumb = thumbUrl(recipe);
   const sub = rowSubtitle(recipe, sortBy);
   return (
     <ListItem
       value={recipe.id}
+      // No checkbox outside select mode: a column of them on every row is a standing invitation to
+      // a gesture almost nobody wants, and it costs the names the width it takes.
+      checkmark={selectMode ? undefined : null}
       className={mergeClasses(styles.row, selected && styles.rowSelected)}
-      onAction={(e) => {
-        // preventDefault stops ListItem toggling the checkbox: a click on the row body opens the
-        // recipe, and only the checkbox (or Space) changes what is selected for a bulk action.
-        e.preventDefault();
-        onOpen(recipe.id);
-      }}
     >
       {thumb ? (
         <img className={styles.thumb} src={thumb} alt="" loading="lazy" />
       ) : (
         <div className={mergeClasses(styles.thumb, styles.thumbEmpty)} aria-hidden="true">
-          <Food24Regular />
+          <TextBulletListSquare24Regular />
         </div>
       )}
 
@@ -173,6 +171,8 @@ export default function RecipeList({
   onSort,
   selectedId,
   onSelect,
+  selectMode,
+  onSelectMode,
   checkedIds,
   onCheckedChange,
   onDeleteChecked,
@@ -185,21 +185,18 @@ export default function RecipeList({
 
   return (
     <>
-      {checkedIds.length > 0 ? (
+      {selectMode ? (
         <div className={styles.head}>
-          <Tooltip content="Clear selection" relationship="label">
-            <Button
-              appearance="subtle"
-              icon={<Dismiss24Regular />}
-              onClick={() => onCheckedChange([])}
-            />
+          <Tooltip content="Done selecting" relationship="label">
+            <Button appearance="subtle" icon={<Dismiss24Regular />} onClick={() => onSelectMode(false)} />
           </Tooltip>
           <Subtitle1 className={styles.title}>
-            {checkedIds.length} selected
+            {checkedIds.length ? `${checkedIds.length} selected` : "Select recipes"}
           </Subtitle1>
           <Button
             appearance="subtle"
             icon={<Delete24Regular />}
+            disabled={checkedIds.length === 0}
             onClick={() => onDeleteChecked(checkedIds)}
           >
             Delete
@@ -264,6 +261,10 @@ export default function RecipeList({
                 <MenuItem icon={<Link24Regular />} onClick={onImport}>
                   Import from web…
                 </MenuItem>
+                <MenuDivider />
+                <MenuItem icon={<SelectAllOn24Regular />} onClick={() => onSelectMode(true)}>
+                  Select recipes…
+                </MenuItem>
               </MenuList>
             </MenuPopover>
           </Menu>
@@ -290,18 +291,25 @@ export default function RecipeList({
           <List
             className={styles.list}
             aria-label="Recipes"
-            selectionMode="multiselect"
-            selectedItems={checkedIds}
-            onSelectionChange={(_, data) => onCheckedChange([...data.selectedItems])}
+            // One component, two jobs: normally the selection IS the recipe being read, and in
+            // select mode it is the set a bulk action will act on.
+            selectionMode={selectMode ? "multiselect" : "single"}
+            selectedItems={selectMode ? checkedIds : selectedId ? [selectedId] : []}
+            onSelectionChange={(_, data) => {
+              const ids = [...data.selectedItems];
+              if (selectMode) onCheckedChange(ids);
+              // Clicking the open recipe again would otherwise deselect it and empty the pane.
+              else if (ids.length) onSelect(ids[0]);
+            }}
           >
             {rows.map((r) => (
               <Row
                 key={r.id}
                 recipe={r}
-                selected={r.id === selectedId}
+                selected={!selectMode && r.id === selectedId}
                 styles={styles}
                 sortBy={sortBy}
-                onOpen={onSelect}
+                selectMode={selectMode}
               />
             ))}
           </List>

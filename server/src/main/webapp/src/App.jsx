@@ -192,6 +192,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   /** The checkbox set, for bulk actions. Separate from `selectedId`, which is what is being read. */
   const [checkedIds, setCheckedIds] = useState([]);
+  /** Checkboxes are a mode, entered from the list's overflow menu, not a permanent column. */
+  const [selectMode, setSelectMode] = useState(false);
   const [current, setCurrent] = useState(null);
   const [mode, setMode] = useState("read"); // read | edit
   const [dirty, setDirty] = useState(false);
@@ -250,6 +252,7 @@ export default function App() {
         setMode("read");
         setPane("list");
         setCheckedIds([]);
+        setSelectMode(false);
         setDrawerOpen(false);
         setFilter({ kind, id, label: label || "All Recipes" });
         // The detail column follows the list, as in the Swift client where detail is driven by
@@ -354,17 +357,11 @@ export default function App() {
     [notify],
   );
 
-  /**
-   * Checking exactly one row opens it, so "one selected" and "one being read" cannot disagree.
-   * Past one there is nothing sensible to show in the detail pane, which is why it steps aside.
-   */
-  const changeChecked = useCallback(
-    (ids) => {
-      setCheckedIds(ids);
-      if (ids.length === 1) openRecipe(ids[0]);
-    },
-    [openRecipe],
-  );
+  /** Leaving select mode drops the selection with it: a hidden set is a set nobody can act on. */
+  const changeSelectMode = useCallback((on) => {
+    setSelectMode(on);
+    if (!on) setCheckedIds([]);
+  }, []);
 
   const deleteChecked = useCallback(
     (ids) =>
@@ -389,6 +386,7 @@ export default function App() {
           const gone = ids.filter((id) => !failed.includes(id));
           setRecipes((list) => list.filter((r) => !gone.includes(r.id)));
           setCheckedIds(failed);
+          if (failed.length === 0) setSelectMode(false);
           if (gone.includes(selectedId)) {
             setCurrent(null);
             setSelectedId(null);
@@ -490,12 +488,12 @@ export default function App() {
   };
 
   const detail =
-    // More than one recipe checked: there is no single thing to show, and showing whichever was
-    // last opened would quietly disagree with the selection beside it.
-    section === "recipes" && checkedIds.length > 1 ? (
+    // Past one there is no single thing to show, and showing whichever recipe was last opened
+    // would quietly disagree with the selection beside it.
+    section === "recipes" && selectMode && checkedIds.length > 1 ? (
       <div className={styles.bulk}>
         <Subtitle1>{checkedIds.length} recipes selected</Subtitle1>
-        <Body1>Use Delete in the list header, or clear the selection to read one.</Body1>
+        <Body1>Delete them from the list header, or leave select mode to read one.</Body1>
       </div>
     ) : section === "lists" ? (
       <ShoppingListPane.Detail
@@ -596,8 +594,10 @@ export default function App() {
         }}
         selectedId={selectedId}
         onSelect={openRecipe}
+        selectMode={selectMode}
+        onSelectMode={changeSelectMode}
         checkedIds={checkedIds}
-        onCheckedChange={changeChecked}
+        onCheckedChange={setCheckedIds}
         onDeleteChecked={deleteChecked}
         onNew={newRecipe}
         onImport={() => openDialog("import")}
