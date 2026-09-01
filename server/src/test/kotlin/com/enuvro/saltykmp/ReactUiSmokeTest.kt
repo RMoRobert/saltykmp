@@ -312,6 +312,33 @@ class ReactUiSmokeTest {
         page.close()
     }
 
+    /**
+     * About is a collapsed section at the bottom of Settings, which is where Microsoft's own
+     * app-settings guidance puts "app information that isn't accessed very often" -- not a
+     * top-level entry, and not the account menu.
+     */
+    @Test
+    fun aboutIsTheLastSectionOfSettings() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        assertEquals(0, page.getByText("About Salty").count(), "About is not a top-level entry")
+
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Settings")
+        ).first().click()
+        page.waitForSelector("text=Apps and devices")
+
+        // Collapsed to begin with: the version is behind the header, not beside it.
+        val dialog = page.getByRole(AriaRole.DIALOG)
+        assertEquals(0, dialog.getByText("Signed in as").count(), "About starts collapsed")
+        dialog.getByText("About Salty").click()
+        page.waitForSelector("text=Signed in as")
+
+        assertEquals(emptyList<String>(), errors, "Settings should render without console errors")
+        page.close()
+    }
+
     /** Dialogs are addressable, so Back closes one rather than leaving the app. */
     @Test
     fun dialogsAreAddressableAndBackClosesThem() {

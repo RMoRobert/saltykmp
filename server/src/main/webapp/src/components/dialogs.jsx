@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Accordion,
+  AccordionHeader,
+  AccordionItem,
+  AccordionPanel,
   Body1,
   Button,
   Checkbox,
@@ -52,39 +56,6 @@ const useStyles = makeStyles({
   section: { marginTop: tokens.spacingVerticalL },
   wide: { maxWidth: "44rem" },
 });
-
-/* ------------------------------------------------------------------- about -- */
-
-export function AboutDialog({ open, onClose }) {
-  const styles = useStyles();
-  return (
-    <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
-      <DialogSurface>
-        <DialogBody>
-          <DialogTitle>About Salty</DialogTitle>
-          <DialogContent>
-            <div className={styles.kv}>
-              <span className={styles.key}>Version</span>
-              <span>{SALTY.version || "—"}</span>
-              <span className={styles.key}>Built</span>
-              <span>{SALTY.buildTime || "—"}</span>
-              <span className={styles.key}>Signed in as</span>
-              <span>
-                {SALTY.username || "—"}
-                {SALTY.isAdmin ? " (admin)" : ""}
-              </span>
-            </div>
-          </DialogContent>
-          <DialogActions>
-            <Button appearance="primary" onClick={onClose}>
-              Close
-            </Button>
-          </DialogActions>
-        </DialogBody>
-      </DialogSurface>
-    </Dialog>
-  );
-}
 
 /* ------------------------------------------------------------------ devices -- */
 
@@ -231,12 +202,6 @@ export function PreferencesDialog({ open, onClose, notify, ask, wakeLockPref, on
           </DialogTitle>
           <DialogContent>
             <div className={styles.fields}>
-              <MessageBar intent="info">
-                <MessageBarBody>
-                  Light and dark follow your system setting; there is no separate control.
-                </MessageBarBody>
-              </MessageBar>
-
               <Subtitle2 as="h3">Chef mode</Subtitle2>
               <Switch
                 checked={wakeLockPref}
@@ -286,6 +251,29 @@ export function PreferencesDialog({ open, onClose, notify, ask, wakeLockPref, on
 
               <Subtitle2 as="h3">Apps and devices</Subtitle2>
               {open ? <Devices notify={notify} ask={ask} /> : null}
+
+              {/* Microsoft's own guidance for app settings puts About at the bottom of the
+                  settings page, collapsed: "app information that isn't accessed very often, such
+                  as privacy policy, help, app version, or copyright info". Accordion is v9's
+                  equivalent of the SettingsExpander that guidance names. */}
+              <Accordion collapsible>
+                <AccordionItem value="about">
+                  <AccordionHeader>About Salty</AccordionHeader>
+                  <AccordionPanel>
+                    <div className={styles.kv}>
+                      <span className={styles.key}>Version</span>
+                      <span>{SALTY.version || "—"}</span>
+                      <span className={styles.key}>Built</span>
+                      <span>{SALTY.buildTime || "—"}</span>
+                      <span className={styles.key}>Signed in as</span>
+                      <span>
+                        {SALTY.username || "—"}
+                        {SALTY.isAdmin ? " (admin)" : ""}
+                      </span>
+                    </div>
+                  </AccordionPanel>
+                </AccordionItem>
+              </Accordion>
             </div>
           </DialogContent>
         </DialogBody>

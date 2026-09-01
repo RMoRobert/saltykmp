@@ -22,7 +22,6 @@ import {
   Food24Regular,
   Grid24Regular,
   Heart24Regular,
-  Info24Regular,
   Navigation24Regular,
   Options24Regular,
   Person24Regular,
@@ -136,7 +135,6 @@ export default function NavRail({
   onSelectList,
   onManageLibrary,
   onPreferences,
-  onAbout,
 }) {
   const styles = useStyles();
 
@@ -329,15 +327,6 @@ export default function NavRail({
         >
           Settings
         </Button>
-        <Button
-          appearance="subtle"
-          icon={<Info24Regular />}
-          className={styles.footButton}
-          onClick={onAbout}
-        >
-          About
-        </Button>
-
         <Divider />
 
         {/* The account's own actions, kept apart from the library's: signing out and administering

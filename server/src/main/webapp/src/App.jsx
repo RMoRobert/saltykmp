@@ -22,7 +22,6 @@ import RecipeDetail from "./components/RecipeDetail";
 import RecipeEditor from "./components/RecipeEditor";
 import ShoppingListPane from "./components/ShoppingListPane";
 import {
-  AboutDialog,
   ImportDialog,
   ManageLibraryDialog,
   PreferencesDialog,
@@ -76,7 +75,7 @@ const SORT_KEY = "salty.recipeSort";
 const SORT_ASC_KEY = "salty.recipeSortAsc";
 const WAKE_LOCK_KEY = "salty.chefWakeLock";
 
-const DIALOGS = ["library", "import", "preferences", "users", "about"];
+const DIALOGS = ["library", "import", "preferences", "users"];
 
 /** Follows the OS rather than offering a switch, matching what the Mustache shell does pre-paint. */
 function usePrefersDark() {
@@ -468,7 +467,6 @@ export default function App() {
               onManageLibrary={() => openDialog("library")}
               onPreferences={() => openDialog("preferences")}
               onUsers={() => openDialog("users")}
-              onAbout={() => openDialog("about")}
             />
 
             <div className={`${styles.pane} ${styles.listPane}`}>
@@ -521,7 +519,6 @@ export default function App() {
 
       <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />
 
-      <AboutDialog open={dialog === "about"} onClose={closeDialog} />
       <PreferencesDialog
         open={dialog === "preferences"}
         onClose={closeDialog}

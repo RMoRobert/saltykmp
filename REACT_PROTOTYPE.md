@@ -4,9 +4,15 @@ Replaces the Alpine + Web Awesome web app with React 19 and Fluent UI React v9. 
 everything the Alpine app did, so the question "does Fluent feel right for Salty" can be answered
 by using it rather than by reading an argument about it.
 
-Still not a merge candidate, for one reason: `EditorUiTest`'s 58 tests are written against Alpine
-selectors and do not run here. Porting them is what stands between this and a branch you would
-merge — the features are done, the proof that they stay done is not.
+The Alpine app is gone from this branch — `app.js`, `app.css`, `icons.js` and `EditorUiTest` are
+deleted. `main` still has all of it, and the in-progress `openDraft` work that was uncommitted is
+preserved on the `alpine-wip` branch.
+
+**What that costs, stated plainly:** `EditorUiTest`'s 58 tests went with it. They encoded real
+behaviour, and the nine smoke tests here do not replace them. This branch is green and it is less
+covered than `main` — those two facts are both true and the second is the one to remember. Recover
+any of them from `git show main:server/src/test/kotlin/com/enuvro/saltykmp/EditorUiTest.kt` when
+porting a behaviour back.
 
 Notes are kept here rather than in `WEB_APP.md` because that file has your own in-progress edits;
 merging the two is a decision for whoever keeps this branch.
@@ -88,6 +94,14 @@ Fluent's *web components* v3 does not have: `Card`, `Toast`, an interactive `Rat
 `SpinButton`, plus `Tree` for the library rail. Nothing had to be hand-rolled to Fluent's spec,
 which was the whole reason for choosing v9 over the web components.
 
+**About belongs in Settings, not in a menu.** Microsoft's
+[app-settings guidance](https://learn.microsoft.com/en-us/windows/apps/design/app-settings/guidelines-for-app-settings)
+is explicit: "app information that isn't accessed very often, such as privacy policy, help, app
+version, or copyright info" goes in the settings page, and "we recommend placing an About section at
+the bottom of your settings page using a `SettingsExpander`". So About is a collapsed `Accordion` —
+v9's equivalent of that expander — at the end of Settings, rather than a top-level rail entry or an
+item under the account menu. The same guidance is why Settings sits pinned at the bottom of the rail.
+
 The two places Fluent has no answer are worth naming. It has no **destructive button appearance**,
 so `ConfirmDialog` leans on wording — every caller passes a verb ("Delete", "Discard", "Sign all
 out") rather than accepting an "OK". And its type ramp is in `rem`, so **chef mode** enlarging the
@@ -121,20 +135,25 @@ not the loop.
   node-gradle plugin's configuration-cache support is unresolved and this build uses it), and
   `processResources` copies `build/webapp` to `static/app`.
 
-**Nothing loads Web Awesome any more.** `static/app/app.js`, `app.css` and `icons.js` are dead on
-this branch but were left in place: `app.js` holds uncommitted work of yours, and deleting the other
-two around it would leave a half-state. Delete all three once that work has landed or been dropped.
+**Nothing loads Web Awesome any more, and nothing is left of it.** The three `static/app` assets are
+deleted. `/classic` is untouched and does not care: it loads Pico and `static/salty.css`, and never
+used Alpine or Web Awesome.
 
 ## Tests
 
-`ReactUiSmokeTest` — eight Playwright tests: the bundle mounts and lists recipes fetched with the
+`ReactUiSmokeTest` — nine Playwright tests: the bundle mounts and lists recipes fetched with the
 session cookie; opening a recipe renders the read view with sections, numbered steps and times;
 scaling rewrites quantities and leaves un-quantified lines alone; the editor opens on the recipe
 being read and its save reaches the database; chef mode takes the other panes away and Escape brings
 them back; leaving an unsaved edit asks first, and keeping it leaves the typed value intact; and a
-dialog puts itself in the URL so Back closes it. Most assert **no console errors**, which matters
+dialog puts itself in the URL so Back closes it; and About sits collapsed at the bottom of Settings
+rather than anywhere more prominent. Most assert **no console errors**, which matters
 more here than in the Alpine app: a React component that throws during render unmounts its subtree
 and leaves a blank pane, and a blank pane looks exactly like an empty one in a screenshot.
+
+The whole server suite is **153 tests in about 70 seconds**. It was 45 minutes while `EditorUiTest`
+was still here, because each of its 58 tests waited out Playwright's 30-second default on a selector
+the React app never renders.
 
 One thing worth knowing when adding to these: the editor has a Cancel button of its own, sitting
 behind the confirm dialog's backdrop where it can never be clicked. An unscoped

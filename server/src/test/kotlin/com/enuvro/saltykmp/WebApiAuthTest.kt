@@ -215,7 +215,7 @@ class WebApiAuthTest {
         val csrf = webLogin(web)
 
         val html = web.get("/app").bodyAsText()
-        assertTrue(html.contains("/static/app/app.js"), "app page should load the app bundle")
+        assertTrue(html.contains("/static/app/salty.js"), "app page should load the app bundle")
         assertTrue(
             html.contains(csrf),
             "the page must hand the session CSRF token to the app, or every write would 403",
