@@ -37,6 +37,40 @@ ktor {
     }
 }
 
+/*
+ * The web UI at /app is a React + Fluent UI app under src/main/webapp, built by Vite and served
+ * from the jar as ordinary static resources. Two tasks, both of which declare their inputs and
+ * outputs so Gradle skips them entirely when nothing has changed -- a no-op build pays nothing.
+ *
+ * Plain `Exec` rather than the com.github.node-gradle.node plugin: that plugin's configuration
+ * cache support is still an open issue, and this build uses the configuration cache. The cost is
+ * that Node has to be on PATH, which for a single-maintainer project it is.
+ */
+val webappDir = layout.projectDirectory.dir("src/main/webapp")
+val webappDist = layout.buildDirectory.dir("webapp")
+
+val npmInstall by tasks.registering(Exec::class) {
+    description = "Installs the web UI's npm dependencies."
+    workingDir = webappDir.asFile
+    commandLine("npm", "install", "--no-audit", "--no-fund")
+    inputs.file(webappDir.file("package.json"))
+    inputs.file(webappDir.file("package-lock.json"))
+    // node_modules is the real output; naming it is what lets Gradle skip a warm install.
+    outputs.dir(webappDir.dir("node_modules"))
+}
+
+val buildWebapp by tasks.registering(Exec::class) {
+    description = "Builds the React web UI into build/webapp."
+    dependsOn(npmInstall)
+    workingDir = webappDir.asFile
+    commandLine("npm", "run", "build")
+    inputs.dir(webappDir.dir("src"))
+    inputs.file(webappDir.file("index.html"))
+    inputs.file(webappDir.file("vite.config.js"))
+    inputs.file(webappDir.file("package-lock.json"))
+    outputs.dir(webappDist)
+}
+
 // Bake the Gradle project version + build time into version.properties so the /about page (and any
 // runtime reporting) reflects the real build. Keeps the version single-sourced from `appVersion`
 // in the root gradle.properties.
@@ -49,6 +83,13 @@ tasks.named<org.gradle.language.jvm.tasks.ProcessResources>("processResources") 
     inputs.property("buildTime", buildTime)
     filesMatching("version.properties") {
         expand(mapOf("appVersion" to appVersion, "buildTime" to buildTime))
+    }
+
+    // /static/app/salty.js, which is what templates/app.mustache loads.
+    dependsOn(buildWebapp)
+    from(webappDist) {
+        into("static/app")
+        exclude("index.html") // the Mustache shell is the entry point; Vite's copy is for `npm run dev`
     }
 }
 

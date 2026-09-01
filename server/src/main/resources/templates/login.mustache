@@ -9,56 +9,137 @@
     <link rel="icon" href="/static/icon-192.png" sizes="192x192" type="image/png">
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 
-    <!-- Web Awesome 3, matching the app. dist-cdn, not dist: the dist/ build has bare module
-         specifiers a browser can't resolve, and every component silently fails to upgrade. -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/webawesome.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/themes/default.css">
-    <!-- native.css, and this page is the one place it earns its keep: it styles plain <input> and
-         <button> from the same tokens the components use. That is deliberate here — the form is
-         built from native controls rather than <wa-input>, so signing in does not depend on the
-         component loader running. If the CDN is unreachable this page loses its styling and stays
-         a working HTML form, which is the difference between "looks wrong" and "locked out". -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/native.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/styles/utilities.css">
+    <!--
+      Hand-written CSS rather than the app's component library, and deliberately so.
 
-    <!-- Web Awesome's themes switch on a `wa-dark` class; they do NOT follow prefers-color-scheme
-         on their own. Inline and ahead of first paint, or a dark-mode user gets a white flash. -->
-    <script>
-      (function () {
-        var m = window.matchMedia("(prefers-color-scheme: dark)");
-        var apply = function () { document.documentElement.classList.toggle("wa-dark", m.matches); };
-        apply();
-        m.addEventListener("change", apply);
-      })();
-    </script>
+      This is the one page where "unstyled" must not mean "locked out", and it is the only page a
+      signed-out visitor can reach. Loading the React bundle here would put a 232 KB download and a
+      framework's worth of failure modes in front of a form with two fields. So: native <input> and
+      <button>, no script of any kind, and the styling below.
 
-    <!-- The one <wa-icon> on this page is the bad-password callout's. It goes through the same
-         Material Symbols registration as /app so the two pages don't disagree about what an error
-         icon looks like; if it fails to load, the callout is still a callout. -->
-    <script type="module" src="/static/app/icons.js"></script>
-
-    <script type="module"
-            src="https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3.12.0/dist-cdn/webawesome.loader.js"></script>
-
+      The values are Fluent 2's own — the neutral ramp, brand #0f6cbd, 4px radii and the Segoe-first
+      stack — copied rather than imported, so this page looks like the app it leads to without
+      depending on anything to load. Light and dark both come from prefers-color-scheme.
+    -->
     <style>
-      /* Centring a single card is the whole layout, and Web Awesome has no component for it. Every
-         value below is a WA token, so the page tracks the theme rather than pinning its own. */
+      :root {
+        --bg: #f5f5f5;
+        --surface: #ffffff;
+        --fg: #242424;
+        --fg-muted: #616161;
+        --stroke: #d1d1d1;
+        --stroke-accessible: #616161;
+        --brand: #0f6cbd;
+        --brand-hover: #115ea3;
+        --brand-pressed: #0c3b5e;
+        --danger-bg: #fdf3f4;
+        --danger-fg: #b10e1c;
+        --danger-stroke: #eeacb2;
+        --radius: 4px;
+        --shadow: 0 2px 4px rgba(0, 0, 0, .14), 0 0 2px rgba(0, 0, 0, .12);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1f1f1f;
+          --surface: #292929;
+          --fg: #ffffff;
+          --fg-muted: #adadad;
+          --stroke: #666666;
+          --stroke-accessible: #adadad;
+          --brand: #115ea3;
+          --brand-hover: #0f6cbd;
+          --brand-pressed: #0c3b5e;
+          --danger-bg: #3b1113;
+          --danger-fg: #f1707b;
+          --danger-stroke: #6e2b30;
+          --shadow: 0 2px 4px rgba(0, 0, 0, .28), 0 0 2px rgba(0, 0, 0, .24);
+        }
+      }
+
+      * { box-sizing: border-box; }
+
       body {
+        margin: 0;
+        min-height: 100svh;
         display: grid;
         place-items: center;
-        min-height: 100svh;
-        padding: var(--wa-space-l);
-        background-color: var(--wa-color-surface-default);
+        padding: 1.5rem;
+        background-color: var(--bg);
+        color: var(--fg);
+        font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+        font-size: 14px;
+        line-height: 20px;
       }
+
       .signin { width: 100%; max-width: 24rem; }
+
       .signin__brand {
-        margin-block-end: var(--wa-space-l);
-        font-size: var(--wa-font-size-2xl);
-        font-weight: var(--wa-font-weight-heading);
+        margin: 0 0 1.25rem;
+        font-size: 28px;
+        line-height: 36px;
+        font-weight: 600;
         text-align: center;
       }
-      .signin__field { display: block; margin-block-end: var(--wa-space-m); }
-      .signin__submit { width: 100%; }
+
+      .card {
+        background-color: var(--surface);
+        border: 1px solid var(--stroke);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+        padding: 1.5rem;
+      }
+
+      .card__title { margin: 0 0 1rem; font-size: 20px; line-height: 28px; font-weight: 600; }
+
+      .field { display: block; margin-bottom: 1rem; }
+      .field__label { display: block; margin-bottom: 4px; font-weight: 600; }
+
+      /* Fluent's input is a filled box with a heavier bottom stroke that turns brand on focus. */
+      .field input {
+        width: 100%;
+        padding: 5px 10px;
+        color: inherit;
+        font: inherit;
+        background-color: var(--surface);
+        border: 1px solid var(--stroke);
+        border-bottom-color: var(--stroke-accessible);
+        border-radius: var(--radius);
+      }
+      .field input:hover { border-color: var(--stroke-accessible); }
+      .field input:focus {
+        outline: none;
+        border-color: var(--stroke-accessible);
+        border-bottom: 2px solid var(--brand);
+        padding-bottom: 4px;
+      }
+
+      .submit {
+        width: 100%;
+        padding: 5px 12px;
+        font: inherit;
+        font-weight: 600;
+        color: #ffffff;
+        background-color: var(--brand);
+        border: 1px solid transparent;
+        border-radius: var(--radius);
+        cursor: pointer;
+      }
+      .submit:hover { background-color: var(--brand-hover); }
+      .submit:active { background-color: var(--brand-pressed); }
+      .submit:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+
+      .messagebar {
+        display: flex;
+        gap: .5rem;
+        align-items: flex-start;
+        margin-bottom: 1rem;
+        padding: .5rem .75rem;
+        color: var(--fg);
+        background-color: var(--danger-bg);
+        border: 1px solid var(--danger-stroke);
+        border-radius: var(--radius);
+      }
+      .messagebar svg { flex: none; color: var(--danger-fg); }
     </style>
 </head>
 <body>
@@ -66,27 +147,33 @@
 <main class="signin">
     <h1 class="signin__brand"><span aria-hidden="true">&#129474;</span> Salty</h1>
 
-    <wa-card>
-        <h2 slot="header">Sign in</h2>
+    <div class="card">
+        <h2 class="card__title">Sign in</h2>
 
         {{#error}}
-        <wa-callout variant="danger" class="signin__field">
-            <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
-            Invalid username or password.
-        </wa-callout>
+        <!-- Fluent's ErrorCircleFilled, inline: one 20px glyph is not worth an icon dependency on
+             the page whose whole point is having none. -->
+        <div class="messagebar" role="alert">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M10 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16Zm0 10.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM10 6a.5.5 0 0 0-.5.41V11a.5.5 0 0 0 1 .09V6.5A.5.5 0 0 0 10 6Z"/>
+            </svg>
+            <span>Invalid username or password.</span>
+        </div>
         {{/error}}
 
         <form action="/login" method="post">
-            <label class="signin__field">Username
+            <label class="field">
+                <span class="field__label">Username</span>
                 <input type="text" name="username" autocomplete="username"
                        autocapitalize="none" autocorrect="off" spellcheck="false" required autofocus>
             </label>
-            <label class="signin__field">Password
+            <label class="field">
+                <span class="field__label">Password</span>
                 <input type="password" name="password" autocomplete="current-password" required>
             </label>
-            <button type="submit" class="wa-brand signin__submit">Sign in</button>
+            <button type="submit" class="submit">Sign in</button>
         </form>
-    </wa-card>
+    </div>
 </main>
 
 </body>

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Salty</title>
+  </head>
+  <body>
+    <!-- `npm run dev` only: in production the Mustache shell renders this element with the real
+         session values, and Vite's build never sees this file's copy. -->
+    <div id="salty-config" hidden data-csrf="" data-username="dev" data-is-admin="false"
+         data-version="dev" data-build-time="" data-min-password-length="8"></div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
