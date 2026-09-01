@@ -64,6 +64,8 @@ kotlin {
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
             implementation(libs.kotlinx.coroutines.core)
+            // Local-time formatting for the Settings "Last synced:" line.
+            implementation(libs.kotlinx.datetime)
             implementation(libs.ktor.client.core)
             implementation(libs.sqldelight.coroutines)
             implementation(libs.filekit.dialogs.compose)

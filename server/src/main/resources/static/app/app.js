@@ -189,7 +189,6 @@ function saltyApp() {
 
   return {
     // data
-    mdUp: window.innerWidth >= 900,
     query: "",
     list: [],
     listLoading: true,
@@ -244,8 +243,14 @@ function saltyApp() {
     categories: [],
     tags: [],
     filter: { kind: "all", id: null, label: "All Recipes" },
-    /** One of `recipeSorters`. No picker in the UI yet; the table is there for when there is one. */
+    /*
+     * How the middle column is ordered: a field key from `recipeSortFields`, plus a direction
+     * chosen separately -- the same split the CMP and Swift apps present, so "Date Modified" and
+     * "newest first" stay two short decisions instead of eight combined menu items. Both are
+     * remembered per browser: an order you picked is a preference, not a per-visit decision.
+     */
     sortBy: "name",
+    sortAsc: true,
     section: "recipes",        // which thing the middle and right panes are showing
     shoppingLists: [],
     shoppingListsLoading: false,
@@ -289,8 +294,6 @@ function saltyApp() {
     importUrl: "",
     importing: false,
     importError: "",
-    toasts: [],
-    _toastSeq: 0,
 
     // computed
     get scaleLabel() { return `${SCALES[this.scaleIdx]}×`; },
@@ -338,32 +341,120 @@ function saltyApp() {
     get favoriteCount() { return this.list.filter(r => r.isFavorite).length; },
     get wantToMakeCount() { return this.list.filter(r => r.wantToMake).length; },
 
-    /** The middle pane: library filter first, then the search box on top of it. */
     /**
-     * How the middle column is ordered. Written as a table rather than a hard-coded comparator so
-     * adding a picker later is a template change and nothing else -- the names below are already
-     * the option list.
+     * The sort menu, in menu order. Labels are the CMP and Swift apps' own, so the same ordering
+     * goes by the same name whichever client you opened; `asc`/`desc` say what the direction means
+     * for that particular field, because "Ascending" on a date is not self-evidently oldest-first.
+     *
+     * This list and `recipeSortFields` are the same set seen twice -- a key here must have a
+     * comparator there, which `setSortField` enforces rather than trusting.
+     */
+    recipeSortOptions: [
+      { key: "name",     label: "Name",          asc: "A → Z",        desc: "Z → A" },
+      { key: "modified", label: "Date Modified", asc: "Oldest first", desc: "Newest first" },
+      { key: "created",  label: "Date Created",  asc: "Oldest first", desc: "Newest first" },
+      { key: "prepared", label: "Last Made",     asc: "Oldest first", desc: "Newest first" },
+    ],
+
+    /**
+     * How the middle column is ordered, as a table of comparators rather than one hard-coded
+     * comparison, so a new sort is a row here plus a row in `recipeSortOptions`.
+     *
+     * Every comparator is ASCENDING and falls back to the name: direction is applied once, in
+     * `visibleRecipes`, by negating the result -- the same thing the CMP app does by reversing the
+     * sorted list. The name fallback is what keeps recipes that share a date (or share no date at
+     * all) in a stable, readable order instead of whatever order the server sent them in.
      *
      * localeCompare, not `<`: "Éclair" and "eclair" have to sort where a reader expects, and
-     * `numeric` keeps "Chili 2" after "Chili 10" from being the other way round.
+     * `numeric` keeps "Chili 2" after "Chili 10" from being the other way round. The dates are
+     * ISO-8601 strings, so comparing them as text is chronological -- the same assumption the
+     * Swift and CMP clients make.
      */
-    get recipeSorters() {
+    get recipeSortFields() {
       const byName = (a, b) =>
         (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" });
+      const byDate = key => (a, b) =>
+        String(a[key] || "").localeCompare(String(b[key] || "")) || byName(a, b);
       return {
         name: byName,
-        recent: (a, b) =>
-          String(b.lastModifiedDate || "").localeCompare(String(a.lastModifiedDate || "")) || byName(a, b),
-        rating: (a, b) => (b.rating || 0) - (a.rating || 0) || byName(a, b),
+        modified: byDate("lastModifiedDate"),
+        created: byDate("createdDate"),
+        prepared: byDate("lastPrepared"),
       };
     },
 
+    /** Whether a recipe has ever been made -- the one field that is routinely empty. */
+    everMade(r) { return !!String(r.lastPrepared || "").trim(); },
+
+    /** What the two directions mean for the field in force, for the menu's details slot. */
+    sortHint(asc) {
+      const opt = this.recipeSortOptions.find(o => o.key === this.sortBy);
+      return opt ? (asc ? opt.asc : opt.desc) : "";
+    },
+
+    /** The whole sort state in one phrase, so the trigger can say it without being opened. */
+    get sortLabel() {
+      const opt = this.recipeSortOptions.find(o => o.key === this.sortBy);
+      return opt ? `Sort: ${opt.label} (${this.sortAsc ? opt.asc : opt.desc})` : "Sort";
+    },
+
+    /**
+     * Applies a sort chosen from the menu, field or direction.
+     *
+     * Bound to the dropdown's `wa-select` rather than to a click on each item, because the menu is
+     * operable from the keyboard and wa-dropdown activates an item from Enter/Space by calling its
+     * own selection path directly -- no DOM click is dispatched. Click handlers would leave the
+     * arrows-and-Enter route ticking checkboxes without ever reordering the list, which is the
+     * quietest kind of broken. Both routes emit `wa-select`.
+     */
+    applySort(item, dropdown) {
+      const field = item && item.dataset.sortField;
+      const dir = item && item.dataset.sortDir;
+      // An unknown field would sort by nothing and leave the menu showing one that isn't applied.
+      if (field && this.recipeSortFields[field]) {
+        this.sortBy = field;
+        this.writeStored(this.sortKey, field);
+      } else if (dir) {
+        this.sortAsc = dir === "asc";
+        this.writeStored(this.sortAscKey, this.sortAsc ? "1" : "0");
+      }
+      this.syncSortChecks(dropdown);
+    },
+
+    /**
+     * Puts the checkmarks back after a selection.
+     *
+     * wa-dropdown flips a checkbox item's `checked` itself whenever it is chosen, which is right
+     * for a menu that owns its own state and wrong here, where the state is `sortBy`/`sortAsc`.
+     * Choosing the sort ALREADY in force is the case that breaks: nothing changes, so the binding
+     * has nothing to re-render, and the component's flip is left standing -- a menu insisting the
+     * list is unsorted while it is sorted exactly as asked. Re-asserting from the state covers
+     * both that and the item being switched away from.
+     */
+    syncSortChecks(dropdown) {
+      dropdown.querySelectorAll("[data-sort-field]").forEach(el => {
+        el.checked = el.dataset.sortField === this.sortBy;
+      });
+      dropdown.querySelectorAll("[data-sort-dir]").forEach(el => {
+        el.checked = (el.dataset.sortDir === "asc") === this.sortAsc;
+      });
+    },
+
+    /** The middle pane: library filter first, then the search box on top of it, then the sort. */
     get visibleRecipes() {
       // .filter always returns a new array, so sorting here cannot disturb `list` itself.
       let rows = this.list.filter(r => this.matchesFilter(r));
       const q = this.query.trim().toLowerCase();
       if (q) rows = rows.filter(r => (r.name || "").toLowerCase().includes(q));
-      return rows.sort(this.recipeSorters[this.sortBy] || this.recipeSorters.name);
+      const cmp = this.recipeSortFields[this.sortBy] || this.recipeSortFields.name;
+      rows.sort(this.sortAsc ? cmp : (a, b) => -cmp(a, b));
+      // Never-made recipes go LAST in both directions, as in the CMP and Swift apps: ascending
+      // would otherwise open with every recipe that has no date at all -- noise, for a sort that
+      // exists to answer "what have I cooked lately".
+      if (this.sortBy === "prepared") {
+        return rows.filter(r => this.everMade(r)).concat(rows.filter(r => !this.everMade(r)));
+      }
+      return rows;
     },
 
     /*
@@ -395,6 +486,8 @@ function saltyApp() {
      */
     splitKey: "salty.listWidth",
     wakeLockKey: "salty.chefWakeLock",
+    sortKey: "salty.recipeSort",
+    sortAscKey: "salty.recipeSortAsc",
 
     restoreSplit(el) {
       // localStorage throws outright in a locked-down browser; a remembered pane width is not worth
@@ -473,17 +566,16 @@ function saltyApp() {
     },
 
     async init() {
-      // matchMedia rather than a resize listener seeded from innerWidth: the window can still be
-      // settling when Alpine initialises (a pane that opens narrow and widens, a restored window),
-      // and a stale mdUp silently skipped the auto-open below.
-      const wide = window.matchMedia("(min-width: 900px)");
-      this.mdUp = wide.matches;
-      wide.addEventListener("change", e => { this.mdUp = e.matches; });
       window.addEventListener("beforeunload", e => {
         if (this.dirty || this.listDirty) { e.preventDefault(); e.returnValue = ""; }
       });
       // Stored as "0"/"1". Anything else — never set, or storage that throws — means the default.
       this.wakeLockPref = this.readStored(this.wakeLockKey) !== "0";
+      // A remembered field that no longer exists (an option dropped between releases) falls back to
+      // the default rather than leaving the list sorted by a comparator that isn't there.
+      const storedSort = this.readStored(this.sortKey);
+      if (storedSort && this.recipeSortFields[storedSort]) this.sortBy = storedSort;
+      this.sortAsc = this.readStored(this.sortAscKey) !== "0";
       // The platform drops a wake lock whenever the page stops being visible and does not hand it
       // back on its own. Ducking out to a timer app and returning must not leave the screen dark,
       // so it is re-taken here. Nothing to do on the way out: it is already gone.
@@ -1137,7 +1229,7 @@ function saltyApp() {
 
     deviceMeta(d) {
       // Token use beats sync date: it is the freshest evidence the enrolment is still alive.
-      if (!d.hasToken) return "Signed out \u2014 sign in again to resume";
+      if (!d.hasToken) return "Signed out";
       const when = this.relativeDate(d.tokenLastUsed || d.lastSyncDate);
       return when ? `Last synced ${when}` : "Never synced";
     },
@@ -1443,7 +1535,15 @@ function saltyApp() {
      * The one line under a recipe's name: its introduction, or failing that where it came from.
      * Whichever is present tells you what the recipe IS, which a modified-date never did.
      */
+    /**
+     * The row's second line. Sorting by "Last Made" swaps it for the date being sorted on, as the
+     * CMP app does and for the same reason: otherwise that ordering has no visible explanation,
+     * and the block of never-made recipes at the end reads as a bug rather than as the point.
+     */
     rowSubtitle(r) {
+      if (this.sortBy === "prepared") {
+        return this.everMade(r) ? `Made ${this.relativeDate(r.lastPrepared)}` : "Never made";
+      }
       return (r.introduction || r.source || r.sourceDetails || "").trim();
     },
 
@@ -1705,10 +1805,22 @@ function saltyApp() {
 
     touch() { this.dirty = true; },
 
+    /**
+     * Handed to <wa-toast>, which owns the stack, the timers, the pause-on-hover and the live
+     * region. It is not merely less code than rendering the list here: a dialog is a native
+     * <dialog> in the browser's top layer, and most of these messages are raised from inside one,
+     * so a stack in the ordinary document showed them underneath it. See the element's comment.
+     *
+     * whenDefined because create() only exists once the element has upgraded, and the components
+     * are loaded as a module — a toast fired by an early failure would otherwise land on a plain
+     * HTMLElement and throw. Duration matches what the hand-rolled stack used; the component
+     * pauses it while the pointer is over a toast, which the old one did not.
+     */
     notify(text, variant = "success") {
-      const id = ++this._toastSeq;
-      this.toasts.push({ id, text, variant });
-      setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, 3200);
+      const icon = variant === "danger" ? "circle-exclamation" : "circle-check";
+      customElements.whenDefined("wa-toast").then(() => {
+        document.querySelector("wa-toast")?.create(text, { variant, icon, duration: 3200 });
+      });
     },
 
     relativeDate(iso) {
@@ -1807,10 +1919,10 @@ function saltyApp() {
         this.list = (rows || []).slice().sort((a, b) =>
           String(b.lastModifiedDate || "").localeCompare(String(a.lastModifiedDate || "")));
         this.loadError = "";
-        // Read the viewport fresh rather than trusting cached state: on a narrow screen the list
-        // is the landing view, so we deliberately don't auto-open there.
-        const wideNow = window.matchMedia("(min-width: 900px)").matches;
-        if (!this.selectedId && this.list.length && wideNow) await this.open(this.list[0].id);
+        // Nothing is opened here, on any width. The list is sorted by last-modified, so opening
+        // its first row landed you on whichever recipe happened to be edited last -- neither where
+        // you left off nor anything you clicked, which is what made it read as arbitrary. The
+        // empty state is the honest landing view; the pane fills in when you pick a recipe.
       } catch (e) {
         this.loadError = e.message;
       } finally {
@@ -1970,7 +2082,9 @@ function saltyApp() {
         this.directions = [];
         this.dirty = false;
         this.notify("Recipe deleted");
-        if (this.list.length && this.mdUp) await this.open(this.list[0].id);
+        // Nothing takes its place: the next-most-recently-modified recipe is no more what you
+        // were reading than it was on load, and dropping straight into an unrelated recipe hides
+        // the fact that the delete happened. The empty state is the result of the action.
       } catch (e) {
         this.notify(`Delete failed: ${e.message}`, "danger");
       }

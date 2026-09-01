@@ -182,6 +182,22 @@ class SaltyApiClient(
         return auth
     }
 
+    /**
+     * Asks the server to revoke this device's own token — what "Forget This Device" does.
+     *
+     * `/api/auth/token/revoke` takes no device id: it can only revoke whichever device presented the
+     * token, which is why a sync credential is allowed to call it at all while the devices routes stay
+     * behind a password. 401 counts as done — the token was already dead (revoked from the devices
+     * page, or invalidated by a password change), which is exactly the state this call exists to reach.
+     *
+     * Returns false when the server answered but refused; throws only on transport failure, so the
+     * caller can tell "refused" from "unreachable".
+     */
+    suspend fun revokeDeviceToken(deviceToken: String): Boolean {
+        val resp = client.post("$baseUrl/api/auth/token/revoke") { bearerAuth(deviceToken) }
+        return resp.status.isSuccess() || resp.status == HttpStatusCode.Unauthorized
+    }
+
     // ---- Recipes ----
 
     /** Full manifest (id + lastModified for every recipe); verified complete via X-Total-Count. */

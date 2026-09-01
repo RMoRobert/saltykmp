@@ -190,12 +190,13 @@ internal fun Typography.scaleHeadings(factor: Float): Typography {
     )
 }
 
-private fun TextStyle.scaled(factor: Float): TextStyle =
+/** This style at [factor] times its size. Also how [ChefScreen] resolves its text-size stepper. */
+internal fun TextStyle.scaled(factor: Float): TextStyle =
     copy(fontSize = fontSize.scaled(factor), lineHeight = lineHeight.scaled(factor))
 
 /**
  * Unspecified stays unspecified, and a non-sp unit (em) is left alone — scaling a relative size by the
  * same factor as the font it is relative to would apply the factor twice.
  */
-private fun TextUnit.scaled(factor: Float): TextUnit =
+internal fun TextUnit.scaled(factor: Float): TextUnit =
     if (isSpecified && isSp) (value * factor).sp else this

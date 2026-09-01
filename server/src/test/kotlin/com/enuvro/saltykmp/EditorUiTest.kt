@@ -484,9 +484,14 @@ class EditorUiTest {
             .hasAttribute("role", "list")
         assertThat(page.locator("section[aria-label='Recipes'] .list__rows > li")).hasCount(2)
 
-        // On a wide screen the first recipe auto-opens, so the selected row holds the tab stop.
+        // With nothing selected the tab stop falls back to the first row, which is what keeps the
+        // column reachable at all on the landing state.
         assertThat(rows.nth(0)).hasAttribute("tabindex", "0")
         assertThat(rows.nth(1)).hasAttribute("tabindex", "-1")
+
+        // From here the subject is an OPEN recipe staying put while focus moves, so open one.
+        openFirstRecipe(page)
+        assertThat(rows.nth(0)).hasAttribute("tabindex", "0")
 
         rows.nth(0).focus()
         page.keyboard().press("ArrowDown")
@@ -790,15 +795,17 @@ class EditorUiTest {
     fun theDividerIsGoneOnACompactScreen() {
         val b = requireBrowser()
         val page = editorPage(b)
+        // The compact view only has two panes to choose between once one of them holds a recipe.
+        openFirstRecipe(page)
         page.setViewportSize(420, 800)
         // wa-page switches view from a ResizeObserver, and until it does the navigation rail is
         // still holding a 186px column -- measure before that and the pane is 234px wide.
         page.waitForFunction("() => document.getElementById('app').getAttribute('view') === 'mobile'")
 
         assertThat(page.locator("wa-split-panel [part~='divider']")).isHidden()
-        // A recipe auto-opened on the wide screen, so the compact view is showing it and the list
-        // is the pane that stepped aside -- which is the existing data-pane behaviour, not the
-        // split panel's. What matters here is that the survivor gets the whole window.
+        // A recipe was opened on the wide screen, so the compact view is showing it and the list is
+        // the pane that stepped aside -- which is the existing data-pane behaviour, not the split
+        // panel's. What matters here is that the survivor gets the whole window.
         assertThat(page.locator("section[aria-label='Recipes']")).isHidden()
         val open = page.locator("section[aria-label='Recipe']").boundingBox()
         assertEquals(420.0, open.width, 2.0, "the one visible pane should fill the window")
@@ -820,6 +827,8 @@ class EditorUiTest {
         val app = page.locator("#app")
         val recipe = page.locator("section[aria-label='Recipe']")
 
+        // Chef mode is a way of reading a recipe, so there has to be one.
+        openFirstRecipe(page)
         val normalStep = ingredientFontSize(page)
         page.locator("[data-testid=chef]").click()
         page.waitForFunction("() => document.getElementById('app').hasAttribute('data-chef')")
@@ -905,6 +914,7 @@ class EditorUiTest {
         val b = requireBrowser()
         val page = editorPage(b, wakeLockStub)
 
+        openFirstRecipe(page)
         page.locator("[data-testid=chef]").click()
         page.waitForFunction("() => window.__wakeLog.includes('request')")
         assertEquals(listOf("request"), wakeLog(page), "chef mode should take exactly one lock")
@@ -1308,7 +1318,9 @@ class EditorUiTest {
             RecipeRepository.listForSync(UserRepository.findByUsername("tester")!!.id, null, null, 100).recipes.size
         }
 
-        page.locator("section[aria-label='Recipes'] wa-dropdown wa-button").first().click()
+        // By test id, not "the first dropdown in this column": the column has a sort menu now, and
+        // `.first()` quietly opened that one instead of failing.
+        page.locator("[data-testid=new-recipe-more]").click()
         page.locator("[data-testid=import-from-web]").click()
         // Wait on a control INSIDE the dialog, not the <wa-dialog> host: the host has no box of its
         // own (the panel lives in its shadow root), so waitForSelector's visibility check never
@@ -1354,7 +1366,9 @@ class EditorUiTest {
         val b = requireBrowser()
         val page = editorPage(b)
 
-        page.locator("section[aria-label='Recipes'] wa-dropdown wa-button").first().click()
+        // By test id, not "the first dropdown in this column": the column has a sort menu now, and
+        // `.first()` quietly opened that one instead of failing.
+        page.locator("[data-testid=new-recipe-more]").click()
         page.locator("[data-testid=import-from-web]").click()
         page.locator("[data-testid=import-url]").click()
         page.keyboard().type("http://127.0.0.1:$sitePort/recipe")
@@ -1644,10 +1658,21 @@ class EditorUiTest {
     /* ------------------------------------------- notes, variations, times -- */
 
     private fun openEditorFor(page: Page) {
-        page.locator(".rrow").first().click()
-        page.waitForSelector(".read")
+        openFirstRecipe(page)
         page.locator("[data-testid=edit]").click()
         page.waitForSelector(".edit")
+    }
+
+    /**
+     * Opens the first recipe in the list.
+     *
+     * Nothing opens on its own any more -- the app lands on the empty state by design -- so a test
+     * whose subject is what happens *around* an open recipe now has to say which one it means.
+     * That the landing state is empty is its own test; here it is a precondition, not the subject.
+     */
+    private fun openFirstRecipe(page: Page) {
+        page.locator(".rrow").first().click()
+        page.waitForSelector(".read")
     }
 
     /** Save writes and closes the dialog, as a modal's primary action should. */
@@ -1970,6 +1995,344 @@ class EditorUiTest {
         page.waitForFunction(isOpen)
         page.locator("[data-testid=save]").click()
         page.waitForFunction(isShut)
+        page.close()
+    }
+
+    /**
+     * The sort fixture: three recipes whose four orderings are all DIFFERENT.
+     *
+     * That is the whole point of the dates below. If name, created, modified and prepared produced
+     * even partly the same sequence, a picker wired to the wrong field -- or one that quietly fell
+     * back to the name comparator -- would still pass. Every date is explicit because upsert
+     * defaults a missing createdDate to *now*, which would put the fixture recipe's "created" at
+     * today and make the expected order depend on the day the suite runs.
+     *
+     *   name     asc: Apple,    Skillet,  Zucchini
+     *   created  asc: Zucchini, Apple,    Skillet
+     *   modified asc: Skillet,  Zucchini, Apple
+     *   prepared asc: Apple,    Zucchini, Skillet (never made, so last in BOTH directions)
+     */
+    private fun seedSortFixture() = runBlocking {
+        val userId = UserRepository.findByUsername("tester")!!.id
+        // The fixture recipe keeps its name and its never-been-made state; only its dates move.
+        val cornbread = RecipeRepository.getById(userId, RECIPE_ID)!!
+        RecipeRepository.upsert(
+            userId,
+            cornbread.copy(
+                createdDate = "2026-03-01T00:00:00.000Z",
+                lastModifiedDate = "2026-01-01T00:00:00.000Z",
+            ),
+        )
+        RecipeRepository.upsert(
+            userId,
+            ServerRecipe(
+                id = "01A05100-0000-7000-8000-0000000000S2",
+                name = "Apple Pie",
+                createdDate = "2026-02-01T00:00:00.000Z",
+                lastModifiedDate = "2026-03-01T00:00:00.000Z",
+                lastPrepared = "2026-04-01T00:00:00.000Z",
+            ),
+        )
+        RecipeRepository.upsert(
+            userId,
+            ServerRecipe(
+                id = "01A05100-0000-7000-8000-0000000000S3",
+                name = "Zucchini Bread",
+                createdDate = "2026-01-01T00:00:00.000Z",
+                lastModifiedDate = "2026-02-01T00:00:00.000Z",
+                lastPrepared = "2026-05-01T00:00:00.000Z",
+            ),
+        )
+    }
+
+    /** The recipe names as the list column is currently showing them, top to bottom. */
+    private fun listedNames(page: Page): List<String> =
+        page.locator(".rrow__name").allTextContents().map { it.trim() }
+
+    /** Opens the sort menu and picks one item; both a field and a direction need a fresh open. */
+    private fun sortPick(page: Page, selector: String) {
+        page.locator("[data-testid=sort-menu] wa-button").click()
+        page.locator("[data-testid=sort-menu] $selector").click()
+    }
+
+    private fun sortField(page: Page, field: String) = sortPick(page, "[data-sort-field=$field]")
+
+    private fun sortDir(page: Page, dir: String) = sortPick(page, "[data-sort-dir=$dir]")
+
+    /**
+     * Every sort field orders the list, in both directions.
+     *
+     * The four fields are checked against four DIFFERENT expected sequences (see seedSortFixture),
+     * so this fails if the picker reaches the wrong comparator, and the descending half is checked
+     * separately because direction is applied by negating the comparator rather than by a second
+     * table of them -- a mistake there shows up in one direction only.
+     */
+    @Test
+    fun everySortFieldOrdersTheListInBothDirections() {
+        val b = requireBrowser()
+        seedSortFixture()
+        val page = editorPage(b)
+
+        val apple = "Apple Pie"
+        val skillet = "Skillet Cornbread"
+        val zucchini = "Zucchini Bread"
+
+        // Name ascending is the default, so this also pins the out-of-the-box order.
+        assertEquals(listOf(apple, skillet, zucchini), listedNames(page))
+
+        sortDir(page, "desc")
+        assertEquals(listOf(zucchini, skillet, apple), listedNames(page))
+
+        sortField(page, "created")
+        sortDir(page, "asc")
+        assertEquals(listOf(zucchini, apple, skillet), listedNames(page))
+        sortDir(page, "desc")
+        assertEquals(listOf(skillet, apple, zucchini), listedNames(page))
+
+        sortField(page, "modified")
+        sortDir(page, "asc")
+        assertEquals(listOf(skillet, zucchini, apple), listedNames(page))
+        sortDir(page, "desc")
+        assertEquals(listOf(apple, zucchini, skillet), listedNames(page))
+
+        page.close()
+    }
+
+    /**
+     * "Last Made" keeps never-made recipes at the END in both directions, and says so in the row.
+     *
+     * Ascending would otherwise open on every recipe that has no date at all, which is noise for a
+     * sort that exists to answer "what have I cooked lately" -- the CMP and Swift apps park them
+     * last for the same reason. The subtitle swap is what stops the resulting order from looking
+     * arbitrary: without it, nothing on screen explains the sequence or the block at the bottom.
+     */
+    @Test
+    fun lastMadeSortsNeverMadeRecipesLastAndShowsTheDate() {
+        val b = requireBrowser()
+        seedSortFixture()
+        val page = editorPage(b)
+
+        sortField(page, "prepared")
+        sortDir(page, "asc")
+        assertEquals(
+            listOf("Apple Pie", "Zucchini Bread", "Skillet Cornbread"), listedNames(page),
+            "ascending: oldest made first, never-made last",
+        )
+
+        sortDir(page, "desc")
+        assertEquals(
+            listOf("Zucchini Bread", "Apple Pie", "Skillet Cornbread"), listedNames(page),
+            "descending: newest made first, never-made STILL last",
+        )
+
+        // The row explains the ordering it is part of.
+        assertThat(page.locator(".rrow").last().locator(".rrow__sub")).hasText("Never made")
+        assertThat(page.locator(".rrow").first().locator(".rrow__sub")).containsText("Made ")
+
+        // And gives the line back when the sort no longer needs it.
+        sortField(page, "name")
+        assertThat(page.locator(".rrow__sub")).hasCount(0)
+        page.close()
+    }
+
+    /**
+     * The chosen sort survives a reload, and the menu shows which one is in force.
+     *
+     * Both halves have failed before in this app for the same reason: `checked` is a property on a
+     * custom element, and an Alpine binding that removes the attribute instead of writing the
+     * value leaves a menu that works but can never say what it is doing.
+     */
+    @Test
+    fun theChosenSortIsRememberedAndTicked() {
+        val b = requireBrowser()
+        seedSortFixture()
+        val page = editorPage(b)
+
+        sortField(page, "created")
+        sortDir(page, "desc")
+        assertEquals(listOf("Skillet Cornbread", "Apple Pie", "Zucchini Bread"), listedNames(page))
+
+        page.reload()
+        page.waitForSelector(".rrow")
+        assertEquals(
+            listOf("Skillet Cornbread", "Apple Pie", "Zucchini Bread"), listedNames(page),
+            "the sort is a preference, so it should outlive the page",
+        )
+
+        // Choosing the sort ALREADY in force must leave it ticked: wa-dropdown flips a checkbox
+        // item's `checked` on every selection, and the no-op case is the one where the binding has
+        // nothing to re-render and the flip would otherwise stand.
+        sortField(page, "created")
+        assertEquals(
+            listOf("Skillet Cornbread", "Apple Pie", "Zucchini Bread"), listedNames(page),
+            "re-picking the current field must not disturb the order",
+        )
+
+        page.locator("[data-testid=sort-menu] wa-button").click()
+        val ticked = page.evaluate(
+            """() => [...document.querySelectorAll('[data-testid=sort-menu] wa-dropdown-item')]
+                   .filter(i => i.checked).map(i => i.textContent.trim())"""
+        ) as List<*>
+        assertEquals(
+            listOf("Date Created", "Descending Newest first"), ticked.map { it.toString().replace(Regex("\\s+"), " ") },
+            "exactly the field and the direction in force should be ticked",
+        )
+        page.close()
+    }
+
+    /**
+     * The app lands on the empty state, and deleting a recipe returns to it.
+     *
+     * Opening the app used to open the first row of a list sorted by last-modified: not the first
+     * or last recipe on screen, not the one you had open before -- just whichever was edited most
+     * recently, which is why it read as arbitrary. Deleting used to jump to that same arbitrary
+     * next recipe, which also hid the fact that anything had been deleted.
+     *
+     * The compact half of this was never in question (the auto-open was gated on a wide screen);
+     * the empty state is now what both widths land on.
+     */
+    @Test
+    fun theAppLandsOnNoSelectionAndADeleteReturnsToIt() {
+        val b = requireBrowser()
+        seedSecondRecipe()
+        val page = editorPage(b)
+
+        val emptyState = "section[aria-label='Recipe'] .empty-state"   // the shopping pane has one too
+        assertThat(page.locator(emptyState)).isVisible()
+        assertThat(page.locator(".read")).hasCount(0)
+        assertThat(page.locator(".rrow--on")).hasCount(0)
+        assertEquals(
+            null, page.evaluate("() => Alpine.\$data(document.getElementById('app')).selectedId"),
+            "nothing should be selected on arrival",
+        )
+
+        openFirstRecipe(page)
+        assertThat(page.locator(".rrow--on")).hasCount(1)
+
+        page.locator("[data-testid=recipe-more]").click()
+        page.locator("[data-testid=delete-recipe]").click()
+        page.locator("[data-testid=confirm-delete]").click()
+
+        page.waitForSelector(emptyState)
+        assertThat(page.locator(".read")).hasCount(0)
+        // The other recipe is still there -- the point is that we did not fall into it.
+        assertThat(page.locator(".rrow")).hasCount(1)
+        assertThat(page.locator(".rrow--on")).hasCount(0)
+        page.close()
+    }
+
+    /**
+     * The sort menu is operable from the keyboard, and picking that way actually sorts.
+     *
+     * wa-dropdown activates an item from Enter by calling its own selection path directly -- no DOM
+     * click is dispatched -- so a menu wired with per-item click handlers ticks the checkbox and
+     * reorders nothing. That is the quietest kind of broken: the menu looks like it worked. Both
+     * routes emit `wa-select`, which is what the app listens to, and this walks the route that has
+     * no click in it at all.
+     */
+    @Test
+    fun theSortMenuWorksFromTheKeyboard() {
+        val b = requireBrowser()
+        seedSortFixture()
+        val page = editorPage(b)
+
+        page.locator("[data-testid=sort-menu] wa-button").click()
+
+        // Arrow down to "Date Created" the way a keyboard user reaches it, wherever the menu put
+        // its active item on opening.
+        val target = page.locator("[data-testid=sort-menu] [data-sort-field=created]")
+        var presses = 0
+        while (presses < 8 && target.evaluate("el => !!el.active") != true) {
+            page.keyboard().press("ArrowDown")
+            presses++
+        }
+        assertTrue(presses < 8, "the arrow keys should reach the Date Created item")
+
+        page.keyboard().press("Enter")
+        assertEquals(
+            listOf("Zucchini Bread", "Apple Pie", "Skillet Cornbread"), listedNames(page),
+            "Enter on the focused item must sort, not just tick it",
+        )
+        page.close()
+    }
+
+    /**
+     * A toast raised while a dialog is open used to render UNDERNEATH it. wa-dialog is a native
+     * <dialog> opened with showModal(), so the modal and its backdrop paint in the browser's top
+     * layer, and the hand-rolled `position: fixed` stack this replaced could not reach that at any
+     * z-index. That covered most of what the app has to say -- user created, app removed, tag
+     * added, image rejected, every library rename are all raised from inside a dialog. <wa-toast>
+     * shows itself as a popover, which puts it in the top layer too, above a modal opened earlier.
+     *
+     * Being in the top layer is therefore the whole assertion, and `:popover-open` is how you ask.
+     * Two other ways of putting it do NOT work, both tried:
+     *   - a hit test (elementFromPoint) reports the dialog, because everything outside an open
+     *     modal is `inert` and inert elements are not hit-tested. That says nothing about paint
+     *     order -- the toast is drawn on top and still not clickable, which is a real if minor
+     *     consequence: its close button and hover-to-pause are dead while a modal is up.
+     *   - isVisible() is vacuous here for the reason cancelAndSaveBothCloseTheDialog gives: a
+     *     popover/dialog host has no box of its own.
+     */
+    @Test
+    fun aToastRaisedFromInsideADialogIsInTheTopLayer() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        openEditorFor(page)
+
+        // Adding a tag from inside the editor closes its own little dialog but leaves the editor
+        // open, so the toast lands over a modal -- which is the case that used to be invisible.
+        page.locator("[data-testid=new-tag]").click()
+        page.locator("wa-dialog[label='New tag'] wa-input").evaluate(
+            """el => { el.value = 'Weeknight';
+                       el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }"""
+        )
+        page.locator("[data-testid=create-tag]").click()
+
+        val toast = page.locator("wa-toast wa-toast-item")
+        toast.waitFor()
+        assertThat(toast).containsText("Added Weeknight")
+        assertTrue(
+            page.evaluate("() => document.querySelector('wa-dialog.editdlg').hasAttribute('open')") as Boolean,
+            "the editor dialog must still be open, or this proves nothing about stacking",
+        )
+
+        // In the top layer, and not by being tucked inside the dialog: a plain fixed-position stack
+        // in the ordinary document -- what this replaced -- can satisfy neither half.
+        val placement = page.evaluate(
+            """() => {
+                 const host = document.querySelector('wa-toast');
+                 return {
+                   inTopLayer: host.matches(':popover-open'),
+                   insideADialog: !!host.closest('wa-dialog'),
+                 };
+               }"""
+        ) as Map<*, *>
+        assertEquals(true, placement["inTopLayer"], "the toast stack must be in the top layer, or a modal covers it")
+        assertEquals(false, placement["insideADialog"], "it should reach the top layer as a popover, not by living in a dialog")
+        page.close()
+    }
+
+    /**
+     * Servings is a <wa-number-input>, not <wa-input type="number">: Web Awesome resets the native
+     * spin buttons away, so the plain input offered no stepper at all. It is a different element
+     * with its own value plumbing, so that x-model still reaches the API is worth asserting rather
+     * than assuming.
+     */
+    @Test
+    fun servingsEditedThroughTheNumberInputReachesTheApi() {
+        val b = requireBrowser()
+        val page = editorPage(b)
+        openEditorFor(page)
+
+        val field = page.locator(".edit wa-number-input")
+        assertThat(field).hasCount(1)
+        field.evaluate(
+            """el => { el.value = '12';
+                       el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }"""
+        )
+        saveAndWait(page)
+
+        assertEquals(12, stored()?.servings, "the number input's value must round-trip through the save")
         page.close()
     }
 }

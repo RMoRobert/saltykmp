@@ -45,8 +45,10 @@ data class UserSession(
     /**
      * When this session was minted, epoch seconds. Compared against the user's passwordChangedAt so
      * a password reset invalidates cookies that predate it, matching what the JWT provider already
-     * does with `iat`. Defaults to 0 so any session issued before this field existed fails that
-     * comparison and is re-authenticated once -- the safe direction.
+     * does with `iat`, and against MAX_SESSION_AGE_SECONDS so that a cookie cannot outlive its
+     * welcome even if nothing ever invalidates it explicitly. Defaults to 0 so any session issued
+     * before this field existed fails both comparisons and is re-authenticated once -- the safe
+     * direction.
      */
     val issuedAt: Long = 0,
 )

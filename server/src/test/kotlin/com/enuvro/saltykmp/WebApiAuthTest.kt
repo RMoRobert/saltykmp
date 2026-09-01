@@ -4,6 +4,8 @@ import com.enuvro.saltykmp.api.AuthRequest
 import com.enuvro.saltykmp.api.AuthResponse
 import com.enuvro.saltykmp.api.ServerRecipe
 import com.enuvro.saltykmp.auth.CSRF_HEADER
+import com.enuvro.saltykmp.auth.MAX_SESSION_AGE_SECONDS
+import com.enuvro.saltykmp.auth.revalidateSession
 import com.enuvro.saltykmp.db.Categories
 import com.enuvro.saltykmp.db.Courses
 import com.enuvro.saltykmp.db.DatabaseFactory
@@ -19,6 +21,7 @@ import com.enuvro.saltykmp.db.UserRepository
 import com.enuvro.saltykmp.db.Users
 import com.enuvro.saltykmp.image.ImageStore
 import com.enuvro.saltykmp.util.appJson
+import com.enuvro.saltykmp.web.UserSession
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -39,12 +42,19 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
+import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.deleteAll
+import org.jetbrains.exposed.v1.jdbc.update
 import java.nio.file.Files
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneOffset
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -281,5 +291,57 @@ class WebApiAuthTest {
         val allowed = web.post("/api/auth/devices/revoke-all") { header(CSRF_HEADER, csrf) }
         assertEquals(HttpStatusCode.OK, allowed.status, "the same write with the header must go through")
         assertEquals(false, runBlocking { DeviceRepository.listForUser(uid).single().hasToken })
+    }
+
+    /** A session cookie as the browser would present it, minted [ageSeconds] ago. */
+    private fun sessionAged(userId: String, ageSeconds: Long) = UserSession(
+        userId = userId,
+        username = "tester",
+        isAdmin = false,
+        csrfToken = "csrf",
+        issuedAt = Instant.now().epochSecond - ageSeconds,
+    )
+
+    /**
+     * Backdates the password stamp out of the way, so the age check below is the only thing that can
+     * reject the session. Without this every backdated cookie would fail the `issuedAt < changedSec`
+     * comparison instead and the test would pass without exercising anything.
+     */
+    private suspend fun backdatePasswordChange(userId: String) = DatabaseFactory.dbQuery {
+        Users.update({ Users.id eq userId }) {
+            it[Users.passwordChangedAt] = LocalDateTime.now(ZoneOffset.UTC).minusDays(365)
+        }
+        Unit
+    }
+
+    /**
+     * The cookie carries no `Max-Age`, and it could not be trusted if it did -- that is client-side
+     * state, which a replayed cookie ignores. So the bound lives in [revalidateSession], where a
+     * stolen cookie has to pass it too.
+     */
+    @Test
+    fun aSessionPastTheMaxAgeIsRejected(): Unit = runBlocking {
+        val userId = UserRepository.findByUsername("tester")!!.id
+        backdatePasswordChange(userId)
+
+        assertNull(
+            revalidateSession(sessionAged(userId, MAX_SESSION_AGE_SECONDS + 60)),
+            "a cookie older than the window must be rejected however valid its signature",
+        )
+    }
+
+    @Test
+    fun aSessionInsideTheMaxAgeIsAccepted(): Unit = runBlocking {
+        val userId = UserRepository.findByUsername("tester")!!.id
+        backdatePasswordChange(userId)
+
+        assertNotNull(
+            revalidateSession(sessionAged(userId, 0)),
+            "a session minted just now must be valid",
+        )
+        assertNotNull(
+            revalidateSession(sessionAged(userId, MAX_SESSION_AGE_SECONDS - 60)),
+            "a session just inside the window must still be valid",
+        )
     }
 }

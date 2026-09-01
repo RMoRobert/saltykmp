@@ -13,7 +13,7 @@ built outside Docker on a machine with JDK 21 + the Android SDK. Asssuming JAVA_
 # -> server/build/libs/salty-server.jar
 ```
 
-Copy the repo (with that jar present) to the server, or build on the server if it has the JDK/SDK.
+Copy the repo (with that JAR present) to the server, or build on the server if it has the JDK/SDK.
 
 ## 2. Configure secrets
 
@@ -34,21 +34,15 @@ Edit the `CHANGE_ME_*` values in `docker-compose.yml`:
 > `SALTY_DEFAULT_USER`/`PASSWORD` seed a login **only on first run** (empty users table). The default
 > `SALTY_TOKEN_SECRET` placeholder is forgeable — you must change it.
 
-> **Upgrading from `SALTY_JWT_SECRET`?** It is still read when `SALTY_TOKEN_SECRET` is unset, and the
-> server warns when it does. Rename the variable, but **keep its value**: device sync tokens were
-> always keyed on it, so renaming and regenerating in one step signs every enrolled client out.
-> (Rotating it deliberately is the way to do exactly that.)
+> **Upgrading from pre-3.3.0 server with `SALTY_JWT_SECRET`?** It is still read if `SALTY_TOKEN_SECRET` is unset with
+> a warning in logs. Rename the variable, as it will probably be removed in a future version, but **keep its value**
+> because it is still used to key device tokens tokens (and this will avoid invalidating all current logins, although
+> you may deliberately rotate it if not a concern).
 
-There is no JWT any more, and so no token lifetime to tune: a device sync token authenticates the
-sync routes directly and is checked against its database row on every request. That makes revoking a
-device take effect on its next request rather than whenever its last JWT would have expired.
 
-> **Clients must be updated alongside this server.** Signing in now requires a device id, and a
-> client that omits one is refused with a 400 rather than falling back to password sync. That
-> fallback is what used to leave a client syncing with the stored password indefinitely, showing up
-> on the account's app list as a device that looked revoked. Clients also no longer exchange their
-> token at `POST /api/auth/token`; that route is now `POST /api/auth/token/verify` and returns no
-> credential.
+> **Clients apps and server must both be upgraded to 3.3 or later if using sync:** Signing in now requires a device id,
+> and a token-based approach per device is used rather than username/password authentication (your client asking for
+> this or an HTTP 400 are clues that your client must be older).
 
 ## 3. Run
 
@@ -62,7 +56,7 @@ docker compose up -d --build
 
 ### Managing users
 
-Each user has a completely separate set of recipes and and related data (suggested setup: one user shares
+Each user has a completely separate set of recipes and related data (suggested setup: one user shares
 same user account across all devices; different users have different accounts).
 The seeded `SALTY_DEFAULT_USER` is an admin. Sign in to the web app and open the **account menu**
 (person icon, top right) → **Manage users…** to add accounts, reset passwords, grant/revoke admin
@@ -71,8 +65,9 @@ admins see that menu item, and every route behind it re-checks against the user 
 New users start empty; point a client app at the server, log in as that user on the client, and sync
 to populate data.
 
-Everyone — admin or not — can change their own password from the same menu, and see which apps are
-authorized to sync with their account. A password change signs out every one of those apps.
+Any logged in user can change their password from the same menu. This page alos lists which apps are
+authorized to sync with their account. A password change signs out every one of those apps, or any
+individual app can also be removed or renamed in this list.
 
 ## 4. NGINX reverse proxy (HTTPS)
 
@@ -282,12 +277,14 @@ unzip -l composeApp/build/outputs/bundle/release/composeApp-release.aab | grep -
 
 ## 3. Upload
 
+If you are the developer releasing the CMP app to a store:
+
 Play Console → your app → **Testing → Internal testing → Create new release** → upload the `.aab`,
 add testers, roll out. Internal testing reaches testers in minutes and skips the full review queue.
 
 ## Version numbers
 
-Both come from `appVersion` in the root `gradle.properties` (currently `3.2.100`):
+Both come from `appVersion` in the root `gradle.properties` (e.g., `3.2.100`):
 
 - `versionName` = `appVersion` verbatim
 - `versionCode` = `major * 10_000_000 + minor * 100_000 + patch` (so `3.2.100` → `30200100`)
@@ -295,7 +292,7 @@ Both come from `appVersion` in the root `gradle.properties` (currently `3.2.100`
 **Play rejects a versionCode it has already seen**, so bump `appVersion` before every upload. Because
 the code is derived, minor must stay < 100 and patch < 100_000.
 
-## Things that bite in a release build (but not in debug)
+## Possible "gotchas" for a release build (but not in debug)
 
 - **Plain HTTP is blocked.** `usesCleartextTraffic` is false in release by design, so a Salty Server
   reached over `http://` will fail for testers with a network error. Testers need an `https://` server.

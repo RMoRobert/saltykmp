@@ -39,6 +39,21 @@ const val WEB_API_AUTH = "auth-web-api"
 const val MIN_PASSWORD_LENGTH = 8
 
 /**
+ * How long a browser session stays valid, measured from login.
+ *
+ * Enforced here rather than as the cookie's `Max-Age` because that is client-side state: it tells the
+ * browser when to stop sending the cookie, which an attacker replaying a copied value simply ignores.
+ * Checked against `issuedAt` on every request it bounds a leaked cookie for real -- one that escaped
+ * in a backup, a synced browser profile or a machine you no longer have stops working on its own.
+ * It also costs nothing extra, because [revalidateSession] is already reading the user row anyway.
+ *
+ * Absolute, not idle. Ktor only re-sends `Set-Cookie` when the session is *modified*, so nothing
+ * slides this forward on ordinary traffic: it is 15 days from sign-in however active the tab was,
+ * and the next request after that lands on /login.
+ */
+const val MAX_SESSION_AGE_SECONDS: Long = 15L * 24 * 60 * 60
+
+/**
  * Installs the two credentials Salty has: per-device sync tokens, and the browser session (via
  * [extra]).
  *
@@ -243,6 +258,10 @@ fun Route.authRoutes(
  * password left their open browser tab writing recipes, images and library rows for the cookie's
  * full lifetime, while native clients were locked out immediately.
  *
+ * It is also where the cookie's lifetime is bounded at all -- see [MAX_SESSION_AGE_SECONDS]. The
+ * cookie carries no `Max-Age`, so the browser keeps it until the profile is cleared; "session
+ * cookies die with the browser" has not been true since browsers started restoring tabs on start-up.
+ *
  * Returns null to reject, which routes the request to the provider's challenge.
  */
 suspend fun revalidateSession(session: UserSession): UserSession? {
@@ -250,6 +269,7 @@ suspend fun revalidateSession(session: UserSession): UserSession? {
     // Whole-second granularity: session issuedAt is epoch seconds.
     val changedSec = user.passwordChangedAt.toEpochSecond(java.time.ZoneOffset.UTC)
     if (session.issuedAt < changedSec) return null
+    if (java.time.Instant.now().epochSecond - session.issuedAt > MAX_SESSION_AGE_SECONDS) return null
     // isAdmin comes from the row, not the cookie. The cookie's copy is a snapshot from login, and
     // user administration now happens in a live screen you can demote yourself from -- so a stale
     // `true` would leave the demoted admin managing users until they happened to sign out.

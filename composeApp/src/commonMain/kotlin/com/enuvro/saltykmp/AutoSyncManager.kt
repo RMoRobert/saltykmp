@@ -21,8 +21,9 @@ import kotlin.time.ExperimentalTime
  * After any local change [notifyChange] is called; the manager waits a quiet period ([DEBOUNCE]) so a burst
  * of edits collapses into a single sync, then runs one. Transient server failures are tolerated silently —
  * only after [FAILURES_BEFORE_BANNER] consecutive failures does [failing] flip true, which the UI surfaces as
- * a dismissible banner offering to close or pause auto-sync for a day. Off by default (gated entirely on
- * [SettingsState.autoSyncEnabled]); while disabled or paused, change notifications are ignored.
+ * a dismissible banner offering to close or pause auto-sync for a day. Off by default (gated on
+ * [SettingsState.autoSyncEnabled] and the [SettingsState.serverUse] master switch); while disabled or
+ * paused, change notifications are ignored.
  */
 @OptIn(FlowPreview::class, ExperimentalTime::class)
 class AutoSyncManager(
@@ -46,13 +47,16 @@ class AutoSyncManager(
 
     /** Signal that the local library changed (recipe/classifier add, edit, or delete). Safe to call anytime. */
     fun notifyChange() {
-        if (settings.autoSyncEnabled) changes.tryEmit(Unit)
+        if (settings.autoSyncEnabled && settings.serverUse) changes.tryEmit(Unit)
     }
 
     private suspend fun runSync() {
-        if (!settings.autoSyncEnabled || isPaused()) return
+        if (!settings.autoSyncEnabled || !settings.serverUse || isPaused()) return
         // Nothing to sync against until the server connection has been configured.
         if (settings.serverUrl.isBlank() || settings.username.isBlank()) return
+        // Nothing to sync WITH until the device is connected: every attempt would fail on auth, and a
+        // few failed attempts raise the failure banner — alarming for a device that was never set up.
+        if (settings.syncToken.isEmpty() && settings.password.isEmpty()) return
         try {
             sync()
             consecutiveFailures = 0

@@ -13,6 +13,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SaltyApiClientTest {
@@ -304,5 +305,33 @@ class SaltyApiClientTest {
         val engine = MockEngine { respond("upstream exploded", HttpStatusCode.InternalServerError) }
         val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
         assertFailsWith<SyncException> { api.loginWithDeviceToken("salty_still_good") }
+    }
+
+    @Test
+    fun revokePresentsTheTokenItIsKilling() = runTest {
+        var revokeAuth: String? = null
+        val engine = MockEngine { request ->
+            revokeAuth = request.headers[HttpHeaders.Authorization]
+            respond("", HttpStatusCode.NoContent)
+        }
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
+        assertTrue(api.revokeDeviceToken("salty_doomed"))
+        assertEquals("Bearer salty_doomed", revokeAuth)
+    }
+
+    /** 401 means the token was already dead — the point of the call is met, so it counts as done. */
+    @Test
+    fun revokingAnAlreadyDeadTokenCountsAsDone() = runTest {
+        val engine = MockEngine { respond("", HttpStatusCode.Unauthorized) }
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
+        assertTrue(api.revokeDeviceToken("salty_already_dead"))
+    }
+
+    /** A refusal is reported (false), not thrown: the caller still forgets locally either way. */
+    @Test
+    fun aRefusedRevokeReportsFalse() = runTest {
+        val engine = MockEngine { respond("nope", HttpStatusCode.InternalServerError) }
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore(), engine)
+        assertFalse(api.revokeDeviceToken("salty_tok"))
     }
 }

@@ -3,6 +3,7 @@ package com.enuvro.saltykmp
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -75,9 +76,11 @@ import androidx.compose.material.icons.outlined.Restaurant
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Sell
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.SoupKitchen
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ShoppingCart
 import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.WorkspacePremium
 import androidx.compose.material.icons.outlined.ZoomIn
 import androidx.compose.material.icons.outlined.ZoomOut
@@ -238,6 +241,7 @@ import io.github.vinceglb.filekit.dialogs.compose.rememberFilePickerLauncher
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.min
 
@@ -288,6 +292,8 @@ private sealed interface Screen {
     data class Detail(val id: String) : Screen
     /** [imported] seeds a brand-new recipe from the web importer; null for a blank new recipe or an edit. */
     data class Edit(val id: String?, val imported: ImportedRecipe? = null) : Screen
+    /** Chef Mode: this recipe with the whole app taken away. See [ChefScreen]. */
+    data class Chef(val id: String) : Screen
     data object ManageClassifiers : Screen
     data object ShoppingLists : Screen
     data class ShoppingListDetail(val id: String) : Screen
@@ -475,9 +481,16 @@ fun App(commands: AppCommands? = null) {
     // unchanged). ON_STOP maps to the activity stopping on Android and the app backgrounding on iOS.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { module.onAppBackground() }
 
-    /** Back out of the current sub-screen. A shopping list returns to the lists, not out to the recipes. */
+    /**
+     * Back out of the current sub-screen. A shopping list returns to the lists, and Chef Mode to the
+     * recipe it was started from — in both cases the thing one level up, not all the way out.
+     */
     fun goBack() {
-        screen = if (screen is Screen.ShoppingListDetail) Screen.ShoppingLists else Screen.List
+        screen = when (val current = screen) {
+            is Screen.ShoppingListDetail -> Screen.ShoppingLists
+            is Screen.Chef -> Screen.Detail(current.id)
+            else -> Screen.List
+        }
     }
 
     /** Announce an outcome; replaces any showing snackbar so a fast second action isn't queued behind it. */
@@ -562,17 +575,27 @@ fun App(commands: AppCommands? = null) {
                     },
                 )
             }
-            StartupPhase.Ready -> AppContent(
-                module = module,
-                screen = screen,
-                onScreen = { screen = it },
-                recipeFilter = recipeFilter,
-                onRecipeFilter = { recipeFilter = it },
-                snackbarHost = snackbarHost,
-                onBack = { goBack() },
-                findRequest = findRequest,
-                onImportFromWeb = { showWebImport = true },
-            )
+            StartupPhase.Ready -> {
+                val current = screen
+                // Chef Mode replaces the shell rather than sitting inside it: taking the app away is
+                // the whole feature, so it is composed here — above the auto-sync banner, the
+                // navigation and the two-pane split — instead of as another case in [AppContent].
+                if (current is Screen.Chef) {
+                    ChefScreen(module, current.id, onExit = { goBack() })
+                } else {
+                    AppContent(
+                        module = module,
+                        screen = current,
+                        onScreen = { screen = it },
+                        recipeFilter = recipeFilter,
+                        onRecipeFilter = { recipeFilter = it },
+                        snackbarHost = snackbarHost,
+                        onBack = { goBack() },
+                        findRequest = findRequest,
+                        onImportFromWeb = { showWebImport = true },
+                    )
+                }
+            }
         }
         if (showWebImport) {
             WebImportDialog(
@@ -714,6 +737,7 @@ private fun CompactLayout(shell: AppShell) {
             onBack = shell.onBack,
             onClose = shell.onBack,
             onEdit = { shell.onScreen(Screen.Edit(s.id)) },
+            onChefMode = { shell.onScreen(Screen.Chef(s.id)) },
             onFilter = { shell.openFilter(it) },
             onDeleted = shell.showUndo,
             onNotify = shell.notify,
@@ -737,6 +761,9 @@ private fun CompactLayout(shell: AppShell) {
             onUndoable = shell.showUndo,
         )
         Screen.Settings -> SettingsScreen(shell.module, onBack = shell.onBack)
+        // Chef Mode never reaches a layout: [App] composes it in place of the whole shell, so by the
+        // time either layout runs the screen cannot be this one.
+        is Screen.Chef -> Unit
     }
 }
 
@@ -794,6 +821,7 @@ private fun WideContent(shell: AppShell, width: WidthClass) {
                     onBack = shell.onBack,
                     onClose = shell.onBack,
                     onEdit = { shell.onScreen(Screen.Edit(s.id)) },
+                    onChefMode = { shell.onScreen(Screen.Chef(s.id)) },
                     onFilter = { shell.openFilter(it) },
                     onDeleted = shell.showUndo,
                     onNotify = shell.notify,
@@ -852,6 +880,9 @@ private fun WideContent(shell: AppShell, width: WidthClass) {
         // whole content area (the navigation beside them stays put) rather than a detail pane.
         Screen.ManageClassifiers -> ClassifierEditScreen(shell.module, onBack = shell.onBack)
         Screen.Settings -> SettingsScreen(shell.module, onBack = shell.onBack)
+        // Chef Mode never reaches a layout: [App] composes it in place of the whole shell, so by the
+        // time either layout runs the screen cannot be this one.
+        is Screen.Chef -> Unit
     }
 }
 
@@ -865,6 +896,7 @@ private fun RecipeDetailPane(shell: AppShell, screen: Screen) {
             onBack = null,
             onClose = { shell.onScreen(Screen.List) },
             onEdit = { shell.onScreen(Screen.Edit(screen.id)) },
+            onChefMode = { shell.onScreen(Screen.Chef(screen.id)) },
             onFilter = { shell.openFilter(it) },
             onDeleted = shell.showUndo,
             onNotify = shell.notify,
@@ -2034,6 +2066,8 @@ private fun RecipeDetailScreen(
     /** Leave this recipe — used after deleting it, where staying would show a blank screen. */
     onClose: () -> Unit,
     onEdit: () -> Unit,
+    /** Hand this recipe to Chef Mode — the whole app goes away and only the cooking is left. */
+    onChefMode: () -> Unit,
     onFilter: (RecipeFilter) -> Unit,
     onDeleted: (message: String, undo: () -> Unit) -> Unit,
     /** Report an export's outcome; blank means there is nothing to say (a cancelled save dialog). */
@@ -2071,7 +2105,11 @@ private fun RecipeDetailScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(recipe?.name ?: "Recipe") },
+                title = {
+                    // Capped, because this bar carries four actions on a phone and a long name would
+                    // otherwise wrap to three lines and make the bar taller than the recipe's image.
+                    Text(recipe?.name ?: "Recipe", maxLines = 2, overflow = TextOverflow.Ellipsis)
+                },
                 navigationIcon = {
                     // No back arrow in a two-pane layout: the list it would return to is still on screen.
                     if (onBack != null) {
@@ -2082,6 +2120,11 @@ private fun RecipeDetailScreen(
                 },
                 actions = {
                     if (recipe != null) {
+                        // First in the row, because cooking the recipe is what the recipe is for —
+                        // and it is the one action here that isn't reachable from anywhere else.
+                        IconButton(onClick = onChefMode) {
+                            Icon(Icons.Outlined.SoupKitchen, contentDescription = "Chef Mode")
+                        }
                         IconButton(onClick = onEdit) { Icon(Icons.Outlined.Edit, contentDescription = "Edit") }
                         IconButton(onClick = { showDeleteConfirm = true }) {
                             Icon(Icons.Outlined.Delete, contentDescription = "Delete")
@@ -3620,14 +3663,73 @@ private fun ClassifierNameDialog(
     )
 }
 
+/** Settings tabs, mirroring the Swift app's Settings TabView. General only exists where a general setting does. */
+private enum class SettingsTab(val title: String) { General("General"), Library("Library"), Sync("Sync") }
+
+/** Section header within a Settings tab — the counterpart of a Form section header in the Swift app. */
+@Composable
+private fun SettingsSectionHeader(title: String) {
+    Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
+}
+
+/** Secondary caption under a control — the counterpart of the Swift app's footnote captions. */
+@Composable
+private fun SettingsCaption(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/**
+ * The one place Salty asks for the server password — the counterpart of the Swift app's
+ * SyncPasswordPrompt.
+ *
+ * A dialog rather than a permanent field, because a field that sits on the Settings screen forever
+ * implies its contents are kept there. This is asked once, when connecting a device, and then not
+ * again. The password goes to [onConnect] and is never stored: connecting trades it for a per-device
+ * sync token, which is the only credential this app keeps.
+ */
+@Composable
+private fun ConnectDevicePrompt(username: String, onConnect: (String) -> Unit, onDismiss: () -> Unit) {
+    var password by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Connect This Device") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    if (username.isBlank()) "Enter your Salty Server password."
+                    else "Enter the password for $username.",
+                )
+                OutlinedTextField(
+                    password, { password = it },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConnect(password) }, enabled = password.isNotEmpty()) { Text("Connect") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
+    // General holds only the desktop-density toggle today, so it only exists where that choice does.
+    val tabs = remember {
+        if (uiDensityChoiceSupported) SettingsTab.entries.toList()
+        else listOf(SettingsTab.Library, SettingsTab.Sync)
+    }
+    var tab by remember { mutableStateOf(tabs.first()) }
+
     var url by remember { mutableStateOf(module.settings.serverUrl) }
     var user by remember { mutableStateOf(module.settings.username) }
-    var pass by remember { mutableStateOf(module.settings.password) }
-    // Recomputed per recomposition rather than remembered: enrolment happens during a sync, so this
-    // has to reflect a change made while the screen is open.
+    var serverUse by remember { mutableStateOf(module.settings.serverUse) }
+    // Recomputed per recomposition rather than remembered: the credential can change while the screen
+    // is open (connecting, forgetting, or a legacy password migrating into a token during a sync).
+    val canSync = module.hasSyncCredentials
     val enrolled = module.settings.syncToken.isNotEmpty()
     // In-progress text ("Syncing…") and the long linked-folder error detail stay inline — a snackbar is
     // the wrong shape for both. Everything else is announced via [notify].
@@ -3635,14 +3737,22 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
     val snackbarHost = remember { SnackbarHostState() }
     var busy by remember { mutableStateOf(false) }
     var showResyncConfirm by remember { mutableStateOf(false) }
+    var showConnectPrompt by remember { mutableStateOf(false) }
+    var showForgetConfirm by remember { mutableStateOf(false) }
+    var showForgetLocalOnly by remember { mutableStateOf(false) }
+    var showServerHelp by remember { mutableStateOf(false) }
+    var showResetLocationConfirm by remember { mutableStateOf(false) }
+    var connecting by remember { mutableStateOf(false) }
+    var connectError by remember { mutableStateOf<String?>(null) }
     var autoSyncEnabled by remember { mutableStateOf(module.settings.autoSyncEnabled) }
     // Mirrors the switch; what the app actually themes off is [AppModule.uiDensity], written on each change.
     var touchDensity by remember { mutableStateOf(module.settings.uiDensity.isTouchFriendly) }
     val scope = rememberCoroutineScope()
     val syncProgress by module.syncProgress.collectAsState()
-    // Non-null only while an ORDINARY sync is running, which is exactly when "Stop" may be offered. The
-    // force re-syncs deliberately leave it null: see the comment on the Stop button.
-    var stoppableSync by remember { mutableStateOf<Job?>(null) }
+    // Non-null only while an ORDINARY sync is running, which is exactly when "Cancel" may be offered. The
+    // force re-syncs deliberately leave it null: see the comment on the Cancel button.
+    var cancellableSync by remember { mutableStateOf<Job?>(null) }
+    var cancelling by remember { mutableStateOf(false) }
 
     /** Announce an outcome. Replaces any showing snackbar so a fast second action isn't queued behind the first. */
     fun notify(message: String) {
@@ -3697,22 +3807,54 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
         }
     }
 
+    fun startSync() {
+        busy = true
+        status = "Syncing…"
+        cancelling = false
+        cancellableSync = scope.launch {
+            val message = try {
+                "Sync complete — " + module.sync().summary()
+            } catch (e: CancellationException) {
+                // Swallowed on purpose, at the outermost frame of a job WE cancelled: there is
+                // nothing left to unwind, and the user has to be told what Cancel left behind.
+                // (notify() launches on the surrounding scope, which is still active.)
+                "Sync cancelled. Changes already made were kept — the next sync resumes from here."
+            } catch (e: Throwable) {
+                "Sync failed: ${e.message}"
+            } finally {
+                busy = false
+                cancellableSync = null
+                cancelling = false
+            }
+            status = ""
+            notify(message)
+        }
+    }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Settings") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
+            Column {
+                TopAppBar(
+                    title = { Text("Settings") },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                )
+                PrimaryTabRow(selectedTabIndex = tabs.indexOf(tab)) {
+                    tabs.forEach { t ->
+                        Tab(selected = t == tab, onClick = { tab = t }, text = { Text(t.title) })
                     }
-                },
-            )
+                }
+            }
         },
         // Outcomes ("Sync complete", "Folder unlinked") used to be a line of text at the bottom of a long
         // scroll — off-screen, and easy to miss entirely, right when the user wants confirmation.
         snackbarHost = { SnackbarHost(snackbarHost) },
     ) { padding: PaddingValues ->
-        val scroll = rememberScrollState()
+        // Per-visit scroll state: switching tabs starts the newly shown tab at the top.
+        val scroll = remember(tab) { ScrollState(0) }
         Box(Modifier.fillMaxSize().padding(padding)) {
             Box(
                 Modifier.fillMaxSize().verticalScroll(scroll),
@@ -3722,232 +3864,416 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                     Modifier.fillMaxWidth().widthIn(max = FORM_WIDTH).padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    OutlinedTextField(url, { url = it }, label = { Text("Server URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    if (url.startsWith("http://")) {
-                        Text(
-                            "Using plain HTTP — HTTPS is recommended for security. Plain HTTP only works in debug builds on Android.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                    OutlinedTextField(user, { user = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(
-                        pass, { pass = it }, label = { Text("Password") }, singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
-                    )
-                    // Named rather than described, so a user who wants to revoke the saved credential knows
-                    // which OS tool to open (and so "it's in Credential Manager" is verifiable, not a claim).
-                    //
-                    // Which credential is stored changes after the first sync: the password is used once to
-                    // enrol this device and is then deleted in favour of a token that can only sync. Saying
-                    // so is what stops an emptied password field looking like a bug.
-                    Text(
-                        if (enrolled) {
-                            "This device syncs with its own key, saved in ${module.settings.passwordStoreName}. " +
-                                "Your password is not stored here. Revoke this device from Devices on the server."
-                        } else {
-                            "Password saved in: ${module.settings.passwordStoreName}. " +
-                                "After the first sync it is replaced by a key that can only sync."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Button(
-                            enabled = !busy,
-                            onClick = {
-                                module.settings.serverUrl = url
-                                module.settings.username = user
-                                module.settings.password = pass
-                                busy = true
-                                status = "Syncing…"
-                                stoppableSync = scope.launch {
-                                    val message = try {
-                                        "Sync complete — " + module.sync().summary()
-                                    } catch (e: CancellationException) {
-                                        // Swallowed on purpose, at the outermost frame of a job WE cancelled: there is
-                                        // nothing left to unwind, and the user has to be told what Stop left behind.
-                                        // (notify() launches on the surrounding scope, which is still active.)
-                                        "Sync stopped. Changes already made were kept — the next sync resumes from here."
-                                    } catch (e: Throwable) {
-                                        "Sync failed: ${e.message}"
-                                    } finally {
-                                        busy = false
-                                        stoppableSync = null
-                                        // Follow the stored value rather than holding what was typed: enrolling
-                                        // deletes the saved password, and without this the next press would write
-                                        // it straight back from this field and undo that.
-                                        pass = module.settings.password
-                                    }
-                                    status = ""
-                                    notify(message)
-                                }
-                            },
-                        ) { Text("Sync now") }
-                        // Offered only for an ordinary sync, which is resumable: the server's lastSyncDate is not
-                        // advanced until the very end, so stopping costs at most the work still outstanding. The two
-                        // force re-syncs below are one-way overwrites with no such cutoff and stay uninterruptible.
-                        // "Stop", not "Cancel" — nothing is rolled back, the sync just stops making changes.
-                        if (stoppableSync != null) {
-                            OutlinedButton(onClick = { stoppableSync?.cancel() }) { Text("Stop") }
-                        }
-                    }
-                    if (busy) {
-                        val p = syncProgress
-                        val fraction = p?.fraction()
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                            Text(p?.describe() ?: status, style = MaterialTheme.typography.bodySmall)
-                            // Determinate only where the count is real (recipe bodies, images); the single-request
-                            // phases get the indeterminate bar rather than a made-up percentage.
-                            if (fraction != null) {
-                                LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-                            } else {
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    when (tab) {
+                        SettingsTab.General -> {
+                            // Desktop only (the tab exists only there): this build defaults to compact
+                            // metrics, which are wrong for the desktop machines that are actually
+                            // touchscreens (a Surface, a convertible laptop).
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Touch mode", style = MaterialTheme.typography.titleSmall)
+                                Switch(
+                                    checked = touchDensity,
+                                    onCheckedChange = {
+                                        touchDensity = it
+                                        module.setUiDensity(if (it) UiDensity.Comfortable else UiDensity.Compact)
+                                    },
+                                )
                             }
-                        }
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Automatic sync", style = MaterialTheme.typography.titleSmall)
-                        Switch(
-                            checked = autoSyncEnabled,
-                            onCheckedChange = {
-                                autoSyncEnabled = it
-                                module.settings.autoSyncEnabled = it
-                                if (!it) module.autoSync.dismissBanner() // clearing the toggle also clears any failure banner
-                            },
-                        )
-                    }
-                    Text(
-                        "Syncs automatically a minute or two after you make changes. Occasional server failures are " +
-                            "ignored; if several in a row fail, a banner lets you close it or pause syncing for a day.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-
-                    // Desktop only: this build defaults to compact metrics, which are wrong for the
-                    // desktop machines that are actually touchscreens (a Surface, a convertible laptop).
-                    if (uiDensityChoiceSupported) {
-                        HorizontalDivider()
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Touch mode", style = MaterialTheme.typography.titleSmall)
-                            Switch(
-                                checked = touchDensity,
-                                onCheckedChange = {
-                                    touchDensity = it
-                                    module.setUiDensity(if (it) UiDensity.Comfortable else UiDensity.Compact)
-                                },
+                            SettingsCaption(
+                                "Restores the full-size spacing used on phones and tablets — larger rows, buttons, " +
+                                    "checkboxes and text fields. Turn this on for a touchscreen; leave it off for a mouse " +
+                                    "or trackpad.",
                             )
                         }
-                        Text(
-                            "Restores the full-size spacing used on phones and tablets — larger rows, buttons, " +
-                                "checkboxes and text fields. Turn this on for a touchscreen; leave it off for a mouse " +
-                                "or trackpad.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
 
-                    OutlinedButton(
-                        enabled = !busy,
-                        onClick = { showResyncConfirm = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Force full re-sync") }
-                    Text(
-                        "Deletes everything from one side and force re-syncs from the other — either wiping the local " +
-                            "library and pulling from the server, or wiping the server and pushing from this device.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                        SettingsTab.Library -> {
+                            SettingsSectionHeader("Library Location")
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    if (module.settings.libraryPath.isBlank()) "Current Location (Default):"
+                                    else "Current Location (Custom):",
+                                    style = MaterialTheme.typography.titleSmall,
+                                )
+                                Text(currentLibraryDir(), style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (customLibraryLocationSupported) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { libraryPicker.launch() }) {
+                                        Text("Select Custom Library Location…")
+                                    }
+                                    if (module.settings.libraryPath.isNotBlank()) {
+                                        TextButton(
+                                            colors = ButtonDefaults.textButtonColors(
+                                                contentColor = MaterialTheme.colorScheme.error,
+                                            ),
+                                            onClick = { showResetLocationConfirm = true },
+                                        ) { Text("Reset to Default Location") }
+                                    }
+                                }
+                                SettingsCaption(
+                                    "Recipes and images live in a \"$SALTY_LIBRARY_DIR\" folder in the above location. " +
+                                        "You'll need to restart the app for changes to take effect.",
+                                )
+                            } else if (linkedFolderSyncSupported) {
+                                SettingsSectionHeader("Linked Folder")
+                                SettingsCaption(
+                                    "Salty Server is the recommended way to keep several devices in sync. As an alternative for backup " +
+                                        "or one-device-at-a-time use, you can link a folder (e.g. in Nextcloud, OneDrive, or iCloud Drive) " +
+                                        "that holds a copy of your library in the same \"$SALTY_LIBRARY_DIR\" format Salty for Mac opens " +
+                                        "directly. The app copies your library to the folder when you leave the app and shortly after " +
+                                        "edits, and loads a newer copy from the folder when it starts — it does not work live from the " +
+                                        "folder, so finish on one device before opening the library on another.",
+                                )
+                                if (linkedLabel.isNotBlank()) {
+                                    Text("Linked folder: $linkedLabel", style = MaterialTheme.typography.bodySmall)
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(enabled = !busy, onClick = { linkFolderPicker.launch() }) {
+                                        Text(if (linkedLabel.isBlank()) "Link Folder…" else "Change Folder…")
+                                    }
+                                    if (linkedLabel.isNotBlank()) {
+                                        OutlinedButton(
+                                            enabled = !busy,
+                                            onClick = {
+                                                busy = true
+                                                status = "Syncing to folder…"
+                                                scope.launch {
+                                                    val r = runCatching { module.pushLibraryFolder() }
+                                                        .getOrDefault(LibraryFolderSyncResult.ERROR)
+                                                    status = ""
+                                                    notify(folderSyncMessage(r))
+                                                    busy = false
+                                                }
+                                            },
+                                        ) { Text("Sync to Folder Now") }
+                                        TextButton(enabled = !busy, onClick = {
+                                            module.libraryFolder.unlink()
+                                            linkedLabel = ""
+                                            notify("Folder unlinked. The library stays in app storage.")
+                                        }) { Text("Unlink") }
+                                    }
+                                }
+                            } else {
+                                SettingsCaption(
+                                    "Custom library locations are available on desktop. This device uses its app storage.",
+                                )
+                            }
+                            // Only when idle: while busy, the Sync tab's progress block renders `status`. Its other
+                            // job — the multi-line linked-folder error — is set with busy already false, so it shows.
+                            if (!busy && status.isNotEmpty()) Text(status)
+                        }
 
-                    HorizontalDivider()
-                    Text("Library location", style = MaterialTheme.typography.titleMedium)
-                    Text(currentLibraryDir(), style = MaterialTheme.typography.bodySmall)
-                    if (customLibraryLocationSupported) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = { libraryPicker.launch() }) { Text("Choose folder…") }
-                            if (module.settings.libraryPath.isNotBlank()) {
-                                TextButton(onClick = {
-                                    module.settings.libraryPath = ""
-                                    notify("Reverted to the default location. Restart the app to apply.")
-                                }) { Text("Use default") }
-                            }
-                        }
-                        Text(
-                            "Recipes and images live in a \"$SALTY_LIBRARY_DIR\" folder in the above location. Must restart app after changing to take effect.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    } else if (linkedFolderSyncSupported) {
-                        Text(
-                            "Salty Server is the recommended way to keep several devices in sync. As an alternative for backup " +
-                                "or one-device-at-a-time use, you can link a folder (e.g. in Nextcloud, OneDrive, or iCloud Drive) " +
-                                "that holds a copy of your library in the same \"$SALTY_LIBRARY_DIR\" format Salty for Mac opens " +
-                                "directly. The app copies your library to the folder when you leave the app and shortly after " +
-                                "edits, and loads a newer copy from the folder when it starts — it does not work live from the " +
-                                "folder, so finish on one device before opening the library on another.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        if (linkedLabel.isNotBlank()) {
-                            Text("Linked folder: $linkedLabel", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(enabled = !busy, onClick = { linkFolderPicker.launch() }) {
-                                Text(if (linkedLabel.isBlank()) "Link folder…" else "Change folder…")
-                            }
-                            if (linkedLabel.isNotBlank()) {
-                                OutlinedButton(
-                                    enabled = !busy,
-                                    onClick = {
-                                        busy = true
-                                        status = "Syncing to folder…"
-                                        scope.launch {
-                                            val r = runCatching { module.pushLibraryFolder() }
-                                                .getOrDefault(LibraryFolderSyncResult.ERROR)
-                                            status = ""
-                                            notify(folderSyncMessage(r))
-                                            busy = false
-                                        }
+                        SettingsTab.Sync -> {
+                            SettingsSectionHeader("Server Configuration")
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Text("Enable sync with Salty Server", style = MaterialTheme.typography.titleSmall)
+                                IconButton(onClick = { showServerHelp = true }) {
+                                    Icon(Icons.AutoMirrored.Outlined.HelpOutline, contentDescription = "What's this?")
+                                }
+                                Spacer(Modifier.weight(1f))
+                                Switch(
+                                    checked = serverUse,
+                                    onCheckedChange = {
+                                        serverUse = it
+                                        module.settings.serverUse = it
+                                        // Disabling sync doesn't forget the device, so the stored token is
+                                        // deliberately left alone; only a stale error message is worth clearing.
+                                        if (!it) connectError = null
                                     },
-                                ) { Text("Sync to folder now") }
-                                TextButton(enabled = !busy, onClick = {
-                                    module.libraryFolder.unlink()
-                                    linkedLabel = ""
-                                    notify("Folder unlinked. The library stays in app storage.")
-                                }) { Text("Unlink") }
+                                )
                             }
-                        }
-                    } else {
-                        Text(
-                            "Custom library locations are available on desktop. This device uses its app storage.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
+                            OutlinedTextField(
+                                url,
+                                { url = it; module.settings.serverUrl = it },
+                                label = { Text("Server URL") },
+                                supportingText = { Text("Example: https://server.example.com:8443") },
+                                singleLine = true,
+                                enabled = serverUse,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            if (url.isNotEmpty() && !url.lowercase().startsWith("https")) {
+                                Text(
+                                    "WARNING: It is recommended to use HTTPS for better security." +
+                                        if (url.startsWith("http://")) " Plain HTTP only works in debug builds on Android." else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                            OutlinedTextField(
+                                user,
+                                { user = it; module.settings.username = it },
+                                label = { Text("Username") },
+                                singleLine = true,
+                                // Locked while connected, like the Swift app: the token was issued for this
+                                // account, so changing the name here would only misdescribe it.
+                                enabled = serverUse && !canSync,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
 
-                    // Only when idle: while busy, the progress block above already renders `status` (plus a bar),
-                    // so this would double it. Its other job — the multi-line linked-folder error — is set with
-                    // busy already false, so it still shows.
-                    if (!busy && status.isNotEmpty()) Text(status)
+                            // One action, in the row a password field would otherwise occupy. Which one it is
+                            // depends on whether this device is connected, so there is never a dead control
+                            // here. The password itself is only ever asked for by [ConnectDevicePrompt] and
+                            // never stored — connecting trades it for a per-device sync token.
+                            if (canSync) {
+                                TextButton(
+                                    enabled = !busy,
+                                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                    onClick = { showForgetConfirm = true },
+                                ) { Text("Forget This Device") }
+                                // Named rather than described, so a user who wants to inspect the saved
+                                // credential knows which OS tool to open.
+                                if (enrolled) {
+                                    SettingsCaption(
+                                        "This device syncs with its own key, saved in ${module.settings.passwordStoreName}. " +
+                                            "Your password is not stored on this device.",
+                                    )
+                                }
+                            } else {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Button(
+                                        enabled = serverUse && url.isNotBlank() && user.isNotBlank() && !connecting,
+                                        onClick = { showConnectPrompt = true },
+                                    ) { Text("Connect This Device") }
+                                    if (connecting) {
+                                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                    }
+                                }
+                            }
+                            connectError?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            }
+
+                            SettingsSectionHeader("Sync")
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Sync automatically", style = MaterialTheme.typography.titleSmall)
+                                Switch(
+                                    checked = autoSyncEnabled,
+                                    enabled = serverUse,
+                                    onCheckedChange = {
+                                        autoSyncEnabled = it
+                                        module.settings.autoSyncEnabled = it
+                                        if (!it) module.autoSync.dismissBanner() // clearing the toggle also clears any failure banner
+                                    },
+                                )
+                            }
+                            SettingsCaption(
+                                "Syncs in the background after you make changes. Occasional failures are silent; " +
+                                    "repeated failures show a dismissable banner.",
+                            )
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Button(
+                                    enabled = serverUse && url.isNotBlank() && !busy && canSync,
+                                    onClick = { startSync() },
+                                ) {
+                                    Icon(Icons.Outlined.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(if (busy) "Syncing..." else "Sync Now")
+                                }
+                                // Offered only for an ordinary sync, which is resumable: the server's lastSyncDate is
+                                // not advanced until the very end, so cancelling costs at most the work still
+                                // outstanding. The two force re-syncs are one-way overwrites with no such cutoff and
+                                // stay uninterruptible. Nothing is rolled back — the sync just stops making changes.
+                                if (cancellableSync != null) {
+                                    OutlinedButton(
+                                        enabled = !cancelling,
+                                        onClick = { cancelling = true; cancellableSync?.cancel() },
+                                    ) { Text(if (cancelling) "Cancelling..." else "Cancel") }
+                                }
+                            }
+                            if (busy) {
+                                val p = syncProgress
+                                val fraction = p?.fraction()
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                                    Text(p?.describe() ?: status, style = MaterialTheme.typography.bodySmall)
+                                    // Determinate only where the count is real (recipe bodies, images); the single-request
+                                    // phases get the indeterminate bar rather than a made-up percentage.
+                                    if (fraction != null) {
+                                        LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                                    } else {
+                                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                    }
+                                }
+                            }
+
+                            OutlinedButton(
+                                enabled = serverUse && url.isNotBlank() && !busy && canSync,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                onClick = { showResyncConfirm = true },
+                            ) { Text("Force Full Re-Sync") }
+                            SettingsCaption(
+                                "Deletes everything from one side and force re-syncs from the other — either wiping the local " +
+                                    "library and pulling from the server, or wiping the server and pushing from this device.",
+                            )
+
+                            // "Last synced:" re-renders when the wording is next due to change — at the 15-second
+                            // mark, then on each minute boundary — rather than polling at a fixed rate. The loop
+                            // lives and dies with this tab, so nothing ticks while it isn't showing.
+                            val lastSyncAt = module.settings.lastSyncAt
+                            var lastSyncNow by remember { mutableStateOf(LastSyncedDescription.nowMillis()) }
+                            LaunchedEffect(lastSyncAt) {
+                                if (lastSyncAt == 0L) return@LaunchedEffect
+                                while (true) {
+                                    lastSyncNow = LastSyncedDescription.nowMillis()
+                                    // Half a second past the boundary, so the wake-up never lands just short of it
+                                    // and immediately reschedules for a few more milliseconds.
+                                    delay(LastSyncedDescription.refreshIntervalMillis(lastSyncAt, lastSyncNow) + 500)
+                                }
+                            }
+                            SettingsCaption(
+                                "Last synced: " +
+                                    if (lastSyncAt == 0L) "Never" else LastSyncedDescription.text(lastSyncAt, lastSyncNow),
+                            )
+
+                            SettingsSectionHeader("How Sync Works")
+                            SettingsCaption(
+                                "Compares your local recipes with the server and syncs changes in both directions. " +
+                                    "The most recently modified version wins in case of conflicts.",
+                            )
+
+                            // Only when idle: while busy, the progress block above already renders `status` (plus a
+                            // bar), so this would double it.
+                            if (!busy && status.isNotEmpty()) Text(status)
+                        }
+                    }
                 }
             }
             EdgeScrollbar(scroll)
         }
     }
 
+    if (showServerHelp) {
+        AlertDialog(
+            onDismissRequest = { showServerHelp = false },
+            title = { Text("What is Salty Server?") },
+            text = {
+                Text(
+                    "Salty Server is an optional, self-hosted sync service you can add to sync your database " +
+                        "among multiple devices (as an alternative to moving or copying the database file yourself " +
+                        "or relying on third-party services). For details, see: https://github.com/rmorobert/saltyserver",
+                )
+            },
+            confirmButton = { TextButton(onClick = { showServerHelp = false }) { Text("OK") } },
+        )
+    }
+
+    if (showConnectPrompt) {
+        ConnectDevicePrompt(
+            username = user,
+            onConnect = { password ->
+                showConnectPrompt = false
+                connecting = true
+                connectError = null
+                scope.launch {
+                    try {
+                        module.connectDevice(password)
+                        notify("This device is connected and ready to sync.")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        connectError = e.message ?: "Couldn't connect this device."
+                    } finally {
+                        connecting = false
+                    }
+                }
+            },
+            onDismiss = { showConnectPrompt = false },
+        )
+    }
+
+    if (showForgetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showForgetConfirm = false },
+            title = { Text("Forget This Device?") },
+            text = {
+                Text(
+                    "This device will stop syncing until you connect it again. Your recipes stay on this " +
+                        "device and on the server.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    onClick = {
+                        showForgetConfirm = false
+                        busy = true
+                        scope.launch {
+                            val outcome = try {
+                                module.forgetDevice()
+                            } finally {
+                                busy = false
+                            }
+                            connectError = null
+                            // Success is silent: the row turning back into "Connect This Device" is the
+                            // confirmation. A failed revoke is worth a word, because the user is the only
+                            // one who can finish the job — and only they know whether this device is merely
+                            // being reset or has gone missing.
+                            if (outcome == AppModule.ForgetDeviceOutcome.LOCAL_ONLY) showForgetLocalOnly = true
+                        }
+                    },
+                ) { Text("Forget") }
+            },
+            dismissButton = { TextButton(onClick = { showForgetConfirm = false }) { Text("Cancel") } },
+        )
+    }
+
+    if (showForgetLocalOnly) {
+        AlertDialog(
+            onDismissRequest = { showForgetLocalOnly = false },
+            title = { Text("Forgotten on This Device") },
+            text = {
+                Text(
+                    "The server could not be reached to revoke your device's authorization, but local " +
+                        "credentials have been deleted. You may wish to also manually remove this device from " +
+                        "your active devices on your Salty Server instance if still active.",
+                )
+            },
+            confirmButton = { TextButton(onClick = { showForgetLocalOnly = false }) { Text("OK") } },
+        )
+    }
+
+    if (showResetLocationConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetLocationConfirm = false },
+            title = { Text("Reset Library Location") },
+            text = {
+                Text(
+                    "This will reset your library location to the default location. You'll need to restart " +
+                        "the app for changes to take effect.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    onClick = {
+                        showResetLocationConfirm = false
+                        module.settings.libraryPath = ""
+                        notify("Reverted to the default location. Restart the app to apply.")
+                    },
+                ) { Text("Reset") }
+            },
+            dismissButton = { TextButton(onClick = { showResetLocationConfirm = false }) { Text("Cancel") } },
+        )
+    }
+
     if (showResyncConfirm) {
         // Run one of the two one-way overwrites, then close the dialog and report the outcome.
         fun startResync(label: String, action: suspend () -> SyncResult) {
             showResyncConfirm = false
-            module.settings.serverUrl = url
-            module.settings.username = user
-            module.settings.password = pass
             busy = true
             status = "$label…"
             scope.launch {
@@ -3957,7 +4283,6 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                     "$label failed: ${e.message}"
                 } finally {
                     busy = false
-                    pass = module.settings.password   // see the note on the ordinary sync path
                 }
                 status = ""
                 notify(message)
@@ -3965,7 +4290,7 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
         }
         AlertDialog(
             onDismissRequest = { showResyncConfirm = false },
-            title = { Text("Force full re-sync") },
+            title = { Text("Force Full Re-Sync?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(

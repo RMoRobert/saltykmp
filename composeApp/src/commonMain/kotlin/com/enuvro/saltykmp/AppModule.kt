@@ -37,7 +37,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
+import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.ExperimentalTime
 
 /**
  * Connection settings persisted via [KeyValueStore], except the password, which goes to [SecretStore] --
@@ -53,6 +55,23 @@ class SettingsState(
     var username: String
         get() = store.getString("username", "")
         set(value) = store.putString("username", value)
+
+    /**
+     * Master switch for Salty Server sync ("Enable sync with Salty Server"). Never written by builds
+     * that predate it, so the default matters: a device that already holds a sync credential was
+     * plainly using the server and keeps syncing without a visit to Settings; everyone else starts off.
+     */
+    var serverUse: Boolean
+        get() = store.getString("serverUse", "").let {
+            if (it.isEmpty()) syncToken.isNotEmpty() || password.isNotEmpty() else it.toBoolean()
+        }
+        set(value) = store.putString("serverUse", value.toString())
+
+    /**
+     * A password saved by a pre-token build, kept only so its one remaining use — being traded for a
+     * sync token on the next sync — still works. Nothing writes a new one: connecting a device passes
+     * the password straight through [AppModule.connectDevice] without storing it.
+     */
     var password: String
         get() = secrets.get(SECRET_KEY_PASSWORD).orEmpty()
         set(value) {
@@ -71,7 +90,8 @@ class SettingsState(
             else secrets.put(SECRET_KEY_SYNC_TOKEN, value, account = username)
         }
 
-    /** Where [password] is kept, for the Settings caption, e.g. "Windows Credential Manager". */
+    /** Where secrets ([syncToken], and any legacy [password]) are kept, for the Settings caption,
+     *  e.g. "Windows Credential Manager". */
     val passwordStoreName: String get() = secrets.backendName
 
     /** Recipe-list sort field (a RecipeSort enum name) and direction; persisted across launches. */
@@ -112,6 +132,24 @@ class SettingsState(
         get() = store.getString("collapsedDrawerSections", "").split(',').filter { it.isNotBlank() }.toSet()
         set(value) = store.putString("collapsedDrawerSections", value.joinToString(","))
 
+    /**
+     * Chef Mode's text-size stepper position; see [ChefTextSize]. An unparseable or absent value falls
+     * back to the default, so a fresh install opens Chef Mode a step or two above the reading size.
+     *
+     * Persisted, unlike the cooking progress it sits beside: how large you like the type is a fact
+     * about the tablet propped against the toaster, where "I am on step four" is only true right now.
+     */
+    internal var chefTextSizeLevel: Int
+        get() = store.getString("chefTextSizeLevel", "").toIntOrNull() ?: ChefTextSize.DEFAULT_LEVEL
+        set(value) = store.putString("chefTextSizeLevel", ChefTextSize.clamped(value).toString())
+
+    /** How Chef Mode presents the directions; see [ChefDisplayStyle]. Stored as the enum name. */
+    internal var chefDisplayStyle: ChefDisplayStyle
+        get() = store.getString("chefDisplayStyle", "")
+            .let { stored -> ChefDisplayStyle.entries.firstOrNull { it.name == stored } }
+            ?: ChefDisplayStyle.AllSteps
+        set(value) = store.putString("chefDisplayStyle", value.name)
+
     /** When enabled, the app syncs automatically a short time after each local change. Off by default. */
     var autoSyncEnabled: Boolean
         get() = store.getString("autoSyncEnabled", "false").toBoolean()
@@ -129,6 +167,11 @@ class SettingsState(
             .let { stored -> UiDensity.entries.firstOrNull { it.name == stored } }
             ?: platformDefaultDensity
         set(value) = store.putString("uiDensity", value.name)
+
+    /** Epoch millis of the last successful sync with the server (0 = never); the "Last synced:" line. */
+    var lastSyncAt: Long
+        get() = store.getString("lastSyncAt", "0").toLongOrNull() ?: 0L
+        set(value) = store.putString("lastSyncAt", value.toString())
 
     /** Epoch millis until which auto-sync is paused (0 = not paused); set by the failure banner's "pause" action. */
     var autoSyncPausedUntil: Long
@@ -199,6 +242,13 @@ class AppModule {
     val classifierEditor: LibraryClassifierEditor by lazy { LibraryClassifierEditor(database) }
     val classifierMerger: LibraryDuplicateMerger by lazy { LibraryDuplicateMerger(database) }
     val imageFiles: ImageFiles = createImageFiles()
+
+    /**
+     * Chef Mode's cooking progress, keyed by recipe id. App-level and in-memory: leaving Chef Mode to
+     * look something up and coming back returns to the same checked ingredients and current step, and
+     * none of it outlives the process. See [ChefSessionStore].
+     */
+    internal val chefSessions = ChefSessionStore()
 
     /** App-lifetime scope for background work (debounced auto-sync). Lives as long as the process. */
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -273,6 +323,7 @@ class AppModule {
     /** Logs in and runs a full bidirectional sync; then pushes the updated library to the linked folder. */
     suspend fun sync(): SyncResult {
         val result = withSyncService { it.syncNow() }
+        recordSyncSucceeded()
         if (libraryFolder.isLinked()) runCatching { libraryFolder.pushOut() }
         return result
     }
@@ -280,45 +331,133 @@ class AppModule {
     /** Wipes the local library and overwrites it with the server's contents (no uploads/deletions). */
     suspend fun forceFullResync(): SyncResult {
         val result = withSyncService { it.pullEverythingFromServer() }
+        recordSyncSucceeded()
         if (libraryFolder.isLinked()) runCatching { libraryFolder.pushOut() }
         return result
     }
 
     /** Wipes the server's contents and overwrites them with the local library (no local deletions). */
-    suspend fun forceFullResyncFromLocal(): SyncResult =
-        withSyncService { it.pushEverythingToServer() }
+    suspend fun forceFullResyncFromLocal(): SyncResult {
+        val result = withSyncService { it.pushEverythingToServer() }
+        recordSyncSucceeded()
+        return result
+    }
+
+    @OptIn(ExperimentalTime::class)
+    private fun recordSyncSucceeded() {
+        settings.lastSyncAt = Clock.System.now().toEpochMilliseconds()
+    }
 
     /**
-     * Gets the connection authenticated, preferring the device sync token.
+     * Whether this device can sync: it holds a sync token, or a password saved by a pre-token build
+     * that the next sync will trade for one (the Swift app's `hasCredentials`).
+     */
+    val hasSyncCredentials: Boolean
+        get() = settings.syncToken.isNotEmpty() || settings.password.isNotEmpty()
+
+    /**
+     * Trades the password from the Connect This Device prompt for this device's sync token.
      *
-     * The password is only used to enrol — the first sync after signing in — and is deleted once a
-     * token comes back, which is the entire point: from then on this device holds a credential that
-     * can sync and nothing else.
+     * The password arrives as a parameter and is never stored — it exists only for the duration of
+     * this call. On success the token is stored instead, and any password a pre-token build left in
+     * the vault is deleted along the way. Throws a [SyncException] with a friendly message otherwise.
+     */
+    suspend fun connectDevice(password: String) {
+        val api = SaltyApiClient(settings.serverUrl.trimEnd('/'), tokenStore, httpEngine)
+        try {
+            val auth = api.login(settings.username, password, settings.deviceId, SYNC_DEVICE_NAME)
+            settings.syncToken = auth.deviceToken
+                // The server enrols on every login now, so a missing token means it is older than
+                // this client. Failing rather than carrying on is deliberate: carrying on is exactly
+                // what used to leave a client syncing with the password indefinitely, invisible on
+                // the account's app list because it never had a token to show there.
+                ?: throw SyncException("This server is too old for this app. Update the server, then connect again.")
+            settings.password = ""
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: SyncException) {
+            throw e
+        } catch (e: Throwable) {
+            throw SyncException(friendlyNetworkMessage(e))
+        } finally {
+            api.close()
+        }
+    }
+
+    /** What [forgetDevice] managed to do, so the UI can say something useful when it fell short. */
+    enum class ForgetDeviceOutcome {
+        /** The token is dead server-side as well as gone from here. */
+        REVOKED_ON_SERVER,
+
+        /** The server couldn't be told, so the token may still be live there. Forgetting still
+         *  happened locally — refusing to sign out because the network is down would be worse. */
+        LOCAL_ONLY,
+    }
+
+    /**
+     * Forgets this device: revokes its token on the server, then discards it here, so syncing stops
+     * until the device is connected again.
      *
-     * A rejected token (revoked from the devices page, or invalidated by a password change) falls
-     * back to the password if the user has entered one again, and otherwise says plainly what to do.
-     * A network failure is NOT treated as rejection, so a flaky connection never discards a token
-     * that is still perfectly good.
+     * The revoke is attempted first, because it needs the credential this is about to destroy. Local
+     * state is cleared regardless of how it goes: a user who asked to forget has forgotten, and
+     * leaving them connected because a server was unreachable would be the wrong way to fail.
+     */
+    suspend fun forgetDevice(): ForgetDeviceOutcome {
+        val token = settings.syncToken
+        val outcome = if (token.isEmpty()) {
+            // Never enrolled (at most a legacy saved password): there is nothing on the server to
+            // revoke, so there is nothing to warn about either.
+            ForgetDeviceOutcome.REVOKED_ON_SERVER
+        } else {
+            val api = SaltyApiClient(settings.serverUrl.trimEnd('/'), tokenStore, httpEngine)
+            try {
+                if (api.revokeDeviceToken(token)) ForgetDeviceOutcome.REVOKED_ON_SERVER
+                else ForgetDeviceOutcome.LOCAL_ONLY
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                ForgetDeviceOutcome.LOCAL_ONLY
+            } finally {
+                api.close()
+            }
+        }
+        settings.syncToken = ""
+        settings.password = ""
+        tokenStore.token = null
+        return outcome
+    }
+
+    /**
+     * Gets the connection authenticated with the device sync token.
+     *
+     * The only password this ever sees is one a pre-token build stored: it is used once to enrol
+     * this device and deleted when the token comes back, so existing installs upgrade without ever
+     * seeing the Connect This Device prompt. Current builds never store a password at all —
+     * connecting happens through [connectDevice], with the password passing straight through.
+     *
+     * A rejected token (revoked from the devices page, or invalidated by a password change) says
+     * plainly what to do. A network failure is NOT treated as rejection, so a flaky connection never
+     * discards a token that is still perfectly good.
      */
     private suspend fun authenticate(api: SaltyApiClient) {
         val token = settings.syncToken
         if (token.isNotEmpty()) {
             if (api.loginWithDeviceToken(token) != null) return
-            settings.syncToken = ""   // the server disowned it; fall through to the password
+            settings.syncToken = ""   // the server disowned it; fall through to a legacy saved password
         }
 
         if (settings.password.isEmpty()) {
             throw SyncException(
-                "This device is no longer authorised to sync. Enter your password in Settings to sign in again.",
+                if (token.isNotEmpty()) {
+                    "This device is no longer authorised to sync. Use Connect This Device in Settings to sign in again."
+                } else {
+                    "This device is not connected to the server. Use Connect This Device in Settings."
+                },
             )
         }
 
         val auth = api.login(settings.username, settings.password, settings.deviceId, SYNC_DEVICE_NAME)
         val issued = auth.deviceToken
-            // The server enrols on every login now, so a missing token means it is older than this
-            // client. Failing here rather than carrying on with the JWT is deliberate: carrying on is
-            // exactly what used to leave a client syncing with the password indefinitely, invisible on
-            // the account's app list because it never had a token to show there.
             ?: throw SyncException(
                 "This server is too old for this app. Update the server, then sync again.",
             )

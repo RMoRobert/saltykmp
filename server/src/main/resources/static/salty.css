@@ -228,3 +228,8 @@ body { background:#f5f5f7; }
    from the app they were just in. */
 .classic-tag { color: var(--pico-muted-color); text-transform: uppercase;
                letter-spacing: 0.06em; font-size: 0.7em; }
+
+/* Same launcher icon the app bar uses, so classic reads as the same product rather than a
+   different site. Flex to centre the mark against the wordmark. */
+.nav-brand { display: inline-flex; align-items: center; gap: .4rem; }
+.nav-brand__logo { width: 24px; height: 24px; }

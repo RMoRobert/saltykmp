@@ -45,6 +45,7 @@ import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.contentType
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondRedirect
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
@@ -152,6 +153,17 @@ private fun Application.enforceSecrets() {
         if (allowDefault) log.warn("SECURITY: $msg (allowed only because SALTY_ALLOW_DEFAULT_SECRET=true)")
         else error("SECURITY: $msg Refusing to start. For local/dev use only, set SALTY_ALLOW_DEFAULT_SECRET=true.")
     }
+}
+
+/**
+ * The classic root favicon, read from the classpath once. It is a few kilobytes and is requested on
+ * every cold visit by clients that do not parse the page, so holding it beats re-reading the jar.
+ */
+private val faviconIco: ByteArray by lazy {
+    val loader = Thread.currentThread().contextClassLoader ?: ClassLoader.getSystemClassLoader()
+    checkNotNull(loader.getResourceAsStream("static/favicon.ico")) {
+        "static/favicon.ico is missing from the server resources"
+    }.use { it.readBytes() }
 }
 
 fun Application.module() {
@@ -299,6 +311,9 @@ fun Application.installSalty(
         get("/health") { call.respondText("OK") }
         // Static assets for the web UI (e.g. /static/salty.css) from resources/static/.
         staticResources("/static", "static")
+        // The pages link the PNG icons from <head>; this is for the clients that never read the
+        // HTML and only ever probe the site root — feed readers, bookmark tools, older browsers.
+        get("/favicon.ico") { call.respondBytes(faviconIco, ContentType.Image.XIcon) }
         authRoutes(deviceTokens, loginThrottle, accountLockout)
         recipeRoutes(imageStore)
         recipeImportRoutes(importAddressPolicy)

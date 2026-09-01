@@ -2,8 +2,9 @@
  *
  * Deliberately thin: layout and structure only. Colour, type, spacing scale, focus rings and
  * component appearance all come from Web Awesome's own theme, so its native look shows through
- * unmodified — there are no brand overrides here on purpose. Everything below is either something
- * a stylesheet has to do (a three-pane grid) or a fix for a real interaction bug.
+ * unmodified. There is exactly one brand override — the header bar, in the brand block below —
+ * and it is deliberately the only one: everything else below is either something a stylesheet has
+ * to do (a three-pane grid) or a fix for a real interaction bug.
  *
  * Web Awesome's utilities.css supplies the flash-of-undefined-elements guard and prose typography,
  * so neither is hand-rolled any more.
@@ -110,6 +111,97 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
   gap: var(--wa-space-s);
 }
 
+/* The app's launcher icon, not the salt-shaker emoji it replaced: an <img> is the same mark on
+   every platform, where the emoji was whatever shaker the viewer's font happened to draw (and on
+   some Linux desktops, nothing at all). Flex so it centres against the wordmark instead of sitting
+   on its baseline; the gap replaces the whitespace flex drops. */
+.appbar__brand { display: inline-flex; align-items: center; gap: var(--wa-space-2xs); }
+.appbar__logo  { width: 24px; height: 24px; }
+
+/* ------------------------------------------------------------------- brand -- */
+
+/* The header bar carries the app's colour, taken from the Swift app's own colour assets so the two
+   clients read as one product rather than two that happen to share a name.
+ *
+ * Light: SaltyBlue is #009CFD, and white on it is 2.93:1. #0097F5 is that same colour (hue 203,
+ * saturation 100%) darkened just enough to clear 3:1 with a little margin — 3.10:1 — which is close
+ * enough to the brand blue to still read as it. The wordmark below is sized to earn that 3:1
+ * rather than assume it; at the 16px/600 it used to be, WCAG counts it as normal text and the bar
+ * would have to go all the way down to #007BC7 (4.5:1), which stopped looking like the brand at
+ * all. The icon buttons are non-text UI, so 3:1 is their bar outright.
+ * Dark: RecipeDetailPageBackgroundA's dark value, the lighter of the Swift app's two dark
+ * backgrounds. White on it is 15.64:1.
+ *
+ * A media query rather than a [data-theme] hook on purpose: this app takes light and dark from the
+ * OS through <meta name="color-scheme"> and has no theme control (the classic stylesheet is the one
+ * with [data-theme], because Pico is driven differently).
+ *
+ * The foreground is PINNED white in both schemes instead of being left to the theme. The bar is a
+ * fixed surface in each mode, so its contents have to be fixed too — left alone, dark mode flips
+ * the theme's foreground and lands at 2.04:1 on a bar that has not moved.
+ *
+ * Note where the foreground is scoped: on the brand span and the trigger buttons, NOT on
+ * ::part(header). A dropdown's MENU is a light-DOM child of wa-dropdown and inherits from the
+ * header along with everything else, so putting them on the part turns the menu items
+ * white-on-white. That is how this broke the first time round. */
+:root {
+  --salty-brand: #0097F5;
+  --salty-brand-on: #fff;
+  /* Pure white, not the 88%-alpha white this started as. On the old darker bar the alpha bought a
+     little hierarchy between the icons and the wordmark for free; on this lighter one it costs
+     0.4 of a contrast point and drops the icon buttons to 2.72:1, under the 3:1 they need. */
+  --salty-brand-on-quiet: #fff;
+  /* Hover/press: darken, which on a mid-tone bar lifts the white icons rather than washing them
+     out the way a lightening overlay would. */
+  --salty-brand-hover: rgb(0 0 0 / 0.15);
+  --salty-brand-press: rgb(0 0 0 / 0.25);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --salty-brand: #00263E;
+    /* Darkening a bar that is already near-black gives no affordance at all, so this one lightens.
+       The direction flips with the bar; the white foreground does not have to. */
+    --salty-brand-hover: rgb(255 255 255 / 0.14);
+    --salty-brand-press: rgb(255 255 255 / 0.22);
+  }
+}
+
+/* Painted on wa-page's header PART rather than on .appbar, which looks like the obvious target and
+   is the wrong one. At mobile width wa-page stacks its own navigation toggle in a row ABOVE our
+   <header>, both inside that part; colouring .appbar alone leaves a white strip sitting over a
+   coloured one. Painting the part covers the whole band, toggle included. */
+wa-page::part(header) { background: var(--salty-brand); }
+
+/* Web Awesome styles a bare <header> as a document header, background included, so the part's
+   colour would be hidden behind an opaque white box without this. */
+.appbar { background: transparent; }
+.appbar__brand { color: var(--salty-brand-on); }
+/* Load-bearing, not decoration: >=18.66px AND >=700 is WCAG's threshold for "large text", which is
+   what puts the wordmark on a 3:1 contrast requirement instead of 4.5:1 and so lets the bar stay
+   near the brand blue. In px rather than rem deliberately — the exact rendered size is the basis
+   for that, so it should not drift with a root font-size change. */
+.appbar__brand strong { font-size: 19px; font-weight: 700; }
+
+.appbar__menus wa-button[slot="trigger"],
+wa-page::part(navigation-toggle) {
+  /* The plain icon buttons read the neutral pair, not the text pair — re-pointing only the latter
+     leaves the gear and the account icon in their default slate. */
+  --wa-color-neutral-on-quiet: var(--salty-brand-on-quiet);
+  --wa-color-neutral-on-normal: var(--salty-brand-on);
+  /* Web Awesome's own fills here are near-white, drawn for a white page; on a coloured bar that put
+     a white icon on a white chip at about 1.05:1, which is invisible rather than subtle. */
+  --wa-color-neutral-fill-quiet: var(--salty-brand-hover);
+  --wa-color-neutral-fill-normal: var(--salty-brand-press);
+  /* The default focus ring is #3e96ff: a blue ring on a blue bar. Re-pointing --wa-color-focus
+     alone does nothing, and it is worth knowing why — --wa-focus-ring is a composed shorthand
+     ("solid 0.1875rem #3e96ff") whose var()s were already substituted at :root, so a copy of the
+     colour set further down is never read. The shorthand is what has to be rebuilt; style and
+     width are reused from the theme so only the colour changes. */
+  --wa-color-focus: var(--salty-brand-on);
+  --wa-focus-ring: var(--wa-focus-ring-style) var(--wa-focus-ring-width) var(--salty-brand-on);
+}
+
 .rail   { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 /* No border-inline-end any more: the split panel's divider IS that seam, and drawing both put a
    2px double line down the middle. min-width so a long recipe name ellipses instead of widening
@@ -137,9 +229,10 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
 
 .list__head { gap: var(--wa-space-xs);
               padding: var(--wa-space-s) var(--wa-space-s) var(--wa-space-2xs); }
+/* Clipping is `wa-text-truncate` in the template; min-width is what lets it actually happen inside
+   the flex header, and margin-inline-end pushes the controls to the far end. */
 .list__title { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-bold); margin: 0;
-               margin-inline-end: auto; overflow: hidden; text-overflow: ellipsis;
-               white-space: nowrap; min-width: 0; }
+               margin-inline-end: auto; min-width: 0; }
 .list__search { padding: 0 var(--wa-space-s) var(--wa-space-xs); }
 .list__scroll {
   flex: 1; min-height: 0; overflow-y: auto;
@@ -157,14 +250,14 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
                               #000 calc(100% - var(--wa-space-l)), transparent 100%);
 }
 
-/* The rows themselves. list-style/padding reset because this is a list for semantics -- see the
-   role="list" note in the template -- not for its bullets. */
-.list__rows { list-style: none; margin: 0; padding: 0; }
-/* The <li> needs resetting too, not just the <ul>: Web Awesome's prose styles give every list item
-   an 18px inline-start margin for its bullet, which pushed the rows 26px off the left edge of the
-   scroller while the right stayed at the scroller's own 8px. The rows looked subtly off-centre and
-   the cause was invisible -- the indent was on an element with no styling of its own. */
-.list__rows > li { margin: 0; }
+/* The rows themselves. The bullets and the indent both go via `wa-list-plain` in the template,
+   which is Web Awesome's own answer to this: it drops the marker AND zeroes the inline-start margin
+   native.css gives every <li> (1.125em, meant for prose). That margin is the one worth knowing
+   about -- resetting the <ul> alone leaves it, and it pushed the rows 26px off the left edge of the
+   scroller against 8px on the right, from an element with no styling of its own.
+   All that's left for us is the <ul>'s own block margin, which native.css adds to any list with a
+   sibling after it -- here, the "Nothing here yet" paragraph. */
+.list__rows { margin: 0; }
 
 .rrow {
   /* Web Awesome's native.css themes every bare <button> as a form control, including
@@ -184,17 +277,23 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
 }
 .rrow:hover { background: var(--wa-color-neutral-fill-quiet); }
 .rrow--on { background: var(--wa-color-brand-fill-quiet); }
-/* One line, ellipsed -- the same treatment .rrow__sub already had, and for the same reason. Without
-   it a long name didn't wrap (WA's native.css puts `white-space: nowrap` on every <button>, and the
-   row is one) but overflowed, so the whole COLUMN scrolled sideways to chase it.
-   `white-space` is spelled out rather than left to that inherited button rule, which is not a thing
-   to depend on across upgrades. `display: block` so it clips in the shopping-list rows too, where
-   the span is an inline child of the button rather than a flex item in a wa-stack. */
+/* One line, ellipsed, via `wa-text-truncate` in the template. Without it a long name didn't wrap
+   (WA's native.css puts `white-space: nowrap` on every <button>, and the row is one) but
+   overflowed, so the whole COLUMN scrolled sideways to chase it -- the utility spells `white-space`
+   out rather than leaving it to that inherited button rule, which is not a thing to depend on
+   across upgrades. `display: block` stays here: it is what makes the clipping bite in the
+   shopping-list rows, where the span is an inline child of the button rather than a flex item in a
+   wa-stack. */
 .rrow__name { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-medium);
-              display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* --flank-size is wa-flank's own knob for the fixed side. */
+              display: block; }
+/* --flank-size is wa-flank's own knob for the fixed side, and it belongs on the CONTAINER: the
+   utility reads it from the flank child, where it arrives by inheritance. Setting it on the thumb
+   as well said the same thing to nobody. */
 .rrow__inner { --flank-size: 3rem; }
-.rrow__thumb { --flank-size: 3rem; flex: 0 0 3rem; block-size: 3rem;
+/* The explicit `flex` is not the same fact repeated: wa-flank gives the flank `flex-grow: 1`
+   against the content's 999, so it still takes a sliver of free space and the square stops being
+   square against the fixed block-size. 0 0 pins it. */
+.rrow__thumb { flex: 0 0 3rem; block-size: 3rem;
                border-radius: var(--wa-border-radius-m);
                background: var(--wa-color-neutral-fill-quiet); }
 .rrow__noimage { color: var(--wa-color-neutral-on-quiet); font-size: 1.1rem; }
@@ -203,15 +302,12 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
    pane instead of ellipsing. */
 .rrow__text { min-width: 0; }
 /* The recipe row's introduction and the shopping row's item count are the same thing in two
-   columns: the quiet second line under a name. .rrow__meta used to inherit the row's font size,
-   which made "1 item - 1 left" LARGER than the name of the list it belonged to and the loudest
-   thing in the column. */
-.rrow__sub, .rrow__meta {
-  display: block;
-  font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet);
-  /* One line: an introduction is a paragraph, and a paragraph per row would bury the names. */
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+   columns: the quiet second line under a name. Both are `wa-caption-xs wa-text-truncate` in the
+   template -- quiet colour and small size from the first, one clipped line from the second, since
+   an introduction is a paragraph and a paragraph per row would bury the names. (.rrow__meta used to
+   inherit the row's font size, which made "1 item - 1 left" LARGER than the name of the list it
+   belonged to and the loudest thing in the column.) Only the block box is left to set. */
+.rrow__sub, .rrow__meta { display: block; }
 /* The marks line spans the row so the two readings sit at opposite ends: rating on the left where
    the eye is already scanning names, favourite on the right as a flag rather than a fourth thing
    crowding the stars. */
@@ -229,8 +325,7 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
                padding: var(--wa-space-xs) var(--wa-space-m);
                border-block-end: var(--wa-border-width-s, 1px) solid var(--wa-color-surface-border); }
 .detail__title { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-semibold);
-                 margin: 0; margin-inline-end: auto; overflow: hidden; text-overflow: ellipsis;
-                 white-space: nowrap; min-width: 0; }
+                 margin: 0; margin-inline-end: auto; min-width: 0; }
 
 
 .doc { flex: 1; min-height: 0; overflow-y: auto;
@@ -284,12 +379,13 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
    section heading and the Add buttons start and the handles live in the card's own padding. Both
    sides, not just the start: outdenting one edge left the hover band running into the card's
    padding on the left and stopping short of it on the right. */
-.rows { --grip-col: 1.25rem; list-style: none; padding: 0; display: flex; flex-direction: column;
+.rows { --grip-col: 1.25rem; display: flex; flex-direction: column;
         margin: 0; margin-inline: calc(-1 * (var(--grip-col) + var(--wa-space-2xs))); }
-/* margin:0 undoes Web Awesome's base `li` indent (1.125rem, meant for prose lists): with it every
-   ingredient sat ~18px right of its own section heading and Add button, for no visible reason. */
+/* The `li` indent native.css gives every list item (1.125em, meant for prose lists) is dropped by
+   `wa-list-plain` on the <ul>: with it every ingredient sat ~18px right of its own section heading
+   and Add button, for no visible reason. */
 .row { display: grid; grid-template-columns: var(--grip-col) 1.1rem 1fr auto; align-items: start;
-       gap: var(--wa-space-2xs); margin: 0; padding: 2px var(--wa-space-2xs);
+       gap: var(--wa-space-2xs); padding: 2px var(--wa-space-2xs);
        border-radius: var(--wa-border-radius-m); }
 .row:hover { background: var(--wa-color-neutral-fill-quiet); }
 
@@ -339,8 +435,6 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
 .scaler output { min-width: 2.4rem; text-align: center; font-size: var(--wa-font-size-s);
                  font-weight: var(--wa-font-weight-bold); font-variant-numeric: tabular-nums; }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-        gap: var(--wa-space-s); }
 /* For the one control that has no label of its own (wa-rating). Built from the same custom
    properties Web Awesome's form-control label uses, so it doesn't read as a different kind of
    heading sitting next to Difficulty and Categories. */
@@ -378,9 +472,8 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
 .savebar__status.is-dirty { color: var(--wa-color-brand-on-quiet);
                             font-weight: var(--wa-font-weight-medium); }
 
-.toasts { position: fixed; inset-block-end: var(--wa-space-2xl); inset-inline-end: var(--wa-space-m);
-          display: flex; flex-direction: column; gap: var(--wa-space-xs); z-index: 20;
-          max-width: min(24rem, 90vw); }
+/* Nothing here for toasts: <wa-toast> is fixed, sized, inset and mobile-responsive on its own, and
+   positions itself from `placement`. */
 
 /* -------------------------------------------------------------- responsive -- */
 
@@ -420,11 +513,10 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
 .slist__count { font-size: var(--wa-font-size-s); color: var(--wa-color-neutral-on-quiet);
                 margin-block: 0 var(--wa-space-xs); }
 
-/* Under the Markdown text area: says what the box is, since the box itself renders nothing. */
-.slist__hint { font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet);
-               margin-block: var(--wa-space-xs) 0; }
+/* The note under the Markdown text area is wa-textarea's own `hint`, so it needs nothing here. */
 
-.slist__rows { list-style: none; margin: 0; padding: 0; }
+/* Markers and the <li> indent come off via `wa-list-plain`; this is the <ul>'s block margin. */
+.slist__rows { margin: 0; }
 
 .sitem__text { flex: 1; min-width: 0; }
 
@@ -444,7 +536,6 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
    arbitrary neighbours onto the same line at every width. Still wraps when there isn't room. */
 /* wa-grid does the columns; --min-column-size is its own knob for when they wrap. */
 .fieldrow { --min-column-size: 11rem; margin-block-end: var(--wa-space-m); gap: var(--wa-space-s); }
-.fieldrow--flags { margin-block-end: var(--wa-space-m); }
 /* A row holding one field shouldn't stretch it the full width of the dialog. */
 .fieldrow--narrow { --min-column-size: 14rem; grid-template-columns: minmax(0, 14rem); }
 
@@ -547,7 +638,7 @@ wa-page::part(main-content) { min-block-size: 0; overflow: hidden; }
 .acctrow__main wa-input { width: 100%; }
 .acctrow__name { font-weight: var(--wa-font-weight-semibold); }
 .acctrow__self { color: var(--wa-color-neutral-on-quiet); font-weight: var(--wa-font-weight-normal); }
-.acctrow__meta { font-size: var(--wa-font-size-xs); color: var(--wa-color-neutral-on-quiet); }
+/* The second line of a row is `wa-caption-xs` in the template -- quiet, small, and nothing else. */
 /* A revoked enrolment stays listed — it is history, and history should read as past tense. */
 .acctrow--off .acctrow__main { opacity: 0.6; }
 
