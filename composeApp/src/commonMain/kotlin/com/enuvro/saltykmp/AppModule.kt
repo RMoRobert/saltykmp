@@ -37,6 +37,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
@@ -201,8 +204,30 @@ private const val THUMBNAIL_MAX_PX = 300
 /** Quiet period after the last edit before the library is copied to the linked folder. */
 private val FOLDER_PUSH_DEBOUNCE = 45.seconds
 
-/** Manual DI container — holds the database, HTTP engine, repositories, and builds a SyncService. */
+/**
+ * Manual DI container — holds the database, HTTP engine, repositories, and builds a SyncService.
+ *
+ * PROCESS-lifetime, reached through [shared] rather than constructed by whoever needs it. It used to
+ * be `remember { AppModule() }` inside the root composable, which is per COMPOSITION — and an Android
+ * configuration change (rotating the phone) throws the composition away and builds a new one. That
+ * opened a second SQLite driver on the same file while the first stayed open, started a second
+ * auto-sync collector and folder-push debouncer beside the originals, and ran the startup reconcile
+ * again over a live database.
+ */
 class AppModule {
+
+    companion object {
+        private var instance: AppModule? = null
+
+        /**
+         * The process's one module, created on first use.
+         *
+         * Created and read from the composition, which is the main thread on every target, so this
+         * needs no locking; there is exactly one Salty UI per process on all four.
+         */
+        fun shared(): AppModule = instance ?: AppModule().also { instance = it }
+    }
+
     private val store = createKeyValueStore()
     val settings = SettingsState(store)
 
@@ -250,8 +275,24 @@ class AppModule {
      */
     internal val chefSessions = ChefSessionStore()
 
-    /** App-lifetime scope for background work (debounced auto-sync). Lives as long as the process. */
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /**
+     * App-lifetime scope for background work (debounced auto-sync). Lives as long as the process.
+     *
+     * `internal` so a screen can start work that must outlive it -- a sync started from Settings used
+     * to run on the screen's own scope and was cancelled halfway by pressing Back.
+     */
+    internal val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * One sync at a time, whichever started it.
+     *
+     * Manual, menu, automatic and the two force paths all reached [withSyncService] with nothing
+     * between them. An auto-sync landing in the middle of "Delete Local, Pull from Server" compared a
+     * half-restored library against the full server manifest, and every recipe not yet restored read
+     * as one this device had deleted. The empty-library guard did not help: the library was not
+     * empty, just incomplete.
+     */
+    private val syncMutex = Mutex()
 
     private val _syncProgress = MutableStateFlow<SyncProgress?>(null)
 
@@ -259,9 +300,8 @@ class AppModule {
      * What the running sync is doing, or null while idle. Set from whichever coroutine is syncing — a
      * MutableStateFlow is safe to write from any thread, and Compose collects it on the main one.
      *
-     * Shared by manual and automatic syncs. Nothing serialises those two, so if they ever overlap this
-     * shows whichever phase reported last — cosmetic, and strictly less of a problem than the overlap
-     * itself, which predates this flow.
+     * Shared by manual and automatic syncs, which cannot overlap: every path into a sync goes through
+     * [withSyncService], and that takes [syncMutex].
      */
     val syncProgress: StateFlow<SyncProgress?> = _syncProgress.asStateFlow()
 
@@ -280,6 +320,15 @@ class AppModule {
         appScope.launch { folderPushRequests.debounce(FOLDER_PUSH_DEBOUNCE).collect { pushLibraryFolderQuietly() } }
     }
 
+    /**
+     * Whether [startup] has already run in this process.
+     *
+     * Its reconcile may REPLACE the database file, which is safe only while the database is closed.
+     * The composable that calls it re-runs its effect whenever the composition is rebuilt, so without
+     * this a rotation ran the reconcile again on top of a live library.
+     */
+    private var startupDone = false
+
     /** Call after any local library change (recipe/classifier/image add, edit, delete). Fans out to every syncer. */
     fun onLocalChange() {
         autoSync.notifyChange()
@@ -295,36 +344,58 @@ class AppModule {
     }
 
     private suspend fun pushLibraryFolderQuietly() {
-        val result = runCatching { libraryFolder.pushOut() }.getOrElse { LibraryFolderSyncResult.ERROR }
+        val result = runCatching { pushFolderExclusively() }.getOrElse { LibraryFolderSyncResult.ERROR }
         println("LibraryFolderLink background push: $result")
     }
+
+    /**
+     * Copy the library out to the linked folder, with no sync running.
+     *
+     * The copy checkpoints the WAL and then copies the `.sqlite` file. A sync committing between those
+     * two steps -- or an automatic checkpoint part-way through the copy -- puts a TORN database in the
+     * folder, which the other device then adopts on its next launch. Nothing used to stop that: the
+     * 45-second debounce and the on-background push both fired without regard to what sync was doing.
+     * [syncMutex] is the same lock every sync path takes, so this simply waits its turn.
+     *
+     * Off the caller's thread as well. `states()`, `copyIn` and `copyOut` walk a SAF document tree on
+     * Android, where `findFile` enumerates the whole directory -- seconds, on a cloud-backed folder --
+     * and the calls arrive from a LaunchedEffect and from Settings, both on the main thread.
+     */
+    private suspend fun pushFolderExclusively(): LibraryFolderSyncResult =
+        syncMutex.withLock { withContext(Dispatchers.Default) { libraryFolder.pushOut() } }
 
     /**
      * Run once at app launch BEFORE the UI touches [database]: reconcile the linked folder, which may pull
      * newer recipes in by replacing the local DB file (safe only while the DB is closed). Returns the
      * outcome so the UI can prompt on CONFLICT. No-op (NOT_LINKED) when no folder is linked.
      */
-    suspend fun startup(): LibraryFolderSyncResult =
-        if (libraryFolder.isLinked()) libraryFolder.reconcileAtStartup() else LibraryFolderSyncResult.NOT_LINKED
+    suspend fun startup(): LibraryFolderSyncResult = withContext(Dispatchers.Default) {
+        if (startupDone) return@withContext LibraryFolderSyncResult.NOT_LINKED
+        startupDone = true
+        if (libraryFolder.isLinked()) libraryFolder.reconcileAtStartup()
+        else LibraryFolderSyncResult.NOT_LINKED
+    }
 
     /** Link a freshly-picked folder and seed/reconcile it. */
     suspend fun linkLibraryFolder(folder: io.github.vinceglb.filekit.PlatformFile): LibraryFolderSyncResult =
-        libraryFolder.link(folder)
+        withContext(Dispatchers.Default) { libraryFolder.link(folder) }
 
     /** Push the local library out to the linked folder (safe; never overwrites local). Manual / on background. */
-    suspend fun pushLibraryFolder(): LibraryFolderSyncResult = libraryFolder.pushOut()
+    suspend fun pushLibraryFolder(): LibraryFolderSyncResult = pushFolderExclusively()
 
     /** Resolve a startup CONFLICT by keeping the app's copy (overwrites the folder). Safe any time. */
-    suspend fun resolveConflictKeepingLocal(): LibraryFolderSyncResult = libraryFolder.resolveUsingLocal()
+    suspend fun resolveConflictKeepingLocal(): LibraryFolderSyncResult =
+        withContext(Dispatchers.Default) { libraryFolder.resolveUsingLocal() }
 
     /** Resolve a startup CONFLICT by taking the folder's copy. Call only before the DB is opened (startup gate). */
-    suspend fun resolveConflictKeepingFolder(): LibraryFolderSyncResult = libraryFolder.resolveUsingFolder()
+    suspend fun resolveConflictKeepingFolder(): LibraryFolderSyncResult =
+        withContext(Dispatchers.Default) { libraryFolder.resolveUsingFolder() }
 
     /** Logs in and runs a full bidirectional sync; then pushes the updated library to the linked folder. */
     suspend fun sync(): SyncResult {
         val result = withSyncService { it.syncNow() }
         recordSyncSucceeded()
-        if (libraryFolder.isLinked()) runCatching { libraryFolder.pushOut() }
+        if (libraryFolder.isLinked()) runCatching { pushFolderExclusively() }
         return result
     }
 
@@ -332,7 +403,7 @@ class AppModule {
     suspend fun forceFullResync(): SyncResult {
         val result = withSyncService { it.pullEverythingFromServer() }
         recordSyncSucceeded()
-        if (libraryFolder.isLinked()) runCatching { libraryFolder.pushOut() }
+        if (libraryFolder.isLinked()) runCatching { pushFolderExclusively() }
         return result
     }
 
@@ -466,7 +537,7 @@ class AppModule {
         settings.password = ""
     }
 
-    private suspend fun <T> withSyncService(block: suspend (SyncService) -> T): T {
+    private suspend fun <T> withSyncService(block: suspend (SyncService) -> T): T = syncMutex.withLock {
         val api = SaltyApiClient(settings.serverUrl.trimEnd('/'), tokenStore, httpEngine)
         try {
             authenticate(api)

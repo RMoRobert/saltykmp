@@ -67,14 +67,16 @@ object CorpusLoader {
     /**
      * Finds `salty-contract/corpus`.
      *
-     * The contract does not live in this repo, so there is no reliable relative path to it. In order:
-     * the `SALTY_CORPUS_DIR` environment variable — which `shared/build.gradle.kts` sets from either the
-     * real environment variable or a `salty.corpusDir=` line in `local.properties` — then a walk up from
-     * the project directory looking for `salty-contract/corpus`, checking each ancestor and each
-     * ancestor's immediate children, which is what finds a sibling checkout.
+     * The contract is its own repo, checked out beside this one, so there is no path to it from inside
+     * this one. In order: the `SALTY_CORPUS_DIR` environment variable, then a walk up from the project
+     * directory looking for `salty-contract/corpus`, checking each ancestor and each ancestor's
+     * immediate children — the second of which is what finds the sibling checkout, and is how this
+     * resolves in an ordinary working copy.
      *
-     * This search exists only because the contract is currently a subdirectory of Salty.NET. Once it is
-     * its own repo consumed as a submodule, the first ancestor check finds it and the rest can go.
+     * The environment variable is the escape hatch for a layout this walk does not anticipate (CI that
+     * checks the contract out somewhere else, or a second copy under test). Nothing sets it by default;
+     * it replaced a `salty.corpusDir=` line in `local.properties`, which existed only while the
+     * contract was a subdirectory of Salty.NET and no walk could reach it.
      */
     private fun locate(): File {
         System.getenv("SALTY_CORPUS_DIR")?.takeIf { it.isNotBlank() }?.let { configured ->
@@ -94,9 +96,9 @@ object CorpusLoader {
 
         error(
             "Could not find salty-contract/corpus.\n" +
-                "Add a line to local.properties (gitignored, alongside sdk.dir):\n" +
-                "    salty.corpusDir=/path/to/salty-contract/corpus\n" +
-                "or set SALTY_CORPUS_DIR in the environment."
+                "It is its own repo; check it out beside this one:\n" +
+                "    ${File(System.getProperty("user.dir")).absoluteFile.parent}/salty-contract\n" +
+                "or set SALTY_CORPUS_DIR to wherever it is."
         )
     }
 }

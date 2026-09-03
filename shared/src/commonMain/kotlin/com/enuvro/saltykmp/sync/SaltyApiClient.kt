@@ -60,7 +60,8 @@ internal fun friendlyHttpMessage(code: Int, bodySnippet: String = ""): String {
             "network or off VPN. Check the server address and your network."
     }
     return when (code) {
-        401 -> "The server rejected your saved username or password. Check them in Settings."
+        401 -> "This device is no longer signed in to the server. Use Connect This Device in Settings " +
+            "to sign in again."
         403 -> "Access to the server was blocked (HTTP 403). A firewall or IP restriction may be blocking you — " +
             "common when you're away from your home network or off VPN. If you're on the right network, " +
             "double-check your username and password."
@@ -176,7 +177,16 @@ class SaltyApiClient(
      */
     suspend fun loginWithDeviceToken(deviceToken: String): AuthResponse? {
         val resp = client.post("$baseUrl/api/auth/token/verify") { bearerAuth(deviceToken) }
-        if (resp.status == HttpStatusCode.Unauthorized) return null
+        if (resp.status == HttpStatusCode.Unauthorized) {
+            // Only OUR 401 means the token was disowned, and ours is JSON. A 401 carrying an HTML page
+            // came from something else in the path -- a reverse proxy with its own basic auth, a
+            // captive portal, a gateway -- and returning null for that DELETED a perfectly good token,
+            // so the first sync from such a network signed the device out for good. Same test
+            // [friendlyHttpMessage] already applies to every other status.
+            val snippet = runCatching { resp.bodyAsText().trimStart().take(1) }.getOrDefault("")
+            if (snippet == "<") throw SyncException(friendlyHttpMessage(401, snippet))
+            return null
+        }
         val auth: AuthResponse = resp.ensureOk().body()
         tokenStore.token = deviceToken
         return auth

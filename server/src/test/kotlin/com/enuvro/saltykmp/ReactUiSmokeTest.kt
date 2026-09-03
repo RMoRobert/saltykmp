@@ -414,6 +414,20 @@ class ReactUiSmokeTest {
 
     private fun storedPies() = runBlocking { RecipeRepository.getById(userId(), PIES_ID) }
 
+    /**
+     * Waits for a write that the UI acknowledges optimistically and reports no toast for -- the
+     * Last prepared menu's date, which updates on screen before the PUT has landed. Polling the row is
+     * what makes reading it back deterministic rather than a guess at how long the request takes.
+     */
+    private fun awaitPies(what: String, until: (com.enuvro.saltykmp.api.ServerRecipe?) -> Boolean) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            if (until(storedPies())) return
+            Thread.sleep(50)
+        }
+        throw AssertionError("timed out waiting for $what")
+    }
+
     private fun storedCount() = runBlocking {
         RecipeRepository.listForSync(userId(), null, null, 100).recipes.size
     }
@@ -436,6 +450,79 @@ class ReactUiSmokeTest {
         ).first().click()
         page.waitForSelector("text=Saved")
         page.waitForTimeout(300.0) // the image call, when there is one, lands just after the toast
+    }
+
+    /* --------------------------------------------------- guards and empty panes -- */
+
+    /**
+     * A draft exists only in this tab until Save, so leaving it has to take it with you.
+     *
+     * It used to survive: clicking a library filter set the mode back to "read" but kept the draft
+     * as the recipe on show, giving an "Untitled" recipe with working Edit, Delete and favourite
+     * buttons -- and favouriting it CREATED it on the server.
+     */
+    @Test
+    fun aBlankDraftDoesNotSurviveALibraryClick() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByLabel("New recipe").first().click()
+        page.waitForSelector("text=New recipe")
+        page.getByText("All recipes").first().click()
+
+        page.waitForSelector("text=Select a recipe.")
+        assertEquals(0, page.getByText("Untitled").count(), "no phantom recipe is left behind")
+        assertEquals(emptyList<String>(), errors)
+        page.close()
+    }
+
+    /**
+     * On a phone the detail pane is the whole screen, so an empty one has to carry the way back.
+     * Deleting a recipe there used to leave "Select a recipe." with the list and rail unmounted and
+     * nothing at all to press.
+     */
+    @Test
+    fun deletingOnAPhoneLeavesAWayBackToTheList() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+        page.setViewportSize(420, 800)
+
+        page.getByText("Skillet Cornbread").first().click()
+        page.waitForSelector("text=Chef mode")
+        page.getByLabel("More actions").click()
+        page.getByText("Delete recipe…").click()
+        page.getByRole(AriaRole.DIALOG).getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Delete")
+        ).first().click()
+
+        // Back on the list, which is the pane a phone should be left looking at.
+        page.waitForSelector("[role=option]")
+        assertEquals(emptyList<String>(), errors)
+        page.close()
+    }
+
+    /**
+     * Everything that replaces what the editor is holding asks first. Importing from the web did
+     * not, so an edit in progress vanished the moment the fetch came back.
+     */
+    @Test
+    fun importingWhileEditingAsksBeforeDiscarding() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        openEditor(page, "Skillet Cornbread")
+        page.getByLabel("Name").fill("Cornbread, but edited")
+
+        page.getByLabel("List options").click()
+        page.getByText("Import from web…").click()
+        page.getByLabel("Recipe page address").fill("http://127.0.0.1:$sitePort/recipe")
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Import")
+        ).first().click()
+
+        page.waitForSelector("text=Discard unsaved changes?")
+        assertEquals(emptyList<String>(), errors)
+        page.close()
     }
 
     /* ------------------------------------------------ ported from EditorUiTest -- */
@@ -461,9 +548,9 @@ class ReactUiSmokeTest {
         page.waitForSelector("[role=option]")
 
         // List -> the library, which is a drawer at this width.
-        assertEquals(0, page.getByText("Edit Classifiers").count(), "the rail is not a column here")
-        page.getByLabel("Library").first().click()
-        page.waitForSelector("text=Edit Classifiers")
+        assertEquals(0, page.getByText("Edit classifiers").count(), "the rail is not a column here")
+        page.getByLabel("Show library").click()
+        page.waitForSelector("text=Edit classifiers")
 
         assertEquals(emptyList<String>(), errors, "the compact layout should not log console errors")
         page.close()
@@ -513,7 +600,7 @@ class ReactUiSmokeTest {
         fun names() = page.locator("[role=option]").allTextContents().map { it.substringBefore("A short").trim() }
 
         assertTrue(names().first().startsWith("Australian"), "name ascending opens on A")
-        page.getByLabel("Sort").click()
+        page.getByLabel("List options").click()
         page.getByRole(AriaRole.MENUITEMRADIO).filter(
             com.microsoft.playwright.Locator.FilterOptions().setHasText("Z → A")
         ).click()
@@ -521,11 +608,11 @@ class ReactUiSmokeTest {
             "() => document.querySelectorAll('[role=option]')[0].textContent.startsWith('Skillet')"
         )
 
-        // Last Made puts the never-made block at the end in both directions -- every recipe in this
+        // Last made puts the never-made block at the end in both directions -- every recipe in this
         // fixture is never-made, so the assertion is that the list survives the ordering at all.
-        page.getByLabel("Sort").click()
+        page.getByLabel("List options").click()
         page.getByRole(AriaRole.MENUITEMRADIO).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Last Made")
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Last made")
         ).click()
         page.waitForSelector("text=Never made")
 
@@ -533,6 +620,116 @@ class ReactUiSmokeTest {
         page.reload()
         page.waitForSelector("[role=option]")
         assertTrue(page.getByText("Never made").first().isVisible, "the ordering is remembered")
+        page.close()
+    }
+
+    /**
+     * The recipe's three dates: shown in Get info, and the one of them that is set from the menu.
+     *
+     * `lastPrepared` was sorted on and shown on the row but could not be answered from a browser at
+     * all; it is answered from the Last prepared menu, which is where the CMP and Swift apps keep it.
+     * Get info reports it and no longer sets it, so this walks both halves. Two assertions carry the
+     * rule rather than the feature. The stored value is checked for LOCAL NOON, the convention
+     * `PreparedDates` and the Swift app write into this column so a picked day renders as that day
+     * in every zone. And `lastModifiedDate` is checked to be *unchanged*: marking a recipe made is
+     * not a body edit, and bumping it would reorder every client's "Date Modified" sort.
+     */
+    @Test
+    fun getInfoShowsTheDatesAndTheMenuSetsLastMade() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+        val modifiedBefore = storedPies()?.lastModifiedDate
+
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Chef mode")
+        page.getByLabel("More actions").click()
+        page.getByText("Get info").click()
+
+        val panel = page.getByRole(AriaRole.DIALOG)
+        panel.getByText("Added").waitFor()
+        // Exact: "Last made" appears twice in the panel, the second time under Sync details.
+        assertTrue(
+            panel.getByText(
+                "Modified",
+                com.microsoft.playwright.Locator.GetByTextOptions().setExact(true),
+            ).isVisible,
+            "the panel shows when it was last edited",
+        )
+        assertTrue(panel.getByText("Not set").isVisible, "and says so when there is no date yet")
+        assertEquals(
+            0,
+            panel.getByLabel("Date prepared").count(),
+            "Get info reports the date, it does not set it",
+        )
+        page.getByLabel("Close").click()
+        panel.waitFor(
+            com.microsoft.playwright.Locator.WaitForOptions()
+                .setState(com.microsoft.playwright.options.WaitForSelectorState.DETACHED),
+        )
+
+        page.getByLabel("More actions").click()
+        page.getByText("Last prepared").click()
+        // The submenu reads the date at its head, so it says "Not set" before there is one.
+        assertTrue(
+            page.getByText("Not set").isVisible,
+            "the menu says where the date stands before offering to change it",
+        )
+        page.getByText("Set as date…").click()
+
+        // The field caps itself at today: a recipe cannot have been made in the future, which is
+        // the same rule the CMP picker states with its selectable-dates object.
+        val field = page.getByLabel("Date prepared")
+        assertEquals(java.time.LocalDate.now().toString(), field.getAttribute("max"))
+
+        field.fill("2026-08-14")
+        page.getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Page.GetByRoleOptions().setName("Save").setExact(true),
+        ).click()
+        awaitPies("the picked date to be stored") { it?.lastPrepared != null }
+
+        val stored = storedPies()
+        val local = java.time.Instant.parse(stored?.lastPrepared)
+            .atZone(java.time.ZoneId.systemDefault())
+            .toLocalDateTime()
+        assertEquals(java.time.LocalDate.of(2026, 8, 14), local.toLocalDate(), "the day that was picked")
+        assertEquals(12, local.hour, "stored at LOCAL noon, as PreparedDates does")
+        assertTrue(stored?.lastModifiedPreparedDate != null, "the date travels with its own stamp")
+        assertEquals(modifiedBefore, stored?.lastModifiedDate, "marking a recipe made is not an edit")
+
+        // Get info is where the answer is read back.
+        page.getByLabel("More actions").click()
+        page.getByText("Get info").click()
+        assertTrue(panel.getByText("Aug 14, 2026").isVisible, "Get info reads back the day it stored")
+        page.getByLabel("Close").click()
+        panel.waitFor(
+            com.microsoft.playwright.Locator.WaitForOptions()
+                .setState(com.microsoft.playwright.options.WaitForSelectorState.DETACHED),
+        )
+
+        // Clear is offered because one date field overwrites irreversibly, so a mis-pick needs a
+        // way back -- the same reason the CMP menu offers it. It empties the field rather than
+        // writing through, so nothing is stored until Save, and Cancel would undo it.
+        page.getByLabel("More actions").click()
+        page.getByText("Last prepared").click()
+        assertTrue(
+            page.getByText("Aug 14, 2026").isVisible,
+            "and the menu reads back the day it stored",
+        )
+        page.getByText("Set as date…").click()
+        assertEquals("2026-08-14", page.getByLabel("Date prepared").inputValue(), "seeded from the stored day")
+        page.getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Page.GetByRoleOptions().setName("Clear").setExact(true),
+        ).click()
+        assertEquals("", page.getByLabel("Date prepared").inputValue(), "Clear empties the field")
+        page.getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Page.GetByRoleOptions().setName("Save").setExact(true),
+        ).click()
+        awaitPies("the date to be cleared") { it?.lastPrepared == null }
+
+        assertEquals(emptyList<String>(), errors, "the menu and the panel render without console errors")
         page.close()
     }
 
@@ -676,7 +873,7 @@ class ReactUiSmokeTest {
         val b = requireBrowser()
         val (page, _) = appPage(b)
 
-        page.getByLabel("Other ways to add").click()
+        page.getByLabel("List options").click()
         page.getByText("Import from web…").click()
         page.waitForSelector("text=Recipe page address")
         page.getByLabel("Recipe page address").fill("http://127.0.0.1:$sitePort/recipe")
@@ -702,7 +899,7 @@ class ReactUiSmokeTest {
         val b = requireBrowser()
         val (page, _) = appPage(b)
 
-        page.getByText("Shopping Lists").click()
+        page.getByText("All lists").click()
         page.waitForSelector("text=Groceries")
         page.getByText("Groceries").first().click()
         page.getByPlaceholder("Add an item").waitFor()
@@ -725,7 +922,7 @@ class ReactUiSmokeTest {
         val b = requireBrowser()
         val (page, _) = appPage(b)
 
-        page.getByText("Shopping Lists").click()
+        page.getByText("All lists").click()
         page.waitForSelector("text=Notes to self")
         page.getByText("Notes to self").first().click()
         page.locator("textarea").waitFor()
@@ -740,6 +937,34 @@ class ReactUiSmokeTest {
         page.close()
     }
 
+    /**
+     * Deleting the list you are reading lands on the empty state. The pane used to keep the
+     * deleted id and sit on its spinner, waiting for a list that no longer existed.
+     */
+    @Test
+    fun deletingTheOpenListLandsOnTheEmptyState() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByText("All lists").click()
+        page.waitForSelector("text=Groceries")
+        page.getByText("Groceries").first().click()
+        page.getByPlaceholder("Add an item").waitFor()
+
+        page.getByLabel("List actions").click()
+        page.getByText("Delete list…").click()
+        page.getByRole(AriaRole.DIALOG).getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Delete")
+        ).click()
+
+        page.getByText("Select a shopping list.").waitFor()
+        assertEquals(0, page.getByText("Loading…").count(), "no spinner waits for the deleted list")
+        assertEquals(0, page.getByText("Groceries").count(), "and the rail no longer lists it")
+        assertEquals(null, runBlocking { ShoppingListRepository.getById(userId(), LIST_ID) })
+        assertEquals(emptyList<String>(), errors)
+        page.close()
+    }
+
     /** The library manager creates, renames and deletes, and the rail follows. */
     @Test
     fun theLibraryManagerCreatesRenamesAndDeletes() {
@@ -747,17 +972,27 @@ class ReactUiSmokeTest {
         val (page, _) = appPage(b)
 
         page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit Classifiers")
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit classifiers")
         ).first().click()
-        page.waitForSelector("text=Edit Classifiers")
+        page.waitForSelector("text=Edit classifiers")
 
         val dialog = page.getByRole(AriaRole.DIALOG)
         dialog.getByPlaceholder("New category").fill("Weeknight")
         dialog.getByRole(AriaRole.BUTTON).filter(
             com.microsoft.playwright.Locator.FilterOptions().setHasText("Add")
         ).click()
+        // Wait for BOTH: the draft box empty, and a row carrying the name. The draft box is what
+        // says the create actually landed -- it is cleared only once the request succeeds, so that a
+        // failed one leaves the typed name to retry rather than a toast and an empty field. Waiting
+        // on the name alone matched the draft box itself and let the assertion below race the write.
         page.waitForFunction(
-            "() => [...document.querySelectorAll('input')].some(i => i.value === 'Weeknight')"
+            """
+            () => {
+              const inputs = [...document.querySelectorAll('input')];
+              const draft = inputs.find(i => i.placeholder === 'New category');
+              return draft && draft.value === '' && inputs.some(i => i.value === 'Weeknight');
+            }
+            """.trimIndent()
         )
 
         val after = runBlocking { LibraryRepository.listCategories(userId()) }
@@ -834,7 +1069,7 @@ class ReactUiSmokeTest {
         val b = requireBrowser()
         val (page, errors) = appPage(b)
 
-        page.getByLabel("Other ways to add").click()
+        page.getByLabel("List options").click()
         page.getByText("Select recipes…").click()
         page.waitForSelector("text=Select recipes")
 
@@ -865,7 +1100,7 @@ class ReactUiSmokeTest {
         val b = requireBrowser()
         val (page, _) = appPage(b)
 
-        page.getByLabel("Other ways to add").click()
+        page.getByLabel("List options").click()
         page.getByText("Select recipes…").click()
         page.waitForSelector("text=Select recipes")
 
@@ -875,9 +1110,9 @@ class ReactUiSmokeTest {
         page.waitForSelector("text=2 recipes selected")
 
         page.getByLabel("Done selecting").click()
-        page.waitForSelector("text=All Recipes")
+        page.waitForSelector("text=All recipes")
         assertEquals(0, page.getByText("2 selected").count(), "the selection bar is gone")
-        assertTrue(page.getByLabel("Sort").isVisible, "and the ordinary header is back")
+        assertTrue(page.getByLabel("List options").isVisible, "and the ordinary header is back")
         assertEquals(0, page.getByRole(AriaRole.CHECKBOX).count(), "and the checkboxes with it")
         page.close()
     }
@@ -892,7 +1127,7 @@ class ReactUiSmokeTest {
         page.getByText("Australian Mini Meat Pies").first().click()
         page.waitForSelector("text=Ingredients")
 
-        page.getByLabel("Other ways to add").click()
+        page.getByLabel("List options").click()
         page.getByText("Select recipes…").click()
         page.waitForSelector("text=Select recipes")
         assertEquals(4, page.getByRole(AriaRole.CHECKBOX).count(), "one per row, once asked for")
@@ -931,9 +1166,9 @@ class ReactUiSmokeTest {
         val (page, errors) = appPage(b)
 
         page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit Classifiers")
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit classifiers")
         ).first().click()
-        page.waitForSelector("text=Edit Classifiers")
+        page.waitForSelector("text=Edit classifiers")
         assertTrue(page.url().endsWith("#/library"), "the open dialog is in the URL: ${page.url()}")
 
         page.goBack()
@@ -969,6 +1204,159 @@ class ReactUiSmokeTest {
             )
         }
         assertEquals("Skillet Cornbread with Honey", stored?.name, "the edit should have been saved")
+        page.close()
+    }
+
+    /**
+     * The list's density is a preference: three styles, chosen in Settings, applied at once and
+     * remembered. Summary stays the default, so an existing reader's list does not change under
+     * them; each step down is genuinely shorter, which is the whole reason to offer the choice.
+     */
+    @Test
+    fun theRecipeListStyleIsChosenInSettingsAndIsRemembered() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        fun rowHeight() = page.locator("[role=option]").first().boundingBox().height
+        fun subtitles() = page.getByText("A short line so the row has a subtitle.").count()
+
+        val summary = rowHeight()
+        assertTrue(subtitles() > 0, "Summary is the default, and it carries the second line")
+
+        fun choose(style: String) {
+            page.getByRole(AriaRole.BUTTON).filter(
+                com.microsoft.playwright.Locator.FilterOptions().setHasText("Settings")
+            ).first().click()
+            page.waitForSelector("text=Recipe list")
+            page.getByRole(
+                AriaRole.RADIO,
+                com.microsoft.playwright.Page.GetByRoleOptions().setName(style),
+            ).click()
+            page.keyboard().press("Escape")
+            page.waitForSelector(
+                "[role=dialog]",
+                com.microsoft.playwright.Page.WaitForSelectorOptions()
+                    .setState(com.microsoft.playwright.options.WaitForSelectorState.DETACHED),
+            )
+        }
+
+        choose("Small icons")
+        val small = rowHeight()
+        assertTrue(small < summary, "Small icons is shorter than Summary: $summary -> $small")
+        assertTrue(subtitles() > 0, "and it keeps the line about the recipe")
+
+        choose("List")
+        val list = rowHeight()
+        assertTrue(list < small, "List is shorter again: $small -> $list")
+        assertEquals(0, subtitles(), "List is one line, so the subtitle goes")
+
+        // A style is a fact about this browser, like the sort and the column width beside it.
+        page.reload()
+        page.waitForSelector("[role=option]")
+        assertTrue(
+            kotlin.math.abs(rowHeight() - list) < 2,
+            "the style is remembered across a reload: $list vs ${rowHeight()}",
+        )
+        assertEquals(emptyList<String>(), errors, "changing the style logs no console errors")
+        page.close()
+    }
+
+    /** An unknown stored style is an old build's, not a bug: it falls back rather than breaking. */
+    @Test
+    fun anUnknownStoredListStyleFallsBackToSummary() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.evaluate("() => localStorage.setItem('salty.recipeListStyle', 'tiles')")
+        page.reload()
+        page.waitForSelector("[role=option]")
+
+        assertTrue(
+            page.getByText("A short line so the row has a subtitle.").count() > 0,
+            "an unrecognised style renders as Summary",
+        )
+        assertEquals(
+            "summary",
+            page.evaluate("() => localStorage.getItem('salty.recipeListStyle')"),
+            "and the stored value is corrected on the way through",
+        )
+        page.close()
+    }
+
+    /** More rows than fit, so the list column has something to scroll. */
+    private fun seedFiller(n: Int) = runBlocking {
+        val userId = UserRepository.findByUsername("tester")!!.id
+        repeat(n) { i ->
+            RecipeRepository.upsert(
+                userId,
+                ServerRecipe(
+                    id = "01A05100-0000-7000-8000-0000000%05d".format(i),
+                    name = "Filler Recipe %02d".format(i),
+                    lastModifiedDate = "2026-07-01T00:00:00.000Z",
+                    introduction = "A short line so the row has a subtitle.",
+                ),
+            )
+        }
+    }
+
+    /**
+     * The list column scrolls -- as a container, and under a real finger.
+     *
+     * This is not the same claim as `theColumnsScrollInsteadOfTheWindow`, which only says the window
+     * does not scroll, and which passed throughout the whole time the list did not scroll either.
+     * The failure it missed was `scrollHeight === clientHeight`: the grid's `height: 100%` had no
+     * definite parent, so it grew to its content and the scroller was exactly as tall as its rows,
+     * with everything past the fold clipped by body's `overflow: hidden`. Nothing about that was
+     * width-dependent, so this asserts it at both.
+     */
+    @Test
+    fun theRecipeListScrollsAtEveryWidthAndUnderAFinger() {
+        val b = requireBrowser()
+        seedFiller(30)
+        val page = b.newPage(
+            Browser.NewPageOptions().setViewportSize(390, 844).setHasTouch(true).setIsMobile(true)
+        )
+        page.navigate("http://localhost:$port/login")
+        page.getByLabel("Username").fill("tester")
+        page.getByLabel("Password").fill("pw")
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Sign in")
+        ).first().click()
+        page.waitForURL("**/app")
+        page.waitForSelector("[role=option]")
+
+        // The scroller is the list's own container, not the window: `[role=listbox]`'s parent.
+        fun metric(prop: String) = page.evaluate(
+            "() => document.querySelector('[role=listbox]').parentElement.$prop"
+        ) as Int
+
+        for ((label, w) in listOf("phone" to 390, "desktop" to 1400)) {
+            page.setViewportSize(w, 844)
+            page.waitForTimeout(300.0)
+            val client = metric("clientHeight")
+            val scroll = metric("scrollHeight")
+            assertTrue(
+                scroll > client,
+                "$label: the list column must have more content than height ($scroll vs $client)",
+            )
+            assertTrue(client < 844, "$label: and it must fit the window, not exceed it ($client)")
+        }
+
+        // A finger, not a wheel: the reported bug was touch, and a stray `touch-action` would pass
+        // every assertion above while still leaving the list immovable on a phone.
+        page.setViewportSize(390, 844)
+        page.waitForTimeout(300.0)
+        val cdp = page.context().newCDPSession(page)
+        val gesture = com.google.gson.JsonObject().apply {
+            addProperty("x", 190)
+            addProperty("y", 500)
+            addProperty("xDistance", 0)
+            addProperty("yDistance", -300)
+            addProperty("gestureSourceType", "touch")
+        }
+        cdp.send("Input.synthesizeScrollGesture", gesture)
+        page.waitForTimeout(600.0)
+        assertTrue(metric("scrollTop") > 100, "a touch drag scrolls the list: ${metric("scrollTop")}")
         page.close()
     }
 

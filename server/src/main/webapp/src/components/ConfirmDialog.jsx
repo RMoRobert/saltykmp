@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Button,
   Dialog,
@@ -11,6 +11,8 @@ import {
   Input,
 } from "@fluentui/react-components";
 
+import PasswordInput from "./PasswordInput";
+
 /**
  * The app's stand-in for `window.confirm` and `window.prompt`.
  *
@@ -21,27 +23,35 @@ import {
  *
  * Driven by a request object rather than by a boolean and a pile of props:
  *
- *   ask({ title, body, confirmLabel, destructive, prompt, initialValue, onConfirm })
+ *   ask({ title, body, confirmLabel, prompt, initialValue, secret, onConfirm })
  *
  * `prompt` turns it into the prompt() case -- a labelled field whose value is handed to onConfirm.
+ * `secret` makes that field a password field, masked with a reveal toggle.
+ *
+ * Errors are handled here, once. `onConfirm` may throw or reject; the dialog then stays open with
+ * the field intact and hands the error to `onError`, so a failed request can be retried rather than
+ * vanishing into an unhandled rejection. Callers therefore need no try/catch of their own.
+ *
+ * The caller mounts this with a `key` that changes per request, which is what starts the field from
+ * that request's `initialValue` rather than from whatever the last prompt was left holding.
  */
-export default function ConfirmDialog({ request, onClose }) {
-  const [value, setValue] = useState("");
+export default function ConfirmDialog({ request, onClose, onError }) {
+  const [value, setValue] = useState(() => request?.initialValue ?? "");
   const [busy, setBusy] = useState(false);
-
-  // A fresh request starts from its own initial value, not from what the last one was left holding.
-  useEffect(() => setValue(request?.initialValue ?? ""), [request]);
 
   if (!request) return null;
 
-  const { title, body, confirmLabel, prompt, placeholder, onConfirm } = request;
+  const { title, body, confirmLabel, prompt, placeholder, secret, onConfirm } = request;
   const blocked = prompt && !value.trim();
+  const PromptInput = secret ? PasswordInput : Input;
 
   const confirm = async () => {
     setBusy(true);
     try {
       await onConfirm?.(prompt ? value.trim() : undefined);
       onClose();
+    } catch (e) {
+      onError?.(e);
     } finally {
       setBusy(false);
     }
@@ -56,13 +66,16 @@ export default function ConfirmDialog({ request, onClose }) {
             {body ? <p style={{ marginTop: 0 }}>{body}</p> : null}
             {prompt ? (
               <Field label={prompt}>
-                <Input
+                <PromptInput
                   autoFocus
                   value={value}
                   placeholder={placeholder}
                   onChange={(_, d) => setValue(d.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !blocked) confirm();
+                    // `busy` as well as `blocked`: the button is disabled while the request is in
+                    // flight but the key was not, so a second Enter made a second list, a second
+                    // tag, a second password reset.
+                    if (e.key === "Enter" && !blocked && !busy) confirm();
                   }}
                 />
               </Field>

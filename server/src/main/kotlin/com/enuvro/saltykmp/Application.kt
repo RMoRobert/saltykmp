@@ -9,7 +9,9 @@ import com.enuvro.saltykmp.dev.DevSeed
 import com.enuvro.saltykmp.auth.revalidateSession
 import com.enuvro.saltykmp.db.DatabaseFactory
 import com.enuvro.saltykmp.db.UserRepository
+import com.enuvro.saltykmp.db.IdOwnedByAnotherAccountException
 import com.enuvro.saltykmp.image.ImageStore
+import com.enuvro.saltykmp.image.InvalidImageNameException
 import com.enuvro.saltykmp.recipe.AddressPolicy
 import com.enuvro.saltykmp.recipe.addressRefusal
 import com.enuvro.saltykmp.recipe.recipeImportRoutes
@@ -24,8 +26,10 @@ import com.enuvro.saltykmp.web.accountRoutes
 import com.enuvro.saltykmp.web.appRoutes
 import com.enuvro.saltykmp.web.webRoutes
 import com.github.mustachejava.DefaultMustacheFactory
+import io.ktor.http.CacheControl
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.content.CachingOptions
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -38,7 +42,14 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.mustache.Mustache
 import io.ktor.server.netty.Netty
+import io.ktor.server.plugins.cachingheaders.CachingHeaders
 import io.ktor.server.plugins.calllogging.CallLogging
+import io.ktor.server.plugins.compression.Compression
+import io.ktor.server.plugins.compression.deflate
+import io.ktor.server.plugins.compression.gzip
+import io.ktor.server.plugins.compression.matchContentType
+import io.ktor.server.plugins.compression.minimumSize
+import io.ktor.server.plugins.conditionalheaders.ConditionalHeaders
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.forwardedheaders.XForwardedHeaders
 import io.ktor.server.plugins.BadRequestException
@@ -242,7 +253,70 @@ fun Application.installSalty(
     val loginThrottle = LoginThrottle()
     // Only trust X-Forwarded-* when explicitly told we're behind a trusted proxy; otherwise a direct
     // client could spoof its source IP to defeat the login throttle. See [module].
-    if (trustProxy) install(XForwardedHeaders)
+    //
+    // useLastProxy, not the plugin's default of useFirstProxy. DEPLOY's nginx block sets
+    // `X-Forwarded-For $proxy_add_x_forwarded_for`, which APPENDS the real peer to whatever the
+    // client sent, so the first entry in that list is the client's own claim and the last is the one
+    // our proxy wrote. Reading the first let anyone send `X-Forwarded-For: <anything>` and get a
+    // fresh login-throttle bucket per attempt.
+    if (trustProxy) install(XForwardedHeaders) { useLastProxy() }
+
+    /*
+     * Nothing used to be compressed, and it showed: a cold load moved ~870 KB of bundle plus the
+     * whole recipe library as raw JSON. The plugin rather than a line in the NGINX block because
+     * DEPLOY.md's other shape -- docker-compose.offline, port 8080 published directly -- has no
+     * proxy to put it in, and because the native clients' sync goes through the same JSON.
+     *
+     * Images are excluded by omission: JPEG and PNG are already compressed, so gzipping them buys
+     * nothing and costs CPU on every request. `text/html` is excluded deliberately -- those are the
+     * only responses carrying the CSRF token, and compressing a secret alongside anything an
+     * attacker can influence is the shape of BREACH. SameSite=Strict already means a cross-site
+     * request arrives with no session and gets a 401, so this is belt-and-braces; it is also free,
+     * because the pages in question are a couple of KB each and the bundle is not one of them.
+     */
+    install(Compression) {
+        gzip { priority = 1.0 }
+        deflate { priority = 0.9 }
+        matchContentType(
+            ContentType.Application.Json,
+            ContentType.Application.JavaScript,
+            ContentType.Text.JavaScript,
+            ContentType.Text.CSS,
+            ContentType.Text.Plain,
+        )
+        // Below about a packet there is nothing to win, and gzip's own header can make it worse.
+        minimumSize(1024)
+    }
+
+    /*
+     * 304s. `staticResources` already attaches a version to what it serves, and the image routes
+     * attach an ETag by hand (see RecipeRoutes); this is the half that reads the request's
+     * If-None-Match / If-Modified-Since and answers with a status instead of a body.
+     */
+    install(ConditionalHeaders)
+
+    /*
+     * `no-cache` is not "do not cache" -- it is "cache it, but check before reusing it", which with
+     * the ETags above turns a repeat load into a handful of 304s instead of a megabyte.
+     *
+     * It has to be no-cache rather than a far-future max-age for the bundle specifically: the app's
+     * filenames are fixed rather than content-hashed, on purpose, so that the Mustache shell can
+     * name them (see vite.config.js). A cached-for-a-year `salty.js` would be an old app that
+     * nothing short of a hard reload could replace. Versioned image URLs opt out of this and into a
+     * real long cache; RecipeRoutes sets that per response, which wins over this default.
+     */
+    install(CachingHeaders) {
+        options { call, _ ->
+            // Only when the route has not already answered the question. The plugin APPENDS its
+            // header rather than replacing one, so a versioned image URL came back carrying both
+            // `max-age=31536000, immutable` AND this `no-cache` -- and a browser unions the
+            // directives, so no-cache won and the long cache never happened. Reading
+            // `headers[CacheControl]` in a test hid it by returning only the first of the two.
+            if (call.response.headers[HttpHeaders.CacheControl] != null) null
+            else CachingOptions(CacheControl.NoCache(CacheControl.Visibility.Private))
+        }
+    }
+
     install(ContentNegotiation) { json(appJson) }
     install(CallLogging)
     // Server-rendered web UI: Mustache templates from resources/templates/ (logic-less; handlers in
@@ -257,6 +331,18 @@ fun Application.installSalty(
         exception<BadRequestException> { call, cause ->
             call.application.log.info("Rejected malformed request for ${call.request.local.uri}: ${cause.message}")
             call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Malformed request")))
+        }
+        // An id that already belongs to someone else. 409 rather than 403: the request was
+        // permissible, the id is simply taken -- and saying so is what lets a client rewrite the id
+        // instead of retrying forever. See [requireNotOwnedByAnother].
+        exception<IdOwnedByAnotherAccountException> { call, cause ->
+            call.respond(HttpStatusCode.Conflict, mapOf("error" to (cause.message ?: "That id is taken")))
+        }
+        // The storage layer refusing an id that cannot name a file. The routes reject these first, so
+        // reaching here means a caller found a path around `safeId` -- a 400, not a 500.
+        exception<InvalidImageNameException> { call, cause ->
+            call.application.log.warn("Refused an unusable image name for ${call.request.local.uri}: ${cause.message}")
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid id"))
         }
         exception<Throwable> { call, cause ->
             // Log the real cause server-side; return a generic body so internal details (SQL, stack traces,
@@ -303,6 +389,17 @@ fun Application.installSalty(
         val declaredLength = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
         if (!isMultipart && declaredLength != null && declaredLength > maxRequestBodyBytes) {
             call.respond(HttpStatusCode.PayloadTooLarge, mapOf("error" to "Request body too large"))
+            return@intercept finish()
+        }
+        // A chunked body declares no length at all, so the check above never saw it and the handler
+        // read the whole thing into memory -- on `/api/auth/login` too, which needs no credentials to
+        // reach. Every Salty client sends a JSON body of known size (a bodyless POST simply has no
+        // Transfer-Encoding), so demanding a length here costs nothing real and closes the hole. The
+        // one streamed upload is multipart, and it bounds its own read; see MAX_IMAGE_UPLOAD_BYTES.
+        val chunked = call.request.headers[HttpHeaders.TransferEncoding]
+            ?.contains("chunked", ignoreCase = true) == true
+        if (!isMultipart && chunked && declaredLength == null) {
+            call.respond(HttpStatusCode.LengthRequired, mapOf("error" to "A request body must declare its length"))
             return@intercept finish()
         }
     }

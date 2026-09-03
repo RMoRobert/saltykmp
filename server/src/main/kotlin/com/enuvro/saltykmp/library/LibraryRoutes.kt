@@ -8,6 +8,7 @@ import com.enuvro.saltykmp.auth.DEVICE_TOKEN_AUTH
 import com.enuvro.saltykmp.auth.WEB_API_AUTH
 import com.enuvro.saltykmp.auth.userId
 import com.enuvro.saltykmp.db.LibraryRepository
+import com.enuvro.saltykmp.util.safeId
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.install
 import io.ktor.server.auth.authenticate
@@ -36,15 +37,18 @@ fun Route.libraryRoutes() {
                 call.respond(items)
             }
             post {
-                val saved = LibraryRepository.upsertCourse(call.userId(), call.receive<ServerCourse>())
-                call.respond(HttpStatusCode.Created, saved)
+                val incoming = call.receive<ServerCourse>()
+                call.safeId(incoming.id) ?: return@post
+                call.respond(HttpStatusCode.Created, LibraryRepository.upsertCourse(call.userId(), incoming))
             }
             put("/{id}") {
-                val c = call.receive<ServerCourse>().copy(id = call.parameters["id"]!!)
+                val id = call.safeId(call.parameters["id"]) ?: return@put
+                val c = call.receive<ServerCourse>().copy(id = id)
                 call.respond(LibraryRepository.upsertCourse(call.userId(), c))
             }
             delete("/{id}") {
-                val ok = LibraryRepository.deleteCourse(call.userId(), call.parameters["id"]!!)
+                val id = call.safeId(call.parameters["id"]) ?: return@delete
+                val ok = LibraryRepository.deleteCourse(call.userId(), id)
                 call.respond(if (ok) HttpStatusCode.NoContent else HttpStatusCode.NotFound)
             }
         }
@@ -57,15 +61,18 @@ fun Route.libraryRoutes() {
                 call.respond(items)
             }
             post {
-                val saved = LibraryRepository.upsertCategory(call.userId(), call.receive<ServerCategory>())
-                call.respond(HttpStatusCode.Created, saved)
+                val incoming = call.receive<ServerCategory>()
+                call.safeId(incoming.id) ?: return@post
+                call.respond(HttpStatusCode.Created, LibraryRepository.upsertCategory(call.userId(), incoming))
             }
             put("/{id}") {
-                val c = call.receive<ServerCategory>().copy(id = call.parameters["id"]!!)
+                val id = call.safeId(call.parameters["id"]) ?: return@put
+                val c = call.receive<ServerCategory>().copy(id = id)
                 call.respond(LibraryRepository.upsertCategory(call.userId(), c))
             }
             delete("/{id}") {
-                val ok = LibraryRepository.deleteCategory(call.userId(), call.parameters["id"]!!)
+                val id = call.safeId(call.parameters["id"]) ?: return@delete
+                val ok = LibraryRepository.deleteCategory(call.userId(), id)
                 call.respond(if (ok) HttpStatusCode.NoContent else HttpStatusCode.NotFound)
             }
         }
@@ -78,15 +85,18 @@ fun Route.libraryRoutes() {
                 call.respond(items)
             }
             post {
-                val saved = LibraryRepository.upsertTag(call.userId(), call.receive<ServerTag>())
-                call.respond(HttpStatusCode.Created, saved)
+                val incoming = call.receive<ServerTag>()
+                call.safeId(incoming.id) ?: return@post
+                call.respond(HttpStatusCode.Created, LibraryRepository.upsertTag(call.userId(), incoming))
             }
             put("/{id}") {
-                val t = call.receive<ServerTag>().copy(id = call.parameters["id"]!!)
+                val id = call.safeId(call.parameters["id"]) ?: return@put
+                val t = call.receive<ServerTag>().copy(id = id)
                 call.respond(LibraryRepository.upsertTag(call.userId(), t))
             }
             delete("/{id}") {
-                val ok = LibraryRepository.deleteTag(call.userId(), call.parameters["id"]!!)
+                val id = call.safeId(call.parameters["id"]) ?: return@delete
+                val ok = LibraryRepository.deleteTag(call.userId(), id)
                 call.respond(if (ok) HttpStatusCode.NoContent else HttpStatusCode.NotFound)
             }
         }

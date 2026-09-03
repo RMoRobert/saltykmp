@@ -16,11 +16,19 @@ fun createAppDatabase(
             // SQLITE_BUSY. The Swift side sets the matching timeout (AppDatabase.swift busyMode).
             setProperty("journal_mode", "WAL")
             setProperty("busy_timeout", "5000")
+            // Enforce the schema's foreign keys (SQLite leaves them OFF per connection by default), so
+            // the courseId→course FK is honored and cascades fire — matching the Swift/GRDB app.
+            //
+            // A CONNECTION PROPERTY, not a PRAGMA statement. Executed as a statement it applied to one
+            // connection and then died with it: for a file URL the driver opens a connection per
+            // statement and closes it again whenever no transaction is open, so every later statement
+            // ran with foreign keys OFF. Every `ON DELETE SET NULL`/`CASCADE` in the schema was inert
+            // on desktop — a server-driven course deletion left `recipe.courseId` pointing at nothing
+            // and orphaned junction rows, which the next upload then sent back out. The in-memory
+            // databases the JVM tests use keep ONE connection, which is why they never noticed.
+            setProperty("foreign_keys", "true")
         },
     )
-    // Enforce the schema's foreign keys (SQLite leaves them OFF per connection by default), so the
-    // courseId→course FK is honored and cascades fire — matching the Swift/GRDB app.
-    driver.execute(null, "PRAGMA foreign_keys = ON;", 0)
     val version = driver.executeQuery(null, "PRAGMA user_version;", { cursor ->
         val result = if (cursor.next().value) cursor.getLong(0) else 0L
         QueryResult.Value(result)

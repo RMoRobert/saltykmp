@@ -1,9 +1,12 @@
 import {
   Button,
+  Hamburger,
   List,
   ListItem,
   Menu,
   MenuDivider,
+  MenuGroup,
+  MenuGroupHeader,
   MenuItem,
   MenuItemRadio,
   MenuList,
@@ -20,12 +23,13 @@ import {
 } from "@fluentui/react-components";
 import {
   Add24Regular,
-  ArrowLeft24Regular,
-  ArrowSort24Regular,
   Delete24Regular,
   Dismiss24Regular,
   SelectAllOn24Regular,
+  TextBulletListSquare16Regular,
+  TextBulletListSquare20Regular,
   TextBulletListSquare24Regular,
+  Heart16Filled,
   Heart20Filled,
   Link24Regular,
   MoreHorizontal24Regular,
@@ -54,10 +58,22 @@ const useStyles = makeStyles({
     padding: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalM}`,
     cursor: "pointer",
   },
-  /* The brand's tint, not a neutral grey: colorBrandBackground2 is Fluent's own token for a
-     brand wash behind content, and it is the one place in this UI where Salty's blue does real
-     work rather than decoration. */
-  rowSelected: { backgroundColor: tokens.colorBrandBackground2 },
+  /* The brand's tint, not a neutral grey: this is the one place in this UI where Salty's blue
+     does real work rather than decoration. A theme key of our own rather than Fluent's
+     colorBrandBackground2, which is a step too faint to read as a selection -- see theme.js. */
+  rowSelected: { backgroundColor: "var(--colorSaltySelectedBackground)" },
+  /* Both dense styles are as tall as their text rather than their thumbnail, so the padding is
+     what is left to give and both spend it: 2px a side, taking "Small icons" to 40px and "List" to
+     24px -- which is Fluent's own small row height, what a TreeItem or a MenuItem takes at
+     `size="small"`, rather than a number picked to look like Explorer.
+
+     The same `padding` shorthand as `row` rather than a `paddingBlock` longhand, so the merge is a
+     plain override whichever way Griffel expands it. */
+  rowSmall: { padding: `${tokens.spacingVerticalXXS} ${tokens.spacingHorizontalM}` },
+  rowTiny: {
+    padding: `${tokens.spacingVerticalXXS} ${tokens.spacingHorizontalM}`,
+    gap: tokens.spacingHorizontalXS,
+  },
   thumb: {
     flex: "0 0 auto",
     width: "48px",
@@ -66,22 +82,35 @@ const useStyles = makeStyles({
     objectFit: "cover",
     backgroundColor: tokens.colorNeutralBackground3,
   },
+  thumbSmall: { width: "32px", height: "32px" },
+  /* Still the photo, shrunk, and not a uniform file-type glyph: at this size it is a smear of
+     colour rather than a picture, but a smear of colour is the fastest thing on the row to
+     recognise, and one placeholder rule across all three styles beats a special case here. */
+  thumbTiny: { width: "20px", height: "20px", borderRadius: tokens.borderRadiusSmall },
   thumbEmpty: {
     display: "grid",
     placeItems: "center",
     color: tokens.colorNeutralForeground3,
   },
   text: { flex: 1, minWidth: 0 },
+  /* Both lines state their own line-height rather than inheriting the body's. Two lines of text
+     are what set a dense row's height, and a size without its matching leading is a row whose
+     height depends on a rule set three stylesheets away. */
   name: {
     fontWeight: tokens.fontWeightSemibold,
     fontSize: tokens.fontSizeBase300,
+    lineHeight: tokens.lineHeightBase300,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
   },
+  /* Regular weight in "List". Semibold earns its place while there is a quieter second line under
+     it to be distinguished from; with nothing but names on screen it is a page set in bold. */
+  nameTiny: { fontWeight: tokens.fontWeightRegular },
   sub: {
     color: tokens.colorNeutralForeground3,
     fontSize: tokens.fontSizeBase200,
+    lineHeight: tokens.lineHeightBase200,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
@@ -108,28 +137,53 @@ const useStyles = makeStyles({
  * renders listbox/option semantics, carries the roving focus and arrow keys, and handles Enter and
  * Space -- all of which this file used to do by hand and less well. `checkmark={null}` drops the
  * selection tick, because the selected row is shown by its background, not by a mark.
+ *
+ * `listStyle` is the reader's density (see LIST_STYLES). It changes what the row *shows*, not what
+ * it is: every style is the same ListItem with the same value, semantics and selection, so nothing
+ * above this function has to know which one is in force.
  */
-function Row({ recipe, selected, styles, sortBy, selectMode }) {
+function Row({ recipe, selected, styles, sortBy, selectMode, listStyle }) {
+  const tiny = listStyle === "list";
+  const small = listStyle === "smallIcons";
   const thumb = thumbUrl(recipe);
-  const sub = rowSubtitle(recipe, sortBy);
+  // One line has room for a name and its marks, and not for a sentence about the recipe as well.
+  const sub = tiny ? null : rowSubtitle(recipe, sortBy);
+  const Placeholder = tiny
+    ? TextBulletListSquare16Regular
+    : small
+      ? TextBulletListSquare20Regular
+      : TextBulletListSquare24Regular;
+  const thumbClass = mergeClasses(
+    styles.thumb,
+    small && styles.thumbSmall,
+    tiny && styles.thumbTiny,
+  );
   return (
     <ListItem
       value={recipe.id}
       // No checkbox outside select mode: a column of them on every row is a standing invitation to
       // a gesture almost nobody wants, and it costs the names the width it takes.
       checkmark={selectMode ? undefined : null}
-      className={mergeClasses(styles.row, selected && styles.rowSelected)}
+      className={mergeClasses(
+        styles.row,
+        small && styles.rowSmall,
+        tiny && styles.rowTiny,
+        selected && styles.rowSelected,
+      )}
     >
       {thumb ? (
-        <img className={styles.thumb} src={thumb} alt="" loading="lazy" />
+        <img className={thumbClass} src={thumb} alt="" loading="lazy" />
       ) : (
-        <div className={mergeClasses(styles.thumb, styles.thumbEmpty)} aria-hidden="true">
-          <TextBulletListSquare24Regular />
+        <div className={mergeClasses(thumbClass, styles.thumbEmpty)} aria-hidden="true">
+          <Placeholder />
         </div>
       )}
 
       <div className={styles.text}>
-        <div className={styles.name} title={recipe.name || "Untitled"}>
+        <div
+          className={mergeClasses(styles.name, tiny && styles.nameTiny)}
+          title={recipe.name || "Untitled"}
+        >
           {recipe.name || "Untitled"}
         </div>
         {sub ? (
@@ -146,14 +200,22 @@ function Row({ recipe, selected, styles, sortBy, selectMode }) {
             max={5}
             size="small"
             color="marigold"
-            valueText={null}
+            // Five stars beside a name on a 24px row is most of the width the name wanted, so the
+            // densest style takes Fluent's own compact form -- one star and the number -- rather
+            // than dropping the rating, which is a thing people scan this column for.
+            compact={tiny}
+            valueText={tiny ? undefined : null}
           />
         ) : null}
         {/* Marked favourites only, and as a mark rather than a control. An outline on every row is
             a column of buttons asking to be pressed, when the row's job is to be chosen; the place
             to change it is the recipe itself. */}
         {recipe.isFavorite ? (
-          <Heart20Filled className={styles.heart} aria-label="Favorite" />
+          tiny ? (
+            <Heart16Filled className={styles.heart} aria-label="Favorite" />
+          ) : (
+            <Heart20Filled className={styles.heart} aria-label="Favorite" />
+          )
         ) : null}
       </div>
     </ListItem>
@@ -178,7 +240,8 @@ export default function RecipeList({
   onDeleteChecked,
   onNew,
   onImport,
-  onBack,
+  onShowRail,
+  listStyle,
 }) {
   const styles = useStyles();
   const active = SORT_OPTIONS.find((o) => o.key === sortBy) ?? SORT_OPTIONS[0];
@@ -204,14 +267,23 @@ export default function RecipeList({
         </div>
       ) : (
         <div className={styles.head}>
-          {/* Compact only: the rail is a drawer there, so the list needs its own way back to it. */}
-          {onBack ? (
-            <Tooltip content="Library" relationship="label">
-              <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} />
+          {/* Whenever the rail is not on screen -- closed at full width, or a drawer when compact --
+              this is the Hamburger that brings it back, as in Fluent's own NavDrawer pattern. */}
+          {onShowRail ? (
+            <Tooltip content="Show library" relationship="label">
+              <Hamburger onClick={onShowRail} />
             </Tooltip>
           ) : null}
           <Subtitle1 className={styles.title}>{title}</Subtitle1>
 
+          <Tooltip content="New recipe" relationship="label">
+            <Button appearance="subtle" icon={<Add24Regular />} onClick={onNew} />
+          </Tooltip>
+
+          {/* One overflow menu, not two. Sorting used to have a button of its own, but a toolbar of
+              three anonymous glyphs over a list is harder to read than a single "..." holding
+              everything the list itself can do -- and the ordering is a thing you set once and
+              forget, not one you reach for on every visit. */}
           <Menu
             checkedValues={{ field: [sortBy], dir: [sortAsc ? "asc" : "desc"] }}
             onCheckedValueChange={(_, data) => {
@@ -220,36 +292,7 @@ export default function RecipeList({
             }}
           >
             <MenuTrigger disableButtonEnhancement>
-              <Tooltip content="Sort" relationship="label">
-                <Button appearance="subtle" icon={<ArrowSort24Regular />} />
-              </Tooltip>
-            </MenuTrigger>
-            <MenuPopover>
-              <MenuList>
-                {SORT_OPTIONS.map((o) => (
-                  <MenuItemRadio key={o.key} name="field" value={o.key}>
-                    {o.label}
-                  </MenuItemRadio>
-                ))}
-                <MenuDivider />
-                {/* The direction's wording follows the field: "Ascending" on a date says nothing. */}
-                <MenuItemRadio name="dir" value="asc">
-                  {active.asc}
-                </MenuItemRadio>
-                <MenuItemRadio name="dir" value="desc">
-                  {active.desc}
-                </MenuItemRadio>
-              </MenuList>
-            </MenuPopover>
-          </Menu>
-
-          <Tooltip content="New recipe" relationship="label">
-            <Button appearance="subtle" icon={<Add24Regular />} onClick={onNew} />
-          </Tooltip>
-
-          <Menu>
-            <MenuTrigger disableButtonEnhancement>
-              <Tooltip content="Other ways to add" relationship="label">
+              <Tooltip content="List options" relationship="label">
                 <Button appearance="subtle" icon={<MoreHorizontal24Regular />} />
               </Tooltip>
             </MenuTrigger>
@@ -265,6 +308,25 @@ export default function RecipeList({
                 <MenuItem icon={<SelectAllOn24Regular />} onClick={() => onSelectMode(true)}>
                   Select recipes…
                 </MenuItem>
+                {/* Flat rather than a "Sort by" submenu: six radios is a short enough list to show
+                    outright, and a submenu would put the ordering behind a hover. */}
+                <MenuDivider />
+                <MenuGroup>
+                  <MenuGroupHeader>Sort by</MenuGroupHeader>
+                  {SORT_OPTIONS.map((o) => (
+                    <MenuItemRadio key={o.key} name="field" value={o.key}>
+                      {o.label}
+                    </MenuItemRadio>
+                  ))}
+                  <MenuDivider />
+                  {/* The direction's wording follows the field: "Ascending" on a date says nothing. */}
+                  <MenuItemRadio name="dir" value="asc">
+                    {active.asc}
+                  </MenuItemRadio>
+                  <MenuItemRadio name="dir" value="desc">
+                    {active.desc}
+                  </MenuItemRadio>
+                </MenuGroup>
               </MenuList>
             </MenuPopover>
           </Menu>
@@ -310,6 +372,7 @@ export default function RecipeList({
                 styles={styles}
                 sortBy={sortBy}
                 selectMode={selectMode}
+                listStyle={listStyle}
               />
             ))}
           </List>

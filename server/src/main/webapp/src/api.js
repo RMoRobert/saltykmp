@@ -75,7 +75,15 @@ export const CLASSIFIER_PATH = { category: "categories", course: "courses", tag:
 
 export const api = {
   recipes: {
-    list: () => get("/api/recipes"),
+    /*
+     * Summaries, not whole recipes.
+     *
+     * The list column draws a name, a line about the recipe, a rating and a thumbnail, and the
+     * filters and sorts need the dates and the classifier ids -- and that is the whole of it. The
+     * bodies were around 88% of what this call used to transfer, for a column that never showed a
+     * word of them, and opening a recipe fetches it in full anyway (see `get`).
+     */
+    list: () => get("/api/recipes?fields=summary"),
     get: (id) => get(`/api/recipes/${encodeURIComponent(id)}`),
     save: (r) => put(`/api/recipes/${encodeURIComponent(r.id)}`, r),
     remove: (id) => del(`/api/recipes/${encodeURIComponent(id)}`),
@@ -149,6 +157,12 @@ export async function uploadImage(recipeId, file, stamp) {
     credentials: "same-origin",
     body,
   });
+  // The same redirect `request` does: an expired session mid-save should land on the sign-in page
+  // rather than reporting "401 Unauthorized" as though the image were at fault.
+  if (resp.status === 401) {
+    window.location.href = "/login";
+    throw new Error("Not signed in");
+  }
   if (!resp.ok) {
     let detail = `${resp.status} ${resp.statusText}`;
     try {
@@ -178,13 +192,30 @@ export const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif"];
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
 /**
+ * The image's version, as a query parameter, or nothing.
+ *
+ * An image keeps its filename when it is replaced -- images are named `<recipeId>.<ext>` -- so the
+ * URL alone cannot say which bytes it means, and the browser was re-fetching every visible
+ * thumbnail on every load because nothing could safely be cached. `lastModifiedImageDate` is bumped
+ * when and only when the bytes change, so a URL carrying it *can* be cached forever, and the server
+ * hands out a year and `immutable` when it sees its own current stamp here.
+ *
+ * A recipe with no stamp -- a row older than that column -- simply gets an unversioned URL and the
+ * cautious revalidate-every-time answer, which is what every image got before.
+ */
+const imageVersion = (r) =>
+  r?.lastModifiedImageDate ? `?v=${encodeURIComponent(r.lastModifiedImageDate)}` : "";
+
+/**
  * The list asks for thumbnails, not full images: the server generates and caches those, so a
  * hundred rows cost a hundred small requests rather than a hundred full-size photos.
  */
 export const thumbUrl = (r) =>
   r?.imageFilename
-    ? `/api/recipes/images/${encodeURIComponent(r.imageFilename)}/thumbnail`
+    ? `/api/recipes/images/${encodeURIComponent(r.imageFilename)}/thumbnail${imageVersion(r)}`
     : null;
 
 export const imageUrl = (r) =>
-  r?.imageFilename ? `/api/recipes/images/${encodeURIComponent(r.imageFilename)}` : null;
+  r?.imageFilename
+    ? `/api/recipes/images/${encodeURIComponent(r.imageFilename)}${imageVersion(r)}`
+    : null;

@@ -8,9 +8,25 @@
         "SALTY_ALLOW_DEFAULT_SECRET=true",
         "SALTY_DB_URL=jdbc:h2:file:./salty-db/dev;MODE=PostgreSQL;TRACE_LEVEL_FILE=0",
         "SALTY_IMAGE_DIR=./salty-images-h2",
-        "./gradlew", ":server:run", "--console=plain"
+        "./gradlew",
+        ":server:run",
+        "--console=plain"
       ],
       "port": 8080
+    },
+    {
+      "name": "salty-webapp-vite",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5173",
+        "--strictPort"
+      ],
+      "cwd": "server/src/main/webapp",
+      "port": 5173
     }
   ]
 }

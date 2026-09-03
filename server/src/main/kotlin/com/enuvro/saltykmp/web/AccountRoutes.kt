@@ -2,6 +2,7 @@ package com.enuvro.saltykmp.web
 
 import com.enuvro.saltykmp.auth.AccountLockout
 import com.enuvro.saltykmp.auth.ApiCsrfGuard
+import com.enuvro.saltykmp.auth.MAX_USERNAME_LENGTH
 import com.enuvro.saltykmp.auth.MIN_PASSWORD_LENGTH
 import com.enuvro.saltykmp.auth.RequirePasswordAuth
 import com.enuvro.saltykmp.auth.WEB_API_AUTH
@@ -117,6 +118,12 @@ fun Route.accountRoutes(imageStore: ImageStore, accountLockout: AccountLockout) 
                 when {
                     username.isEmpty() ->
                         call.respond(HttpStatusCode.BadRequest, ApiError("A username is required"))
+                    // varchar(255): longer reached the insert and came back as "Internal error".
+                    username.length > MAX_USERNAME_LENGTH ->
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ApiError("That username is too long (max $MAX_USERNAME_LENGTH characters)"),
+                        )
                     req.password.length < MIN_PASSWORD_LENGTH ->
                         call.respond(HttpStatusCode.BadRequest, ApiError(weakPasswordMessage()))
                     UserRepository.existsByUsername(username) ->

@@ -9,6 +9,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * open() pushes rather than assigning location.hash. Assigning fires `hashchange`, which would run
  * the reader below and re-enter the same open -- pushing changes the URL silently and leaves the
  * listener handling only the direction that matters, which is going back.
+ *
+ * The history calls sit outside the state updaters on purpose. An updater has to be pure: React
+ * calls it twice under StrictMode in development, and a pushState inside one pushed two entries per
+ * open, so Back closed nothing. Reading `dialog` from the render instead costs a re-created callback
+ * per change, which is nothing.
  */
 export function useHashDialog(names) {
   const read = useCallback(() => {
@@ -19,7 +24,11 @@ export function useHashDialog(names) {
   const [dialog, setDialog] = useState(read);
 
   useEffect(() => {
-    const sync = () => setDialog(read());
+    const sync = () => {
+      // Whatever moved the history moved it past our entry too.
+      pushedByUs.current = false;
+      setDialog(read());
+    };
     window.addEventListener("popstate", sync);
     window.addEventListener("hashchange", sync);
     return () => {
@@ -28,29 +37,42 @@ export function useHashDialog(names) {
     };
   }, [read]);
 
+  /** Whether the entry now on screen is one open() pushed, and so one close() should pop. */
+  const pushedByUs = useRef(false);
+
   const open = useCallback(
     (name) => {
-      setDialog((current) => {
-        if (current === name) return current;
-        // Replace rather than push when one dialog leads to another, so Back closes the pair
-        // instead of walking backwards through them one at a time.
-        if (current) history.replaceState({ dialog: name }, "", `#/${name}`);
-        else history.pushState({ dialog: name }, "", `#/${name}`);
-        return name;
-      });
+      if (dialog === name) return;
+      // Replace rather than push when one dialog leads to another, so Back closes the pair
+      // instead of walking backwards through them one at a time.
+      if (dialog) {
+        history.replaceState({ dialog: name }, "", `#/${name}`);
+      } else {
+        history.pushState({ dialog: name }, "", `#/${name}`);
+        pushedByUs.current = true;
+      }
+      setDialog(name);
     },
-    [],
+    [dialog],
   );
 
   const close = useCallback(() => {
-    setDialog((current) => {
-      if (!current) return current;
-      // Strip the fragment rather than leaving a bare "#", which would otherwise sit in the address
-      // bar and in anything the reader copies out of it.
-      history.replaceState(null, "", window.location.pathname + window.location.search);
-      return null;
-    });
-  }, []);
+    if (!dialog) return;
+    if (pushedByUs.current) {
+      // Go back rather than replace. Replacing left the pushed entry sitting in the history with
+      // the same address as the page under it, so the first press of Back after closing a dialog
+      // appeared to do nothing at all and it took two to leave.
+      pushedByUs.current = false;
+      setDialog(null);
+      history.back();
+      return;
+    }
+    // Nothing of ours to pop -- the dialog was opened by an address typed or pasted in. Strip the
+    // fragment rather than leaving a bare "#", which would otherwise sit in the address bar and in
+    // anything the reader copies out of it.
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+    setDialog(null);
+  }, [dialog]);
 
   return [dialog, open, close];
 }
@@ -146,24 +168,29 @@ export const writeStored = (key, value) => {
   }
 };
 
-/**
- * Whether the window is too narrow for three columns.
- *
- * 900px, the same breakpoint the Alpine app used. Below it the layout is one pane at a time and the
- * rail becomes a drawer, because 248 + 360 + a readable recipe does not fit on a phone and shrinking
- * all three leaves three unusable columns instead of one usable one.
- */
-export function useCompact(maxWidth = 900) {
-  const query = `(max-width: ${maxWidth}px)`;
-  const [compact, setCompact] = useState(
+/** A media query as state: true while it matches, updated as the window or the OS changes. */
+export function useMediaQuery(query) {
+  const [matches, setMatches] = useState(
     () => window.matchMedia?.(query).matches ?? false,
   );
   useEffect(() => {
     const m = window.matchMedia(query);
-    const onChange = (e) => setCompact(e.matches);
+    const onChange = (e) => setMatches(e.matches);
     m.addEventListener("change", onChange);
-    setCompact(m.matches);
+    setMatches(m.matches);
     return () => m.removeEventListener("change", onChange);
   }, [query]);
-  return compact;
+  return matches;
 }
+
+/**
+ * Whether the window is too narrow for three columns.
+ *
+ * 900px, the same breakpoint the Alpine app used. Below it the layout is one pane at a time and the
+ * rail becomes a drawer, because 260 + 360 + a readable recipe does not fit on a phone and shrinking
+ * all three leaves three unusable columns instead of one usable one.
+ */
+export const useCompact = (maxWidth = 900) => useMediaQuery(`(max-width: ${maxWidth}px)`);
+
+/** Follows the OS rather than offering a switch, matching what the Mustache shell does pre-paint. */
+export const usePrefersDark = () => useMediaQuery("(prefers-color-scheme: dark)");

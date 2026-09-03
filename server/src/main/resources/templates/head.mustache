@@ -5,6 +5,10 @@
     <link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png">
     <link rel="icon" href="/static/icon-192.png" sizes="192x192" type="image/png">
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <!-- Pico v2.1.1 (MIT), served from our own /static rather than a CDN: the offline deployment in
+         DEPLOY.md has no route to jsdelivr, so the classic view rendered unstyled there, and a
+         third-party stylesheet on every page is a third party watching every page view. Local also
+         means there is no moving `@2` tag to pin with an integrity hash. -->
+    <link rel="stylesheet" href="/static/pico.min.css">
     <link rel="stylesheet" href="/static/salty.css">
 </head>

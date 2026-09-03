@@ -113,9 +113,9 @@ export function scaleLine(text, factor) {
  */
 export const SORT_OPTIONS = [
   { key: "name", label: "Name", asc: "A → Z", desc: "Z → A" },
-  { key: "modified", label: "Date Modified", asc: "Oldest first", desc: "Newest first" },
-  { key: "created", label: "Date Created", asc: "Oldest first", desc: "Newest first" },
-  { key: "prepared", label: "Last Made", asc: "Oldest first", desc: "Newest first" },
+  { key: "modified", label: "Date modified", asc: "Oldest first", desc: "Newest first" },
+  { key: "created", label: "Date created", asc: "Oldest first", desc: "Newest first" },
+  { key: "prepared", label: "Last made", asc: "Oldest first", desc: "Newest first" },
 ];
 
 const byText = (a, b) =>
@@ -170,6 +170,42 @@ export const DIFFICULTIES = [
 
 export const difficultyLabel = (n) =>
   DIFFICULTIES.find((d) => d.value === n && d.value !== 0)?.label ?? null;
+
+/**
+ * How dense the recipe list is, in the order Settings offers them, loosest first.
+ *
+ * The first two keys and labels are the Swift app's own `RecipeListViewStyle` -- `summary` and
+ * `smallIcons` -- so a reader who has set this on the Mac meets the same two words here. `list` has
+ * no Swift counterpart; the name is Explorer's, for the view it behaves like: one line per recipe,
+ * a small icon, and nothing else competing with the name.
+ */
+export const LIST_STYLES = [
+  {
+    key: "summary",
+    label: "Summary",
+    hint: "A large thumbnail with the recipe name, summary, and star rating",
+  },
+  {
+    key: "smallIcons",
+    label: "Small icons",
+    hint: "A more compact summary view with smaller icons and less spacing",
+  },
+  {
+    key: "list",
+    label: "List",
+    hint: "Small recipe icon and name only",
+  },
+];
+
+/**
+ * A stored style, or the default.
+ *
+ * localStorage outlives the build that wrote it, so an unknown key here is an ordinary thing rather
+ * than a bug: without this guard it would fall through every branch in the row and render one with
+ * no size at all.
+ */
+export const listStyleKey = (v) =>
+  LIST_STYLES.some((s) => s.key === v) ? v : LIST_STYLES[0].key;
 
 /**
  * The row's second line.
@@ -268,4 +304,57 @@ export function relativeDate(iso) {
   if (months < 12) return `${months} month${months === 1 ? "" : "s"} ago`;
   const years = Math.round(days / 365);
   return `${years} year${years === 1 ? "" : "s"} ago`;
+}
+
+const DAY_PARTS = { year: "numeric", month: "short", day: "numeric" };
+
+/** "Aug 20, 2026", in the reader's own zone and locale. Null when there is no usable date. */
+export function formatDay(iso) {
+  const t = Date.parse(iso || "");
+  return Number.isFinite(t) ? new Date(t).toLocaleDateString(undefined, DAY_PARTS) : null;
+}
+
+/** "Aug 20, 2026, 9:14 AM" -- for the stamps that really are moments rather than calendar days. */
+export function formatMoment(iso) {
+  const t = Date.parse(iso || "");
+  return Number.isFinite(t)
+    ? new Date(t).toLocaleString(undefined, { ...DAY_PARTS, hour: "numeric", minute: "2-digit" })
+    : null;
+}
+
+/* ----------------------------------------------------------------- last made -- */
+
+/*
+ * "Last made on" is a calendar DAY, but the column holding it is a UTC timestamp that every client
+ * renders in local time. So a picked day is stored at LOCAL NOON: local midnight would render as
+ * the PREVIOUS day for anyone west of UTC, while noon stays on the right day across every real
+ * offset (UTC-12…UTC+14) and DST shift.
+ *
+ * This is not a web rule. `PreparedDates` in `shared` and the Swift app's `localNoon(on:)` do the
+ * same thing to the same column, so these two functions have to keep agreeing with them.
+ */
+
+const pad = (n) => String(n).padStart(2, "0");
+const dayValue = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+/** Today as an `<input type="date">` value -- the cap on a field that cannot accept the future. */
+export const todayValue = () => dayValue(new Date());
+
+/** A stored "last made" stamp as the local day to seed a date field with, or "" for never made. */
+export function preparedToDayValue(iso) {
+  const t = Date.parse(iso || "");
+  return Number.isFinite(t) ? dayValue(new Date(t)) : "";
+}
+
+/** The inverse: the wire timestamp to store for a picked day. Null when the field is empty. */
+export function dayValueToPrepared(value) {
+  const [y, m, d] = String(value || "").split("-").map(Number);
+  if (!y || !m || !d) return null;
+  const noon = new Date(y, m - 1, d, 12, 0, 0, 0);
+  // The two-digit-year rule: `new Date(1, ...)` means 1901, so a year under 100 -- which a date
+  // field will happily accept -- would be stored as a date nobody picked. Setting it again after
+  // construction means what it says.
+  noon.setFullYear(y);
+  // toISOString always emits milliseconds, which is exactly the wire format's `.SSS`.
+  return noon.toISOString();
 }

@@ -10,6 +10,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.install
 import com.enuvro.saltykmp.util.newId
+import com.enuvro.saltykmp.util.safeId
 import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -45,12 +46,14 @@ fun Route.shoppingListRoutes() {
                 call.respond(items)
             }
             get("/{id}") {
-                val found = ShoppingListRepository.getById(call.userId(), call.parameters["id"]!!)
+                val id = call.safeId(call.parameters["id"]) ?: return@get
+                val found = ShoppingListRepository.getById(call.userId(), id)
                 if (found == null) call.respond(HttpStatusCode.NotFound) else call.respond(found)
             }
             // Lets a client choose POST vs PUT without a body round-trip, mirroring `/api/recipes/{id}`.
             head("/{id}") {
-                val found = ShoppingListRepository.getById(call.userId(), call.parameters["id"]!!)
+                val id = call.safeId(call.parameters["id"]) ?: return@head
+                val found = ShoppingListRepository.getById(call.userId(), id)
                 call.respond(if (found != null) HttpStatusCode.OK else HttpStatusCode.NotFound)
             }
             // Saves are optimistic-concurrency-checked: a body carrying `baseRevision` that no longer
@@ -58,7 +61,9 @@ fun Route.shoppingListRoutes() {
             // client can merge without another round trip. Bodies without `baseRevision` (legacy
             // clients) always get a 2xx — see ShoppingListRepository.save for why.
             post {
-                when (val r = ShoppingListRepository.save(call.userId(), call.receive<ServerShoppingList>())) {
+                val incoming = call.receive<ServerShoppingList>()
+                call.safeId(incoming.id) ?: return@post
+                when (val r = ShoppingListRepository.save(call.userId(), incoming)) {
                     is ShoppingListRepository.SaveResult.Saved -> call.respond(HttpStatusCode.Created, r.list)
                     is ShoppingListRepository.SaveResult.Conflict -> call.respond(HttpStatusCode.Conflict, r.current)
                 }
@@ -69,7 +74,7 @@ fun Route.shoppingListRoutes() {
              * ShoppingListMerge the native clients run, then saves the result.
              */
             post("/{id}/resolve") {
-                val id = call.parameters["id"]!!
+                val id = call.safeId(call.parameters["id"]) ?: return@post
                 val body = call.receive<ResolveRequest>()
                 val result = ShoppingListResolver.resolve(
                     userId = call.userId(),
@@ -85,7 +90,8 @@ fun Route.shoppingListRoutes() {
                 }
             }
             put("/{id}") {
-                val list = call.receive<ServerShoppingList>().copy(id = call.parameters["id"]!!)
+                val id = call.safeId(call.parameters["id"]) ?: return@put
+                val list = call.receive<ServerShoppingList>().copy(id = id)
                 when (val r = ShoppingListRepository.save(call.userId(), list)) {
                     is ShoppingListRepository.SaveResult.Saved -> call.respond(r.list)
                     is ShoppingListRepository.SaveResult.Conflict -> call.respond(HttpStatusCode.Conflict, r.current)
@@ -95,8 +101,9 @@ fun Route.shoppingListRoutes() {
             // past that revision (edit beats delete — the caller should download instead). Without
             // the header the delete is unconditional, exactly the legacy behavior.
             delete("/{id}") {
+                val id = call.safeId(call.parameters["id"]) ?: return@delete
                 val expected = call.request.headers[HttpHeaders.IfMatch]?.trim('"')?.toLongOrNull()
-                when (val r = ShoppingListRepository.delete(call.userId(), call.parameters["id"]!!, expected)) {
+                when (val r = ShoppingListRepository.delete(call.userId(), id, expected)) {
                     is ShoppingListRepository.DeleteResult.Deleted -> call.respond(HttpStatusCode.NoContent)
                     is ShoppingListRepository.DeleteResult.NotFound -> call.respond(HttpStatusCode.NotFound)
                     is ShoppingListRepository.DeleteResult.Conflict -> call.respond(HttpStatusCode.Conflict, r.current)

@@ -123,6 +123,9 @@ object UserRepository {
         Courses.deleteWhere { userId eq id }
         Categories.deleteWhere { userId eq id }
         Tags.deleteWhere { userId eq id }
+        // Shopping lists are user-scoped rows like the rest, and were simply missed here: a deleted
+        // account's lists (a personal document, freeform ones especially) outlived the account.
+        ShoppingLists.deleteWhere { userId eq id }
         DeviceSyncs.deleteWhere { userId eq id }
         Users.deleteWhere { Users.id eq id }
         images

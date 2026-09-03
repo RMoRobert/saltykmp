@@ -230,6 +230,8 @@ import com.enuvro.saltykmp.di.decodeImageBitmap
 import com.enuvro.saltykmp.di.makeThumbnail
 import com.enuvro.saltykmp.di.rememberCameraCapture
 import com.enuvro.saltykmp.sync.LocalStore
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 import com.enuvro.saltykmp.sync.SyncResult
 import com.enuvro.saltykmp.util.PreparedDates
 import io.github.vinceglb.filekit.PlatformFile
@@ -449,7 +451,11 @@ private fun SaltyTheme(density: UiDensity, content: @Composable () -> Unit) {
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun App(commands: AppCommands? = null) {
-    val module = remember { AppModule() }
+    // The process's module, not this composition's: an Android configuration change rebuilds the
+    // composition, and a second AppModule meant a second database connection on the same file, a
+    // second auto-sync collector, and the startup reconcile running again over an open library.
+    // See [AppModule.shared].
+    val module = remember { AppModule.shared() }
     var screen by remember { mutableStateOf<Screen>(Screen.List) }
     // Hoisted out of the list screen so it survives navigating into a recipe and back — and so a tag or
     // category chip on the detail screen can jump the list to that filter.
@@ -1038,16 +1044,38 @@ private enum class RecipeSort(val label: String) {
     LAST_MADE("Last Made"),
 }
 
-/** Sort [list] by [sort]; ISO-8601 date strings compare chronologically, so plain string order works. */
+/**
+ * A stored timestamp as a comparable instant.
+ *
+ * Comparing the raw column as a string does NOT order it, because the column holds more than one
+ * format: `yyyy-MM-dd HH:mm:ss.SSS` from this app and the Swift one, `yyyy-MM-dd HH:mm:ss` where a
+ * migration backfilled with CURRENT_TIMESTAMP, and full ISO with a `T` and a `Z` in alpha-era rows.
+ * A space sorts before a `T`, so same-day rows came out ordered by which format they happened to be
+ * written in. `dbToWireDate` normalises all three, and parseOrPast puts anything unreadable last.
+ */
+@OptIn(ExperimentalTime::class)
+private fun sortInstant(stored: String?): Instant =
+    LocalStore.parseOrPast(LocalStore.dbToWireDate(stored))
+
+/** Sort [list] by [sort]. */
+@OptIn(ExperimentalTime::class)
 private fun sortRecipes(list: List<Recipe>, sort: RecipeSort, ascending: Boolean): List<Recipe> {
+    // Parsed once per row rather than once per comparison: a comparator is called O(n log n) times,
+    // and parsing a timestamp is not free.
+    val dates: Map<String, Instant> = when (sort) {
+        RecipeSort.DATE_MODIFIED -> list.associate { it.id to sortInstant(it.lastModifiedDate) }
+        RecipeSort.DATE_CREATED -> list.associate { it.id to sortInstant(it.createdDate) }
+        RecipeSort.LAST_MADE -> list.associate { it.id to sortInstant(it.lastPrepared) }
+        else -> emptyMap()
+    }
     val key: Comparator<Recipe> = when (sort) {
         RecipeSort.NAME -> compareBy { it.name.lowercase() }
-        RecipeSort.DATE_MODIFIED -> compareBy { it.lastModifiedDate ?: "" }
-        RecipeSort.DATE_CREATED -> compareBy { it.createdDate ?: "" }
+        RecipeSort.DATE_MODIFIED -> compareBy { dates.getValue(it.id) }
+        RecipeSort.DATE_CREATED -> compareBy { dates.getValue(it.id) }
         RecipeSort.SOURCE -> compareBy { it.source?.lowercase() ?: "" }
         RecipeSort.RATING -> compareBy { it.rating?.rawValue ?: 0L }
         RecipeSort.DIFFICULTY -> compareBy { it.difficulty?.rawValue ?: 0L }
-        RecipeSort.LAST_MADE -> compareBy { it.lastPrepared ?: "" }
+        RecipeSort.LAST_MADE -> compareBy { dates.getValue(it.id) }
     }
     val sorted = list.sortedWith(key.thenBy { it.name.lowercase() })
     val ordered = if (ascending) sorted else sorted.reversed()
@@ -1408,7 +1436,11 @@ private fun RecipeListPane(
                     items(sorted, key = { it.id }) { recipe ->
                         // Prefer the cached thumbnail blob; fall back to the full image for rows synced
                         // before thumbnail caching (a re-sync backfills the blob).
-                        val thumb = remember(recipe.imageThumbnailData, recipe.imageFilename) {
+                        // Keyed on the image's IDENTITY, not on the blob: a ByteArray compares by
+                        // reference, so every emission of the query produced fresh arrays, every key
+                        // changed, and every visible row decoded its photo again on the main thread --
+                        // rows with no cached blob re-read the full-size file from disk each time.
+                        val thumb = remember(recipe.id, recipe.lastModifiedImageDate, recipe.imageFilename) {
                             (recipe.imageThumbnailData
                                 ?: recipe.imageFilename?.let { module.imageFiles.load(it) })
                                 ?.let { decodeImageBitmap(it) }
@@ -2419,29 +2451,39 @@ private fun RecipeEditScreen(
     val existing = remember(id, imported) { id?.let { module.localStore.recipeForUpload(it) } ?: imported?.recipe }
     // The DB row carries the cached thumbnail blob, which we must preserve across edits.
     val existingRow = remember(id) { id?.let { module.repository.recipe(it) } }
-    var name by remember { mutableStateOf(existing?.name ?: "") }
+    /*
+     * EVERY field below is keyed on (id, imported) -- the same key `existing` is computed under.
+     *
+     * Half of them used to be plain `remember {}`, which is remembered per composable SLOT, and all
+     * three editor destinations (edit this recipe, edit that one, a blank new one, an imported one)
+     * land in the same slot. So the fields with no key kept the PREVIOUS recipe's values while the
+     * keyed ones reloaded: "New recipe" followed by "Import from Web" showed the imported
+     * ingredients under a blank name with no photo, and editing A then jumping to B showed B's
+     * ingredients under A's name -- which Save then wrote to B.
+     */
+    var name by remember(id, imported) { mutableStateOf(existing?.name ?: "") }
     // A blank name disables Save. Only flag the field red once the user has been in it, so a fresh
     // "New Recipe" form doesn't open already shouting an error.
-    var nameTouched by remember(id) { mutableStateOf(false) }
-    var intro by remember { mutableStateOf(existing?.introduction ?: "") }
-    var favorite by remember { mutableStateOf(existing?.isFavorite ?: false) }
-    var wantToMake by remember { mutableStateOf(existing?.wantToMake ?: false) }
-    var courseId by remember(id) { mutableStateOf(existing?.courseId) }
-    var difficulty by remember(id) { mutableStateOf(existing?.difficulty) }
-    var rating by remember(id) { mutableStateOf(existing?.rating) }
-    var servings by remember { mutableStateOf(existing?.servings?.toString() ?: "") }
-    var yieldText by remember { mutableStateOf(existing?.yield ?: "") }
-    var source by remember { mutableStateOf(existing?.source ?: "") }
-    var sourceDetails by remember { mutableStateOf(existing?.sourceDetails ?: "") }
-    val selectedCategories = remember(id) {
+    var nameTouched by remember(id, imported) { mutableStateOf(false) }
+    var intro by remember(id, imported) { mutableStateOf(existing?.introduction ?: "") }
+    var favorite by remember(id, imported) { mutableStateOf(existing?.isFavorite ?: false) }
+    var wantToMake by remember(id, imported) { mutableStateOf(existing?.wantToMake ?: false) }
+    var courseId by remember(id, imported) { mutableStateOf(existing?.courseId) }
+    var difficulty by remember(id, imported) { mutableStateOf(existing?.difficulty) }
+    var rating by remember(id, imported) { mutableStateOf(existing?.rating) }
+    var servings by remember(id, imported) { mutableStateOf(existing?.servings?.toString() ?: "") }
+    var yieldText by remember(id, imported) { mutableStateOf(existing?.yield ?: "") }
+    var source by remember(id, imported) { mutableStateOf(existing?.source ?: "") }
+    var sourceDetails by remember(id, imported) { mutableStateOf(existing?.sourceDetails ?: "") }
+    val selectedCategories = remember(id, imported) {
         mutableStateListOf<String>().also { it.addAll(existing?.categoryIds.orEmpty()) }
     }
-    val selectedTags = remember(id) {
+    val selectedTags = remember(id, imported) {
         mutableStateListOf<String>().also { it.addAll(existing?.tagIds.orEmpty()) }
     }
     // Image edit state: pickedImage holds freshly chosen bytes; imageRemoved clears an existing image.
-    var pickedImage by remember(id) { mutableStateOf<ByteArray?>(imported?.imageBytes) }
-    var imageRemoved by remember(id) { mutableStateOf(false) }
+    var pickedImage by remember(id, imported) { mutableStateOf<ByteArray?>(imported?.imageBytes) }
+    var imageRemoved by remember(id, imported) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     val courses by module.repository.courses().collectAsState(initial = emptyList())
@@ -3811,7 +3853,10 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
         busy = true
         status = "Syncing…"
         cancelling = false
-        cancellableSync = scope.launch {
+        // The app's scope, not this screen's. On the screen's scope, pressing Back part-way through
+        // cancelled the sync silently -- and cancelled the notify() that would have said so, and the
+        // watermark write with it. Cancel is still offered explicitly, through this Job.
+        cancellableSync = module.appScope.launch {
             val message = try {
                 "Sync complete — " + module.sync().summary()
             } catch (e: CancellationException) {
@@ -4068,8 +4113,7 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                                 )
                             }
                             SettingsCaption(
-                                "Syncs in the background after you make changes. Occasional failures are silent; " +
-                                    "repeated failures show a dismissable banner.",
+                                "Syncs in the background after you make changes, on launch, and when returning to the app. Repeated failures will show a dismissable banner to notify you (occasional failures are ignored).",
                             )
 
                             Row(
@@ -4276,7 +4320,10 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
             showResyncConfirm = false
             busy = true
             status = "$label…"
-            scope.launch {
+            // Emphatically the app's scope. "Delete Local, Pull from Server" wipes the library before
+            // it restores it, so a cancellation half-way -- which is all pressing Back used to be --
+            // left the library part-restored and the watermark unmoved.
+            module.appScope.launch {
                 val message = try {
                     "$label complete — " + action().summary()
                 } catch (e: Throwable) {

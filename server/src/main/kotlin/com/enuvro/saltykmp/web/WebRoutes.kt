@@ -3,6 +3,7 @@ package com.enuvro.saltykmp.web
 import com.enuvro.saltykmp.api.ServerRecipe
 import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.auth.AccountLockout
+import com.enuvro.saltykmp.auth.DeviceTokenService
 import com.enuvro.saltykmp.auth.LoginThrottle
 import com.enuvro.saltykmp.db.LibraryRepository
 import com.enuvro.saltykmp.db.RecipeRepository
@@ -425,7 +426,8 @@ fun Route.webRoutes(imageStore: ImageStore, throttle: LoginThrottle, accountLock
 private suspend fun io.ktor.server.application.ApplicationCall.checkCsrf(params: Parameters): Boolean {
     val expected = principal<UserSession>()?.csrfToken.orEmpty()
     val provided = params["csrf"].orEmpty()
-    if (expected.isEmpty() || provided != expected) {
+    // Constant-time, as the API guard's equivalent check is; see ApiCsrfGuard.
+    if (expected.isEmpty() || !DeviceTokenService.constantTimeEquals(provided, expected)) {
         respond(HttpStatusCode.Forbidden, "Invalid or missing CSRF token.")
         return false
     }

@@ -380,19 +380,33 @@ fun ShoppingListDetailScreen(
     var confirmConvert by remember { mutableStateOf(false) }
     var focusItemId by remember(id) { mutableStateOf<String?>(null) }
 
-    // Local edit state, seeded once per list (see the doc comment) — never re-read from the DB.
+    // Local edit state. Seeded from the row, and RE-seeded when a sync replaces the row underneath.
     val items = remember(id) { mutableStateListOf<ShoppingListListContents>() }
     var freeformText by remember(id) { mutableStateOf("") }
     var seeded by remember(id) { mutableStateOf(false) }
+    /** The `syncedRevision` the state on screen was seeded from; null until first seeded. */
+    var seededRevision by remember(id) { mutableStateOf<Long?>(null) }
     // A pending debounced text write; also flushed on leaving the screen.
     val scope = rememberCoroutineScope()
     var pendingWrite by remember(id) { mutableStateOf<Job?>(null) }
     val listState = rememberLazyListState()
 
-    if (list != null && !seeded) {
+    /*
+     * Re-seeding is not cosmetic. This state is what the next structural edit WRITES BACK, so holding a
+     * copy from before a sync landed meant the next tap on a checkbox saved the pre-sync items over the
+     * merged row -- with a fresh lastModifiedDate, so the other device's additions were then uploaded
+     * away. Seeding once was only ever safe if nothing else could change the row, and sync can.
+     *
+     * `syncedRevision` moves only when the SERVER agrees a version, so an ordinary local edit does not
+     * trip this. A debounced text write in flight does hold it off, because that text has not reached
+     * the database yet and re-seeding would type over the user.
+     */
+    val syncMovedUnderUs = seeded && list != null && list.syncedRevision != seededRevision
+    if (list != null && (!seeded || (syncMovedUnderUs && pendingWrite == null))) {
         items.clear()
         items.addAll(list.contentsForList.orEmpty())
         freeformText = list.contentsForFreeform.orEmpty()
+        seededRevision = list.syncedRevision
         seeded = true
     }
 

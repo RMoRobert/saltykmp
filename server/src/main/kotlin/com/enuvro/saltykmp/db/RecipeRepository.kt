@@ -2,6 +2,7 @@ package com.enuvro.saltykmp.db
 
 import com.enuvro.saltykmp.api.RecipeManifestEntry
 import com.enuvro.saltykmp.api.ServerRecipe
+import com.enuvro.saltykmp.api.ServerRecipeSummary
 import com.enuvro.saltykmp.db.DatabaseFactory.dbQuery
 import com.enuvro.saltykmp.db.model.Direction
 import com.enuvro.saltykmp.db.model.Ingredient
@@ -30,8 +31,8 @@ import java.time.LocalDateTime
 import java.util.UUID
 import kotlin.math.ceil
 
-data class RecipePage(
-    val recipes: List<ServerRecipe>,
+data class RecipePage<T>(
+    val recipes: List<T>,
     val total: Long,
     val totalPages: Int,
     val pageNumber: Int,
@@ -56,7 +57,7 @@ object RecipeRepository {
         modifiedSince: LocalDateTime?,
         page: Int?,
         size: Int,
-    ): RecipePage = dbQuery {
+    ): RecipePage<ServerRecipe> = dbQuery {
         val cond = condition(userId, modifiedSince)
         val total = Recipes.selectAll().where(cond).count()
         var query = Recipes.selectAll().where(cond).orderBy(Recipes.id to SortOrder.ASC)
@@ -70,6 +71,61 @@ object RecipeRepository {
         val recipes = rows.map { rowToRecipe(it, cats[it[Recipes.id]].orEmpty(), tags[it[Recipes.id]].orEmpty()) }
         val totalPages = if (page == null || size <= 0) 1 else ceil(total.toDouble() / size).toInt()
         RecipePage(recipes, total, totalPages, page ?: 0)
+    }
+
+    /**
+     * The same page, projected to what a list needs. See [ServerRecipeSummary].
+     *
+     * The saving is not only on the wire. Naming the columns keeps H2 from reading the six large
+     * TEXT blobs at all, and skipping [decodeList] means the server no longer parses every
+     * ingredient of every recipe into objects for the sole purpose of serializing them straight
+     * back out again.
+     *
+     * Paging and the delta filter are shared with [listForSync] rather than reimplemented, because
+     * a summary that disagreed with the full list about which recipes exist would be worse than no
+     * summary at all.
+     */
+    suspend fun listSummaries(
+        userId: String,
+        modifiedSince: LocalDateTime?,
+        page: Int?,
+        size: Int,
+    ): RecipePage<ServerRecipeSummary> = dbQuery {
+        val cond = condition(userId, modifiedSince)
+        val total = Recipes.selectAll().where(cond).count()
+        var query = Recipes.select(
+            Recipes.id, Recipes.name, Recipes.createdDate, Recipes.lastModifiedDate,
+            Recipes.lastPrepared, Recipes.sourceText, Recipes.sourceDetails, Recipes.introduction,
+            Recipes.rating, Recipes.imageFilename, Recipes.lastModifiedImageDate,
+            Recipes.isFavorite, Recipes.wantToMake, Recipes.courseId,
+        ).where(cond).orderBy(Recipes.id to SortOrder.ASC)
+        if (page != null) query = query.limit(size).offset((page.toLong()) * size)
+        val rows = query.toList()
+        val ids = rows.map { it[Recipes.id] }
+        val cats = categoryIdsFor(ids)
+        val tags = tagIdsFor(ids)
+        val summaries = rows.map { row ->
+            ServerRecipeSummary(
+                id = row[Recipes.id],
+                name = row[Recipes.name],
+                createdDate = WireDate.format(row[Recipes.createdDate]),
+                lastModifiedDate = WireDate.format(row[Recipes.lastModifiedDate]),
+                lastPrepared = WireDate.format(row[Recipes.lastPrepared]),
+                source = row[Recipes.sourceText],
+                sourceDetails = row[Recipes.sourceDetails],
+                introduction = row[Recipes.introduction],
+                rating = row[Recipes.rating],
+                imageFilename = row[Recipes.imageFilename],
+                lastModifiedImageDate = WireDate.format(row[Recipes.lastModifiedImageDate]),
+                isFavorite = row[Recipes.isFavorite],
+                wantToMake = row[Recipes.wantToMake],
+                courseId = row[Recipes.courseId],
+                categoryIds = cats[row[Recipes.id]].orEmpty(),
+                tagIds = tags[row[Recipes.id]].orEmpty(),
+            )
+        }
+        val totalPages = if (page == null || size <= 0) 1 else ceil(total.toDouble() / size).toInt()
+        RecipePage(summaries, total, totalPages, page ?: 0)
     }
 
     suspend fun manifest(userId: String): List<RecipeManifestEntry> = dbQuery {
@@ -113,16 +169,22 @@ object RecipeRepository {
         imageIsStored: (String) -> Boolean = { true },
     ): ServerRecipe {
         dbQuery {
+            // Nothing below is user-scoped by the primary key, so this is what keeps one account's
+            // save off another's row. See [requireNotOwnedByAnother].
+            Recipes.requireNotOwnedByAnother(Recipes.id, Recipes.userId, recipe.id, userId, "recipe")
             // Image sub-record merge: the image (filename + its timestamp) is resolved independently of the
             // text body by lastModifiedImageDate, so a stale text-only upload can't clobber a newer image
             // (and vice versa). Keep whichever side's image is newer; an incoming null/older date preserves
             // what's stored (e.g. an image set via the dedicated /image endpoint that this body predates).
+            // FOR UPDATE, as ShoppingListRepository.save does and for the same reason: what follows
+            // is a read-modify-write, so two devices uploading one recipe at once could both read the
+            // old row and the later writer's OLDER image or prepared stamp would win the merge.
             val existing = Recipes.select(
                 Recipes.imageFilename, Recipes.lastModifiedImageDate,
                 Recipes.lastPrepared, Recipes.lastModifiedPreparedDate,
             )
                 .where { (Recipes.id eq recipe.id) and (Recipes.userId eq userId) }
-                .limit(1).singleOrNull()
+                .forUpdate().limit(1).singleOrNull()
             val incomingImageDate = WireDate.parse(recipe.lastModifiedImageDate)
             val existingImageDate = existing?.get(Recipes.lastModifiedImageDate)
             // A null filename is honoured (that is how an image REMOVAL riding a body upload propagates);
@@ -203,6 +265,20 @@ object RecipeRepository {
         Recipes.select(Recipes.imageFilename)
             .where { (Recipes.id eq id) and (Recipes.userId eq userId) }
             .limit(1).singleOrNull()?.get(Recipes.imageFilename)
+    }
+
+    /**
+     * The stored image filename and its stamp together, for the image routes.
+     *
+     * One query rather than two: those routes need the filename to prove ownership and the stamp to
+     * build a cache validator, and the stamp is the exactly-right validator because it is bumped
+     * when and only when the image bytes change. Returns null when the recipe has no row.
+     */
+    suspend fun imageIdentity(userId: String, id: String): Pair<String?, String?>? = dbQuery {
+        Recipes.select(Recipes.imageFilename, Recipes.lastModifiedImageDate)
+            .where { (Recipes.id eq id) and (Recipes.userId eq userId) }
+            .limit(1).singleOrNull()
+            ?.let { it[Recipes.imageFilename] to WireDate.format(it[Recipes.lastModifiedImageDate]) }
     }
 
     /** Sets the image filename and stamps the image timestamp. [imageDate] is the client-authoritative

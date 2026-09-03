@@ -344,6 +344,79 @@ class SyncIntegrationTest {
         assertEquals("2026-06-02T03:04:05.678Z", local.recipeForUpload("r1")?.lastModifiedDate)
     }
 
+    /**
+     * A recipe the server has and this device does not, stamped BEFORE this device's last sync, is
+     * DOWNLOADED — never deleted from the server.
+     *
+     * The plan reads "older than my watermark" as "I had it and deleted it", which is a guess about
+     * clocks. Another device whose clock runs a few minutes behind produces exactly this shape for a
+     * recipe it has just created, and acting on the guess destroyed it everywhere. A real local
+     * delete travels as a tombstone instead, which is evidence rather than inference.
+     */
+    @Test
+    fun aServerRecipeOlderThanTheWatermarkIsTakenNotDeleted() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.registered = true // not a first sync
+        server.lastSyncDate = "2026-08-10T00:00:00.000Z"
+        // Something local, so the "everything is missing" guard is not what saves the row.
+        local.upsertRecipe(ServerRecipe(id = "mine", name = "Mine", lastModifiedDate = "2026-08-11T00:00:00.000Z"))
+        server.saveRecipe(ServerRecipe(id = "mine", name = "Mine", lastModifiedDate = "2026-08-11T00:00:00.000Z"))
+        // The other device's clock is behind: a recipe created after our sync, stamped before it.
+        server.saveRecipe(
+            ServerRecipe(id = "theirs", name = "From the slow phone", lastModifiedDate = "2026-08-09T00:00:00.000Z"),
+        )
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        assertTrue(server.recipes.containsKey("theirs"), "the other device's recipe survives on the server")
+        assertEquals(
+            "From the slow phone",
+            local.recipeForUpload("theirs")?.name,
+            "and is downloaded, so the next sync sees an ordinary two-sided row",
+        )
+    }
+
+    /**
+     * A first sync against a DIFFERENT server uploads the shopping lists rather than deleting them.
+     *
+     * A `syncedRevision` records agreement with the server that issued it; against a reinstalled or
+     * replaced one it means nothing, and reading it as "the server deleted this" wiped every list the
+     * device had. Recipes and classifiers check isFirstSync before their stamp; lists did not.
+     */
+    @Test
+    fun aFirstSyncAgainstANewServerKeepsStampedShoppingLists() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val old = FakeServer()
+        // A list this device has already agreed with some server about.
+        val agreed = agree(local, old, ServerShoppingList(
+            id = "L", name = "Groceries", isFreeform = false,
+            contentsForList = listOf(item("a", "Milk")),
+            lastModifiedDate = "2026-08-01T00:00:00.000Z",
+        ))
+        assertEquals("Groceries", agreed.name)
+
+        // A different server: it has never seen this device, and it already holds a list of its own,
+        // so the empty-response guard has nothing to object to.
+        val fresh = FakeServer()
+        fresh.shoppingLists["seed"] = ServerShoppingList(
+            id = "seed", name = "Welcome", isFreeform = true, contentsForFreeform = "",
+            lastModifiedDate = "2026-08-05T00:00:00.000Z",
+        )
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), fresh.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        assertEquals("Groceries", fresh.shoppingLists["L"]?.name, "the list was uploaded, not deleted")
+        assertTrue(
+            local.shoppingLists().any { it.id == "L" },
+            "and it is still here",
+        )
+    }
+
     private fun freshDb(): AppDatabase {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         AppDatabase.Schema.create(driver)

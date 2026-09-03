@@ -24,6 +24,13 @@ class ImageTooLargeException(message: String) : RuntimeException(message)
  */
 class UnsupportedImageFormatException(message: String) : RuntimeException(message)
 
+/**
+ * Thrown by [ImageStore.store] when the recipe id it was handed cannot name a file inside the store.
+ * The routes reject such an id first (see `isSafeId`); this is the storage layer refusing to be the
+ * only thing standing between a client-supplied string and `Files.write`.
+ */
+class InvalidImageNameException(message: String) : RuntimeException(message)
+
 /** An image format the server is prepared to store, and the extension it is stored under. */
 enum class ImageFormat(val extension: String) {
     JPEG("jpg"),
@@ -87,8 +94,15 @@ class ImageStore(private val baseDir: Path, private val maxPixels: Long = DEFAUL
         }
 
         val filename = "$recipeId.${format.extension}"
+        // Through safePath, exactly as load/delete/exists go: the id is client-supplied, and the one
+        // write path used to resolve it against baseDir directly. An id of `../../tmp/x` -- which
+        // reaches a handler already decoded, because the router splits on the raw `/` and decodes each
+        // segment afterwards -- wrote attacker bytes outside the image directory, and an id of
+        // `./<someone-elses-recipe>` overwrote their photo in place without touching their row.
+        val target = safePath(filename)
+            ?: throw InvalidImageNameException("A recipe id cannot name a path: $recipeId")
         val processedBytes = if (format == ImageFormat.GIF) bytes else resizeImage(bytes, format.extension, 1200)
-        Files.write(baseDir.resolve(filename), processedBytes)
+        Files.write(target, processedBytes)
         deleteThumb(filename) // invalidate any cached thumbnail for this name
         return filename
     }
@@ -198,14 +212,31 @@ class ImageStore(private val baseDir: Path, private val maxPixels: Long = DEFAUL
         }
     }.getOrNull()
 
-    /** Resolve a filename to a path inside baseDir, rejecting path traversal. */
+    /**
+     * Resolve a filename to a path inside baseDir, or null for anything that is not one of this
+     * store's own files.
+     *
+     * Comparing against `fileName` alone was not enough. `Paths.get("").fileName` is `""` and
+     * `Paths.get("..").fileName` is `".."`, so both compared equal to what was passed in and resolved
+     * to the image directory itself or its parent -- which is how a stored `imageFilename` of `""`
+     * turned a later image delete into `deleteIfExists(baseDir)`. A stored name is `<id>.<ext>`, so
+     * that is what is required: one segment, no leading dot (which also excludes the thumbnail
+     * cache), and an extension.
+     */
     private fun safePath(filename: String): Path? {
         val name = Paths.get(filename).fileName?.toString() ?: return null
-        if (name != filename) return null
+        if (name != filename || !STORED_NAME.matches(name)) return null
         return baseDir.resolve(name)
     }
 
     companion object {
+        /**
+         * What a file in this store is called: `<recipeId>.<ext>`, one path segment, no leading dot.
+         * The extension is not pinned to the three formats [ImageFormat] writes today, because a
+         * deployment predating that rule can hold a name an older build chose.
+         */
+        private val STORED_NAME = Regex("^[A-Za-z0-9_~:@+-][A-Za-z0-9._~:@+-]{0,119}\\.[A-Za-z0-9]{1,8}$")
+
         /** Longest-side pixel size for generated list thumbnails (matches the clients' 300px caches). */
         const val THUMB_SIZE = 300
 

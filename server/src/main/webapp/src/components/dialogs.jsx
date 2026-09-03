@@ -17,6 +17,8 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
+  Radio,
+  RadioGroup,
   Spinner,
   Subtitle2,
   Switch,
@@ -35,7 +37,9 @@ import {
 } from "@fluentui/react-icons";
 
 import { SALTY, api } from "../api";
-import { relativeDate, uuidv7, wireNow } from "../model";
+import PasswordInput from "./PasswordInput";
+import { wakeLockSupported } from "../hooks";
+import { LIST_STYLES, relativeDate, uuidv7, wireNow } from "../model";
 
 const useStyles = makeStyles({
   rows: { display: "grid", gap: tokens.spacingVerticalXS, marginTop: tokens.spacingVerticalM },
@@ -54,7 +58,17 @@ const useStyles = makeStyles({
   kv: { display: "grid", gridTemplateColumns: "auto 1fr", gap: tokens.spacingHorizontalM },
   key: { color: tokens.colorNeutralForeground3 },
   section: { marginTop: tokens.spacingVerticalL },
-  wide: { maxWidth: "44rem" },
+  /* Fluent clamps the surface to the viewport on a phone, so this is only the desktop bound. The
+     narrow case needs its own padding: 24px a side out of 390 is a tenth of the screen spent on
+     margin, and the fields inside are what should have it. */
+  wide: {
+    maxWidth: "44rem",
+    "@media (max-width: 480px)": { padding: tokens.spacingHorizontalL },
+  },
+  /* Body size, not caption size, with the quieter colour carrying the hierarchy instead. 12px was
+     the only text this small in the dialog, which made the one section that used it read as shrunk
+     rather than as secondary -- and on a phone it was simply hard to read. */
+  radioHint: { color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase300 },
 });
 
 /* ------------------------------------------------------------------ devices -- */
@@ -145,7 +159,8 @@ function Devices({ notify, ask }) {
               onConfirm: async () => {
                 const res = await api.devices.revokeAll();
                 load();
-                notify(`Signed out ${res?.revoked ?? 0} device(s)`);
+                const n = res?.revoked ?? 0;
+                notify(`Signed out ${n} ${n === 1 ? "device" : "devices"}`);
               },
             })
           }
@@ -159,16 +174,17 @@ function Devices({ notify, ask }) {
 
 /* ------------------------------------------------------------- preferences -- */
 
-export function PreferencesDialog({ open, onClose, notify, ask, wakeLockPref, onWakeLockPref }) {
-  const styles = useStyles();
+/**
+ * The password section of Settings, as its own component so its state is the dialog's: closing
+ * Settings without submitting unmounts this and takes the half-typed passwords with it, rather
+ * than leaving them in memory for the next time the dialog opens.
+ */
+function ChangePassword({ notify, onChanged }) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [busy, setBusy] = useState(false);
 
   const tooShort = newPassword.length > 0 && newPassword.length < SALTY.minPasswordLength;
-  // Secure-context only, so a Salty reached over plain http on the LAN -- a normal way to run this
-  // -- does not have it at all. Better said out loud than offered as a switch that does nothing.
-  const wakeLockSupported = typeof navigator !== "undefined" && "wakeLock" in navigator;
 
   const submit = async () => {
     setBusy(true);
@@ -177,15 +193,53 @@ export function PreferencesDialog({ open, onClose, notify, ask, wakeLockPref, on
       // The server signs every *other* device out and leaves this session alone. Worth saying:
       // a password change that silently revoked your phone would be a surprise.
       notify("Password changed. Other devices have been signed out.");
-      setCurrentPassword("");
-      setNewPassword("");
-      onClose();
+      onChanged();
     } catch (e) {
       notify(e.message || "Could not change the password", "error");
     } finally {
       setBusy(false);
     }
   };
+
+  return (
+    <>
+      <Field label="Current password">
+        <PasswordInput value={currentPassword} onChange={(_, d) => setCurrentPassword(d.value)} />
+      </Field>
+      <Field
+        label="New password"
+        validationState={tooShort ? "error" : "none"}
+        validationMessage={tooShort ? `At least ${SALTY.minPasswordLength} characters.` : undefined}
+      >
+        <PasswordInput value={newPassword} onChange={(_, d) => setNewPassword(d.value)} />
+      </Field>
+      <div>
+        <Button
+          appearance="primary"
+          disabled={busy || !currentPassword || !newPassword || tooShort}
+          onClick={submit}
+        >
+          Change password
+        </Button>
+      </div>
+    </>
+  );
+}
+
+export function PreferencesDialog({
+  open,
+  onClose,
+  notify,
+  ask,
+  wakeLockPref,
+  onWakeLockPref,
+  listStyle,
+  onListStyle,
+}) {
+  const styles = useStyles();
+  // Secure-context only, so a Salty reached over plain http on the LAN -- a normal way to run this
+  // -- does not have it at all. Better said out loud than offered as a switch that does nothing.
+  const wakeLock = wakeLockSupported();
 
   return (
     <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
@@ -202,14 +256,39 @@ export function PreferencesDialog({ open, onClose, notify, ask, wakeLockPref, on
           </DialogTitle>
           <DialogContent>
             <div className={styles.fields}>
+              {/* First, because it is the one setting here that changes what is on screen behind
+                  the dialog -- and it does so as it is chosen, so the answer to "which of these
+                  is it?" is the list still visible in the column to the left. */}
+              <Subtitle2 as="h3">Recipe list</Subtitle2>
+              <RadioGroup
+                aria-label="Recipe list style"
+                value={listStyle}
+                onChange={(_, d) => onListStyle(d.value)}
+              >
+                {LIST_STYLES.map((option) => (
+                  <Radio
+                    key={option.key}
+                    value={option.key}
+                    label={{
+                      children: (
+                        <>
+                          <div>{option.label}</div>
+                          <div className={styles.radioHint}>{option.hint}</div>
+                        </>
+                      ),
+                    }}
+                  />
+                ))}
+              </RadioGroup>
+
               <Subtitle2 as="h3">Chef mode</Subtitle2>
               <Switch
                 checked={wakeLockPref}
-                disabled={!wakeLockSupported}
+                disabled={!wakeLock}
                 onChange={(_, d) => onWakeLockPref(d.checked)}
                 label="Keep the screen awake in chef mode"
               />
-              {wakeLockSupported ? null : (
+              {wakeLock ? null : (
                 <MessageBar intent="warning">
                   <MessageBarBody>
                     This browser only offers the wake lock over HTTPS, so Salty cannot hold the
@@ -219,35 +298,7 @@ export function PreferencesDialog({ open, onClose, notify, ask, wakeLockPref, on
               )}
 
               <Subtitle2 as="h3">Password</Subtitle2>
-              <Field label="Current password">
-                <Input
-                  type="password"
-                  value={currentPassword}
-                  onChange={(_, d) => setCurrentPassword(d.value)}
-                />
-              </Field>
-              <Field
-                label="New password"
-                validationState={tooShort ? "error" : "none"}
-                validationMessage={
-                  tooShort ? `At least ${SALTY.minPasswordLength} characters.` : undefined
-                }
-              >
-                <Input
-                  type="password"
-                  value={newPassword}
-                  onChange={(_, d) => setNewPassword(d.value)}
-                />
-              </Field>
-              <div>
-                <Button
-                  appearance="primary"
-                  disabled={busy || !currentPassword || !newPassword || tooShort}
-                  onClick={submit}
-                >
-                  Change password
-                </Button>
-              </div>
+              <ChangePassword notify={notify} onChanged={onClose} />
 
               <Subtitle2 as="h3">Apps and devices</Subtitle2>
               {open ? <Devices notify={notify} ask={ask} /> : null}
@@ -284,12 +335,69 @@ export function PreferencesDialog({ open, onClose, notify, ask, wakeLockPref, on
 
 /* -------------------------------------------------------------------- users -- */
 
-export function UsersDialog({ open, onClose, notify, ask }) {
-  const styles = useStyles();
-  const [rows, setRows] = useState(null);
+/**
+ * Adding a user, as its own component so its state is the dialog's.
+ *
+ * Same reason ChangePassword is one: this holds a password, and a half-typed one used to survive
+ * closing the dialog and be sitting in the fields the next time it opened.
+ */
+function AddUser({ styles, onAdded, notify }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const tooShort = password.length > 0 && password.length < SALTY.minPasswordLength;
+
+  const create = async () => {
+    setBusy(true);
+    try {
+      await api.users.create(username.trim(), password, isAdmin);
+      setUsername("");
+      setPassword("");
+      setIsAdmin(false);
+      await onAdded();
+      notify("User added");
+    } catch (e) {
+      notify(e.message || "Could not add that user", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={styles.section}>
+      <Subtitle2 as="h3">Add a user</Subtitle2>
+      <div className={styles.addRow}>
+        <Input
+          className={styles.rowInput}
+          placeholder="Username"
+          value={username}
+          onChange={(_, d) => setUsername(d.value)}
+        />
+        <PasswordInput
+          className={styles.rowInput}
+          placeholder={`Password (${SALTY.minPasswordLength}+ characters)`}
+          value={password}
+          onChange={(_, d) => setPassword(d.value)}
+        />
+        <Checkbox label="Admin" checked={isAdmin} onChange={(_, d) => setIsAdmin(!!d.checked)} />
+        <Button
+          appearance="primary"
+          icon={<Add20Regular />}
+          disabled={busy || !username.trim() || !password || tooShort}
+          onClick={create}
+        >
+          Add
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function UsersDialog({ open, onClose, notify, ask }) {
+  const styles = useStyles();
+  const [rows, setRows] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -303,21 +411,6 @@ export function UsersDialog({ open, onClose, notify, ask }) {
   useEffect(() => {
     if (open) load();
   }, [open, load]);
-
-  const create = async () => {
-    try {
-      await api.users.create(username.trim(), password, isAdmin);
-      setUsername("");
-      setPassword("");
-      setIsAdmin(false);
-      load();
-      notify("User added");
-    } catch (e) {
-      notify(e.message || "Could not add that user", "error");
-    }
-  };
-
-  const tooShort = password.length > 0 && password.length < SALTY.minPasswordLength;
 
   return (
     <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
@@ -349,9 +442,11 @@ export function UsersDialog({ open, onClose, notify, ask }) {
 
                     {/* The server refuses to demote or delete the last administrator; the UI does
                         not try to predict that, it just reports what comes back. */}
+                    {/* `description`, not `label`: the button has visible text, and a label
+                        tooltip would replace that text as its accessible name. */}
                     <Tooltip
                       content={u.isAdmin ? "Remove administrator" : "Make administrator"}
-                      relationship="label"
+                      relationship="description"
                     >
                       <Button
                         appearance="subtle"
@@ -377,14 +472,11 @@ export function UsersDialog({ open, onClose, notify, ask }) {
                             title: `Reset password for ${u.username}`,
                             body: "Their apps will be signed out and they will need the new password.",
                             prompt: "New password",
+                            secret: true,
                             confirmLabel: "Reset",
                             onConfirm: async (value) => {
-                              try {
-                                await api.users.setPassword(u.id, value);
-                                notify("Password reset");
-                              } catch (e) {
-                                notify(e.message || "Could not reset the password", "error");
-                              }
+                              await api.users.setPassword(u.id, value);
+                              notify("Password reset");
                             },
                           })
                         }
@@ -402,13 +494,9 @@ export function UsersDialog({ open, onClose, notify, ask }) {
                             body: `${u.username} and all of their recipes will be deleted.`,
                             confirmLabel: "Delete",
                             onConfirm: async () => {
-                              try {
-                                await api.users.remove(u.id);
-                                load();
-                                notify("User deleted");
-                              } catch (e) {
-                                notify(e.message || "Could not delete that user", "error");
-                              }
+                              await api.users.remove(u.id);
+                              load();
+                              notify("User deleted");
                             },
                           })
                         }
@@ -417,37 +505,7 @@ export function UsersDialog({ open, onClose, notify, ask }) {
                   </div>
                 ))}
 
-                <div className={styles.section}>
-                  <Subtitle2 as="h3">Add a user</Subtitle2>
-                  <div className={styles.addRow}>
-                    <Input
-                      className={styles.rowInput}
-                      placeholder="Username"
-                      value={username}
-                      onChange={(_, d) => setUsername(d.value)}
-                    />
-                    <Input
-                      className={styles.rowInput}
-                      type="password"
-                      placeholder={`Password (${SALTY.minPasswordLength}+ characters)`}
-                      value={password}
-                      onChange={(_, d) => setPassword(d.value)}
-                    />
-                    <Checkbox
-                      label="Admin"
-                      checked={isAdmin}
-                      onChange={(_, d) => setIsAdmin(!!d.checked)}
-                    />
-                    <Button
-                      appearance="primary"
-                      icon={<Add20Regular />}
-                      disabled={!username.trim() || !password || tooShort}
-                      onClick={create}
-                    >
-                      Add
-                    </Button>
-                  </div>
-                </div>
+                <AddUser styles={styles} onAdded={load} notify={notify} />
               </div>
             )}
           </DialogContent>
@@ -512,12 +570,8 @@ export function ManageLibraryDialog({
         : `${item.name} is not used by any recipe.`,
       confirmLabel: "Delete",
       onConfirm: async () => {
-        try {
-          await api.classifiers.remove(kind, item.id);
-          await onChanged();
-        } catch (e) {
-          notify(e.message || "Could not delete", "error");
-        }
+        await api.classifiers.remove(kind, item.id);
+        await onChanged();
       },
     });
   };
@@ -525,14 +579,22 @@ export function ManageLibraryDialog({
   const add = async () => {
     const name = draftName.trim();
     if (!name) return;
-    setDraftName("");
     try {
       await api.classifiers.create(kind, name);
+      // Cleared only once it is actually saved. Clearing first meant a failed request took the
+      // typed name with it and left the reader with a toast and an empty box.
+      setDraftName("");
       await onChanged();
     } catch (e) {
       notify(e.message || "Could not add", "error");
     }
   };
+
+  // Rename boxes hold what was typed into them until the rename lands. A failed one used to stay
+  // here for the life of the tab, so reopening the dialog showed a name the server had never taken.
+  useEffect(() => {
+    if (!open) setEdits({});
+  }, [open]);
 
   return (
     <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
@@ -545,7 +607,7 @@ export function ManageLibraryDialog({
               </Tooltip>
             }
           >
-            Edit Classifiers
+            Edit classifiers
           </DialogTitle>
           <DialogContent>
             <TabList selectedValue={kind} onTabSelect={(_, d) => setKind(d.value)}>
@@ -654,7 +716,9 @@ export function ImportDialog({ open, onClose, onImported, notify }) {
                 value={url}
                 placeholder="https://…"
                 onChange={(_, d) => setUrl(d.value)}
-                onKeyDown={(e) => e.key === "Enter" && url.trim() && run()}
+                // `busy` too: the button disables itself while fetching but the key did not, so
+                // two Enters imported twice and the second draft replaced the first.
+                onKeyDown={(e) => e.key === "Enter" && !busy && url.trim() && run()}
               />
             </Field>
           </DialogContent>

@@ -366,8 +366,34 @@ class SyncService(
             report(SyncPhase.UPLOADING_RECIPES, i + 1, plan.toUpload.size)
             local.recipeForUpload(id)?.let { recipe -> api.uploadRecipe(recipe) }
         }
-        for ((i, id) in plan.toDownload.withIndex()) {
-            report(SyncPhase.DOWNLOADING_RECIPES, i + 1, plan.toDownload.size)
+        /*
+         * Downloads are the plan's, PLUS everything it wanted deleted from the server.
+         *
+         * The plan's rule for a row the server has and we do not is a clock comparison: older than our
+         * watermark means "we had it and deleted it". That is the reasoning SHARED-V0005 replaced on
+         * the local side with a recorded fact, and it is wrong here for the same reasons and one more.
+         * A device whose clock runs a few minutes behind uploads a recipe stamped BEFORE this device's
+         * last sync; this device then reads a server row older than its watermark as one it deleted,
+         * deletes it, and the recipe is gone everywhere -- silently, because the row was never ours to
+         * warn about. A `.saltyRecipe` import carrying an old date, or a linked-folder copy-in of a
+         * slightly older library, ends the same way.
+         *
+         * Nothing is lost by taking the row instead: a recipe deleted here ON PURPOSE travels as a
+         * TOMBSTONE, uploaded and cleared at the top of this method, which is evidence rather than a
+         * guess. What this gives up is the case where the tombstone itself is gone -- a reinstall, a
+         * restore from backup -- and there the recipe comes back rather than being destroyed, which is
+         * the direction Salty prefers everywhere else ("an edit beats a delete"). Downloading rather
+         * than merely refusing also CONVERGES: the row exists here afterwards, so the next sync sees an
+         * ordinary two-sided row instead of reaching this branch again.
+         *
+         * Deliberately a SyncService decision and not a change to SyncReconciler.plan: the plan is a
+         * cross-client contract the Swift and .NET reconcilers implement too, pinned by the corpus in
+         * ContractCorpusTest. Declining to act on part of it here can only preserve data; rewriting the
+         * shared rule needs all three clients to move together.
+         */
+        val toDownload = plan.toDownload + plan.toDeleteOnServer
+        for ((i, id) in toDownload.withIndex()) {
+            report(SyncPhase.DOWNLOADING_RECIPES, i + 1, toDownload.size)
             local.upsertRecipe(deltaById[id] ?: api.fetchRecipe(id))
         }
 
@@ -385,16 +411,9 @@ class SyncService(
                 deletedLocally++
             }
         }
-        // The same protection in the other direction: an empty library must not ask the server to
-        // delete everything it has (SYNC-016).
-        var deletedOnServer = 0
-        val serverRefusal = allowsServerDeletions(localEntries.size, plan.toDeleteOnServer.size, "recipe")
-        if (serverRefusal != null) {
-            warnings += serverRefusal
-        } else if (plan.toDeleteOnServer.isNotEmpty()) {
-            api.deleteRecipesOnServer(deviceId, plan.toDeleteOnServer)
-            deletedOnServer = plan.toDeleteOnServer.size
-        }
+        // Nothing is deleted on the server here: a deliberate delete is a tombstone, and the plan's
+        // guess is downloaded instead. See the note on `toDownload` above.
+        val deletedOnServer = 0
 
         // Record what this pass agreed on, so the next one needn't guess (SHARED-V0005). Three groups
         // mean the same thing afterwards — the server's copy matches this row as it stands: what went
@@ -405,7 +424,7 @@ class SyncService(
             .apply { retainAll(manifestIds) }
             .apply {
                 addAll(plan.toUpload)
-                addAll(plan.toDownload)
+                addAll(toDownload)
                 removeAll(plan.toDeleteLocally.toSet())
             }
         local.markRecipesAgreed(agreed)
@@ -416,7 +435,7 @@ class SyncService(
         return Counts(
             // Prepared-date transfers fold into the recipe counts: they move real recipe data, just not a
             // body edit. Keeping them out entirely would report "0 recipes" for a sync that changed rows.
-            up = plan.toUpload.size + preparedUp, down = plan.toDownload.size + preparedDown,
+            up = plan.toUpload.size + preparedUp, down = toDownload.size + preparedDown,
             deletedLocal = deletedLocally, deletedServer = deletedOnServer,
             imagesUp = imagesUp, imagesDown = imagesDown,
             warnings = warnings,
@@ -645,6 +664,16 @@ class SyncService(
         // baseRevision 0 = "I expect NO server row": an insert sails through (the server accepts any
         // save of a row it doesn't have), but if another writer re-created the id between our GET and
         // this POST, the mismatch 409s into a proper merge instead of silently last-writer-winning.
+        // isFirstSync FIRST, exactly as recipes and classifiers order it (SyncReconciler.plan).
+        // A stamp records agreement with a server; against a DIFFERENT one -- a reinstall, a restore,
+        // a move to new hardware -- it records agreement with something that no longer exists, so
+        // reading it as "the server deleted this" deleted every list the device had. Recipes were
+        // safe because they check isFirstSync before their stamp; lists checked the stamp first. The
+        // empty-library guard did not catch it either, since a fresh server's seed already holds one
+        // list.
+        if (isFirstSync) {
+            return uploadShoppingList(l.list, baseRevision = 0, snapshot = null)
+        }
         val everSynced = l.syncedRevision != null
         return if (everSynced) {
             if (l.isDirty) {

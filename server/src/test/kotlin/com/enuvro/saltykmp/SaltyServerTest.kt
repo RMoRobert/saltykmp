@@ -981,9 +981,11 @@ class SaltyServerTest {
         application { installSalty(imageStore) }
         val client = jsonClient()
 
+        // The device the token was issued for, because a token may only act on its own device. The
+        // helper enrols as "test-device"; naming anything else here is now a 403.
         suspend fun register() = client.post("/api/recipes/sync/device") {
             bearerAuth(login(client)); contentType(ContentType.Application.Json)
-            setBody(DeviceRegisterRequest("device-1", "Test Phone"))
+            setBody(DeviceRegisterRequest("test-device", "Test Phone"))
         }.body<DeviceSyncInfo>()
 
         runBlocking {
@@ -993,7 +995,7 @@ class SaltyServerTest {
             assertTrue(second.isFirstSync, "registering again is not syncing; nothing has been agreed yet")
             assertNull(second.lastSyncDate, "and the flag must agree with the watermark it stands for")
 
-            client.post("/api/recipes/sync/device/device-1/complete") { bearerAuth(login(client)) }
+            client.post("/api/recipes/sync/device/test-device/complete") { bearerAuth(login(client)) }
 
             val afterSync = register()
             assertFalse(afterSync.isFirstSync, "a finished sync is what makes the device a returning one")

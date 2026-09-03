@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Button,
   Checkbox,
+  Hamburger,
   Input,
+  List,
+  ListItem,
   Menu,
   MenuDivider,
   MenuItem,
@@ -46,21 +49,16 @@ const useStyles = makeStyles({
   title: { flex: 1 },
   scroll: { flex: 1, overflow: "hidden auto" },
   list: { listStyle: "none", margin: 0, padding: 0 },
+  /* Layout only, as in RecipeList: the press, hover, focus ring and cursor are ListItem's. */
   row: {
     display: "flex",
     alignItems: "center",
     gap: tokens.spacingHorizontalS,
-    width: "100%",
     boxSizing: "border-box",
     padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalM}`,
-    border: "none",
-    background: "none",
-    textAlign: "start",
     cursor: "pointer",
-    color: "inherit",
-    ":hover": { backgroundColor: tokens.colorNeutralBackground1Hover },
   },
-  selected: { backgroundColor: tokens.colorBrandBackground2 },
+  rowSelected: { backgroundColor: "var(--colorSaltySelectedBackground)" },
   sub: { color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 },
   bar: {
     display: "flex",
@@ -75,6 +73,7 @@ const useStyles = makeStyles({
     margin: "0 auto",
     padding: `${tokens.spacingVerticalL} ${tokens.spacingHorizontalXXL}`,
   },
+  freeform: { width: "100%", minHeight: "24rem" },
   itemRow: {
     display: "flex",
     alignItems: "center",
@@ -92,6 +91,7 @@ const useStyles = makeStyles({
   },
   important: { color: tokens.colorPaletteMarigoldForeground1 },
   addRow: { display: "flex", gap: tokens.spacingHorizontalS, marginTop: tokens.spacingVerticalM },
+  addInput: { flex: 1 },
   empty: {
     height: "100%",
     display: "grid",
@@ -100,12 +100,27 @@ const useStyles = makeStyles({
     gap: tokens.spacingVerticalM,
     color: tokens.colorNeutralForeground3,
   },
+  /* Fluent icons draw at 1em, so the 48px empty-state glyph is a font size, not a second icon. */
+  emptyIcon: { fontSize: "48px" },
 });
 
 /** Both shapes a list can take. Which one it is cannot change after it is made, as in the apps. */
 const listKindLabel = (l) => (l.isFreeform ? "Markdown" : "Checklist");
 
-function ListsIndex({ lists, selectedId, onSelect, onChanged, notify, ask, onBack }) {
+/**
+ * The lists index: Fluent's List in single-selection mode, exactly as the recipe list is, so the
+ * two columns share their listbox semantics, roving focus and keyboard handling rather than one
+ * of them rebuilding those by hand.
+ */
+export function ShoppingListsIndex({
+  lists,
+  selectedId,
+  onSelect,
+  onChanged,
+  notify,
+  ask,
+  onShowRail,
+}) {
   const styles = useStyles();
 
   const create = (isFreeform) =>
@@ -114,34 +129,30 @@ function ListsIndex({ lists, selectedId, onSelect, onChanged, notify, ask, onBac
       prompt: "List name",
       confirmLabel: "Create",
       onConfirm: async (name) => {
-        try {
-          await api.shoppingLists.save({
-            id: uuidv7(),
-            name,
-            isFreeform,
-            // Exactly one of these carries the contents; the other stays null so the server's
-            // column for it is left alone rather than being written empty.
-            contentsForList: isFreeform ? null : [],
-            contentsForFreeform: isFreeform ? "" : null,
-            lastModifiedDate: wireNow(),
-          });
-          await onChanged();
-          notify("List created");
-        } catch (e) {
-          notify(e.message || "Could not create the list", "error");
-        }
+        await api.shoppingLists.save({
+          id: uuidv7(),
+          name,
+          isFreeform,
+          // Exactly one of these carries the contents; the other stays null so the server's
+          // column for it is left alone rather than being written empty.
+          contentsForList: isFreeform ? null : [],
+          contentsForFreeform: isFreeform ? "" : null,
+          lastModifiedDate: wireNow(),
+        });
+        await onChanged();
+        notify("List created");
       },
     });
 
   return (
     <>
       <div className={styles.head}>
-        {onBack ? (
-          <Tooltip content="Library" relationship="label">
-            <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} />
+        {onShowRail ? (
+          <Tooltip content="Show library" relationship="label">
+            <Hamburger onClick={onShowRail} />
           </Tooltip>
         ) : null}
-        <Subtitle1 className={styles.title}>Shopping Lists</Subtitle1>
+        <Subtitle1 className={styles.title}>Shopping lists</Subtitle1>
         <Menu>
           <MenuTrigger disableButtonEnhancement>
             <Tooltip content="New list" relationship="label">
@@ -161,59 +172,86 @@ function ListsIndex({ lists, selectedId, onSelect, onChanged, notify, ask, onBac
         </Menu>
       </div>
       <div className={styles.scroll}>
-        <ul className={styles.list} role="listbox" aria-label="Shopping lists">
+        <List
+          className={styles.list}
+          aria-label="Shopping lists"
+          selectionMode="single"
+          selectedItems={selectedId ? [selectedId] : []}
+          onSelectionChange={(_, data) => {
+            const [id] = [...data.selectedItems];
+            // Clicking the open list again would otherwise deselect it and empty the pane.
+            if (id) onSelect(id);
+          }}
+        >
           {lists.map((l) => (
-            <li key={l.id}>
-              <div
-                role="option"
-                aria-selected={l.id === selectedId}
-                tabIndex={0}
-                className={mergeClasses(styles.row, l.id === selectedId && styles.selected)}
-                onClick={() => onSelect(l.id)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    onSelect(l.id);
-                  }
-                }}
-              >
-                <div>
-                  <div>{l.name || "Untitled list"}</div>
-                  <div className={styles.sub}>{listKindLabel(l)}</div>
-                </div>
+            <ListItem
+              key={l.id}
+              value={l.id}
+              checkmark={null}
+              className={mergeClasses(styles.row, l.id === selectedId && styles.rowSelected)}
+            >
+              <div>
+                <div>{l.name || "Untitled list"}</div>
+                <div className={styles.sub}>{listKindLabel(l)}</div>
               </div>
-            </li>
+            </ListItem>
           ))}
-        </ul>
+        </List>
       </div>
     </>
   );
 }
 
-function ListDetail({ id, notify, ask, onChanged, onBack }) {
+export function ShoppingListDetail({ id, notify, ask, onChanged, onDeleted, onBack }) {
   const styles = useStyles();
   const [list, setList] = useState(null);
   /** The list as the server last agreed it: the base side of any three-way merge. */
   const base = useRef(null);
+  /**
+   * The revision the next write is based on, kept out of render state deliberately.
+   *
+   * A save built from `list` carried the revision that was on screen when the edit was made, and
+   * the server bumps the revision on every accepted write -- so ticking two boxes quickly sent the
+   * same base twice and the second came back 409, reporting "this list changed elsewhere" for a
+   * change made in this very tab. Writes are queued below, and each one reads this at the moment it
+   * is actually sent.
+   */
+  const revision = useRef(null);
+  /** Serialises writes, so the second edit is sent against the revision the first one produced. */
+  const queue = useRef(Promise.resolve());
+  /** How many writes are queued, so only the last one applies its echo to the screen. */
+  const pending = useRef(0);
+  /** Which load is current; a slower earlier list must not land under a later selection. */
+  const loadSerial = useRef(0);
   const [loading, setLoading] = useState(false);
   const [newText, setNewText] = useState("");
+
+  const adopt = useCallback((row) => {
+    base.current = structuredClone(row);
+    revision.current = row.revision ?? null;
+  }, []);
 
   const load = useCallback(async () => {
     if (!id) {
       setList(null);
       return;
     }
+    const serial = (loadSerial.current += 1);
     setLoading(true);
     try {
       const loaded = await api.shoppingLists.get(id);
+      // Switching lists quickly used to leave the earlier list's items under the later list's name
+      // -- and `base` wrong for the next merge, which is how a merge posts one list's contents to
+      // another list's id.
+      if (serial !== loadSerial.current) return;
       setList(loaded);
-      base.current = structuredClone(loaded);
+      adopt(loaded);
     } catch (e) {
-      notify(e.message || "Could not open that list", "error");
+      if (serial === loadSerial.current) notify(e.message || "Could not open that list", "error");
     } finally {
-      setLoading(false);
+      if (serial === loadSerial.current) setLoading(false);
     }
-  }, [id, notify]);
+  }, [adopt, id, notify]);
 
   useEffect(() => {
     load();
@@ -224,19 +262,23 @@ function ListDetail({ id, notify, ask, onChanged, onBack }) {
    * with 409 when the row moved under us and answers with its own copy. The native clients run a
    * three-way merge on that; this reloads and says so, which is honest rather than silent.
    */
-  const persist = async (next) => {
-    setList(next);
+  const send = async (next) => {
     try {
       const saved = await api.shoppingLists.save({
         ...next,
-        baseRevision: next.revision,
+        // The revision as of this moment, not as of when the edit was made: an earlier queued write
+        // has already moved it on.
+        baseRevision: revision.current,
         lastModifiedDate: wireNow(),
       });
       // The echo defines the new agreed base: it is what the server holds now, so a later merge
       // starts from it rather than from whatever this tab last typed.
       if (saved) {
-        setList(saved);
-        base.current = structuredClone(saved);
+        adopt(saved);
+        // Only when nothing else is waiting. Applying an echo while a later edit is still queued
+        // put the screen back to the state before that edit -- the box you had just ticked
+        // visibly un-ticked itself until the next response arrived.
+        if (pending.current <= 1) setList(saved);
       }
       onChanged?.();
     } catch (e) {
@@ -247,8 +289,8 @@ function ListDetail({ id, notify, ask, onChanged, onBack }) {
         try {
           const merged = await api.shoppingLists.resolve(id, base.current, next);
           if (merged) {
-            setList(merged);
-            base.current = structuredClone(merged);
+            adopt(merged);
+            if (pending.current <= 1) setList(merged);
             notify("This list changed elsewhere; both sets of changes were kept");
             onChanged?.();
           }
@@ -256,7 +298,7 @@ function ListDetail({ id, notify, ask, onChanged, onBack }) {
           // A third write can land between the server's read and its write. One retry from the
           // copy it just handed back, then give up and reload rather than looping.
           if (again.status === 409 && again.data) {
-            base.current = structuredClone(again.data);
+            adopt(again.data);
             notify("This list is being changed on another device; reloading it", "warning");
           } else {
             notify(again.message || "Could not merge the list", "error");
@@ -269,10 +311,31 @@ function ListDetail({ id, notify, ask, onChanged, onBack }) {
     }
   };
 
+  /**
+   * Queues a write. Serialised, so the next one is sent against the revision this one produces.
+   */
+  const persist = (next) => {
+    setList(next);
+    pending.current += 1;
+    queue.current = queue.current.then(() => send(next)).finally(() => {
+      pending.current -= 1;
+    });
+    return queue.current;
+  };
+
+  /**
+   * For the fields that save on blur. Leaving a field you did not change must not be a write:
+   * every save bumps the revision, and a revision bumped for nothing is a merge some other device
+   * then has to do for nothing.
+   */
+  const persistIfChanged = () => {
+    if (JSON.stringify(list) !== JSON.stringify(base.current)) persist(list);
+  };
+
   if (!id) {
     return (
       <div className={styles.empty}>
-        <Cart24Regular style={{ width: 48, height: 48 }} />
+        <Cart24Regular className={styles.emptyIcon} />
         <span>Select a shopping list.</span>
       </div>
     );
@@ -349,14 +412,12 @@ function ListDetail({ id, notify, ask, onChanged, onBack }) {
                     body: `“${list.name || "Untitled list"}” will be removed from every device.`,
                     confirmLabel: "Delete",
                     onConfirm: async () => {
-                      try {
-                        await api.shoppingLists.remove(list.id);
-                        await onChanged?.();
-                        setList(null);
-                        notify("List deleted");
-                      } catch (e) {
-                        notify(e.message || "Could not delete the list", "error");
-                      }
+                      await api.shoppingLists.remove(list.id);
+                      await onChanged?.();
+                      // The parent owns which list is open. Left to itself this pane would keep
+                      // the deleted id and sit on its spinner waiting for a list that is gone.
+                      onDeleted?.();
+                      notify("List deleted");
                     },
                   })
                 }
@@ -373,12 +434,12 @@ function ListDetail({ id, notify, ask, onChanged, onBack }) {
           {list.isFreeform ? (
             <Textarea
               resize="vertical"
-              style={{ width: "100%", minHeight: "24rem" }}
+              className={styles.freeform}
               value={list.contentsForFreeform ?? ""}
               onChange={(_, d) => setList({ ...list, contentsForFreeform: d.value })}
               // On blur rather than on every keystroke: a save per character would be a request per
               // character, and every one of them a chance to lose a revision race with itself.
-              onBlur={() => persist(list)}
+              onBlur={persistIfChanged}
             />
           ) : (
             <>
@@ -396,7 +457,7 @@ function ListDetail({ id, notify, ask, onChanged, onBack }) {
                           ),
                         })
                       }
-                      onBlur={() => persist(list)}
+                      onBlur={persistIfChanged}
                     />
                     <Tooltip content="Remove" relationship="label">
                       <Button
@@ -458,7 +519,7 @@ function ListDetail({ id, notify, ask, onChanged, onBack }) {
 
               <div className={styles.addRow}>
                 <Input
-                  style={{ flex: 1 }}
+                  className={styles.addInput}
                   placeholder="Add an item"
                   value={newText}
                   onChange={(_, d) => setNewText(d.value)}
@@ -483,5 +544,3 @@ function ListDetail({ id, notify, ask, onChanged, onBack }) {
     </>
   );
 }
-
-export default { List: ListsIndex, Detail: ListDetail };

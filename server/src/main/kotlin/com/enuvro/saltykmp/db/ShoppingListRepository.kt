@@ -65,6 +65,11 @@ object ShoppingListRepository {
      *    legacy clients abort their entire sync on any non-2xx, so a 409 would brick them.
      */
     suspend fun save(userId: String, incoming: ServerShoppingList): SaveResult = dbQuery {
+        // The revision check below is scoped to this user, so it says nothing about an id another
+        // account already holds. See [requireNotOwnedByAnother].
+        ShoppingLists.requireNotOwnedByAnother(
+            ShoppingLists.id, ShoppingLists.userId, incoming.id, userId, "shopping list",
+        )
         // FOR UPDATE serializes racing writers on this row for the rest of the transaction, so
         // check-then-write can't interleave (two concurrent saves resolve to exactly one winner).
         val current = ShoppingLists.selectAll()

@@ -34,6 +34,12 @@ Edit the `CHANGE_ME_*` values in `docker-compose.yml`:
 > `SALTY_DEFAULT_USER`/`PASSWORD` seed a login **only on first run** (empty users table). The default
 > `SALTY_TOKEN_SECRET` placeholder is forgeable — you must change it.
 
+> **`SALTY_TRUST_PROXY`** is not a secret and is already set to `"true"` in the template, because
+> that template's whole design is loopback-bound behind NGINX. It is listed here because it is the
+> one setting whose *correct* value depends on how you expose the server rather than on your taste:
+> `true` behind a reverse proxy, `false` (or absent) when the port is reachable directly. See
+> §4 for what it does.
+
 > **Upgrading from pre-3.3.0 server with `SALTY_JWT_SECRET`?** It is still read if `SALTY_TOKEN_SECRET` is unset with
 > a warning in logs. Rename the variable, as it will probably be removed in a future version, but **keep its value**
 > because it is still used to key device tokens tokens (and this will avoid invalidating all current logins, although
@@ -92,8 +98,60 @@ server {
 }
 ```
 
+**This block only works with `SALTY_TRUST_PROXY: "true"`**, which `docker-compose.example.yml`
+already sets — check it survived if you have edited your copy, and set it in any other way you run
+the server behind a proxy. Setting `X-Forwarded-For` here does nothing on its own: the app ignores
+forwarded headers until it is told the proxy is trustworthy, because a *directly* reachable server
+that believed them would let any client claim any source IP. That is also why
+`docker-compose.offline.example.yml` leaves it commented out — that file publishes port 8080 on
+every interface, so it is the one shape where trusting the header would be the hole. **Enable it
+only alongside the loopback binding.**
+
+Untold, every request looks like it came from `127.0.0.1`, which costs two things:
+
+- the per-IP login throttle keys on client IP **and** username, so that someone hammering one
+  account cannot lock out the real owner signing in from somewhere else. With one IP standing in
+  for the whole internet, that protection is gone. (The account-wide lockout below still applies.)
+- `SALTY_SECURE_COOKIES` defaults to whatever `SALTY_TRUST_PROXY` is, so the session cookie is not
+  marked `Secure` either. The one variable fixes both.
+
+**No `gzip` directive here on purpose.** The app compresses its own responses (Ktor's `Compression`
+plugin), which is what also covers the direct-8080 shape further down, where there is no proxy to
+configure. NGINX passes the client's `Accept-Encoding` upstream by default, so this works as-is —
+and NGINX will not re-compress a response that arrives already gzipped. If you add `gzip on;` for
+other sites in the same config, nothing here breaks.
+
 Then point the client app at `https://salty.example.com` and log in with
 the configured user account. First sync uploads (and downloads) everything.
+
+## Locked-out accounts
+
+Two layers guard the login endpoints, and they exist because neither one alone is enough.
+
+| | Keyed by | Trips at | Locks for |
+| --- | --- | --- | --- |
+| `LoginThrottle` | client IP **+** username | 10 failures | 15 minutes |
+| `AccountLockout` | username only | 50 failures | 1 hour |
+
+The per-IP throttle is the one that catches ordinary hammering, and it includes the IP so that an
+attacker guessing at your username cannot lock *you* out — you are signing in from somewhere else,
+so you are a different key. That is exactly why it cannot stand alone: an attacker spreading guesses
+for one account across a botnet never accrues more than a failure or two per IP and never trips it.
+
+`AccountLockout` is the backstop for that case, and being username-only is the point rather than an
+oversight. The cost is the obvious one: 50 failures against your username locks *you* out too, for
+up to an hour, no matter where you are signing in from. The threshold is set well above what typos
+reach, and both counters are cleared by a successful login.
+
+**Recovering a locked account: restart the server.** Both counters are in memory, so
+`docker compose restart server` clears every lockout. That is deliberate — the alternative is an
+unlock endpoint, which is a remote thing an attacker can also reach, and this way recovery requires
+host access. Note that an admin *password reset* does not clear a lock on its own: until the window
+expires, the new password cannot be used to log in successfully and so cannot clear the counter.
+Restart, or wait it out.
+
+A locked account's attempts are rejected **before** the bcrypt verify, so a flood against a locked
+username costs the server almost nothing — the lockout bounds CPU as well as guesses.
 
 ## Updating
 

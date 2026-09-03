@@ -24,6 +24,7 @@ object LibraryRepository {
         Courses.selectAll().where { Courses.userId eq userId }.count()
     }
     suspend fun upsertCourse(userId: String, c: ServerCourse): ServerCourse = dbQuery {
+        Courses.requireNotOwnedByAnother(Courses.id, Courses.userId, c.id, userId, "course")
         Courses.upsert {
             it[id] = c.id; it[Courses.userId] = userId; it[name] = c.name
             it[lastModifiedDate] = WireDate.parse(c.lastModifiedDate) ?: WireDate.nowUtc()
@@ -43,6 +44,7 @@ object LibraryRepository {
         Categories.selectAll().where { Categories.userId eq userId }.count()
     }
     suspend fun upsertCategory(userId: String, c: ServerCategory): ServerCategory = dbQuery {
+        Categories.requireNotOwnedByAnother(Categories.id, Categories.userId, c.id, userId, "category")
         Categories.upsert {
             it[id] = c.id; it[Categories.userId] = userId; it[name] = c.name
             it[lastModifiedDate] = WireDate.parse(c.lastModifiedDate) ?: WireDate.nowUtc()
@@ -62,6 +64,7 @@ object LibraryRepository {
         Tags.selectAll().where { Tags.userId eq userId }.count()
     }
     suspend fun upsertTag(userId: String, t: ServerTag): ServerTag = dbQuery {
+        Tags.requireNotOwnedByAnother(Tags.id, Tags.userId, t.id, userId, "tag")
         Tags.upsert {
             it[id] = t.id; it[Tags.userId] = userId; it[name] = t.name
             it[lastModifiedDate] = WireDate.parse(t.lastModifiedDate) ?: WireDate.nowUtc()

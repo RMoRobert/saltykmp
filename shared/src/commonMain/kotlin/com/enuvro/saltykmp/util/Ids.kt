@@ -39,6 +39,29 @@ private val UUID_FORM =
     Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 /**
+ * The longest id any Salty store will accept. The server's `id` columns are `varchar(64)`, and a
+ * longer value used to reach the database and come back as a 500 rather than a refusal.
+ */
+const val MAX_ID_LENGTH = 64
+
+/**
+ * Whether an id that arrived from outside is safe to key a row and name a file by.
+ *
+ * Ids are opaque TEXT to the database, but they are NOT opaque to the filesystem: the server stores a
+ * recipe's photo as `<id>.<ext>`, so an id carrying a path separator -- or a `%2F` that the router
+ * decoded into one before the handler ever saw it -- writes outside the image directory. The rule
+ * lives here beside [newId] because it describes the shape every Salty client already mints.
+ *
+ * Deliberately wider than "a UUID": ids predating this rule, and every test fixture, are short words.
+ * What it excludes is what it has to -- separators, and any leading dot, which takes `.`, `..` and a
+ * dotfile with it.
+ */
+fun isSafeId(id: String): Boolean =
+    id.length in 1..MAX_ID_LENGTH && !id.startsWith(".") && SAFE_ID.matches(id)
+
+private val SAFE_ID = Regex("^[A-Za-z0-9._~:@+-]+$")
+
+/**
  * Pure RFC 9562 UUIDv7 assembly — [millis] in the top 48 bits, version nibble 7, 12 random bits,
  * variant bits `10`, 62 random bits. Split from [newId] so tests can pin the inputs.
  */

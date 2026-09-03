@@ -1,17 +1,25 @@
 import {
   Button,
-  Divider,
+  Hamburger,
   Menu,
   MenuItem,
   MenuList,
   MenuPopover,
   MenuTrigger,
+  NavCategory,
+  NavCategoryItem,
+  NavDivider,
+  NavDrawer,
+  NavDrawerBody,
+  NavDrawerFooter,
+  NavDrawerHeader,
+  NavItem,
+  NavSectionHeader,
+  NavSubItem,
+  NavSubItemGroup,
+  Subtitle2,
   Tooltip,
-  Tree,
-  TreeItem,
-  TreeItemLayout,
   makeStyles,
-  mergeClasses,
   tokens,
 } from "@fluentui/react-components";
 import {
@@ -22,7 +30,6 @@ import {
   Food24Regular,
   Grid24Regular,
   Heart24Regular,
-  Navigation24Regular,
   Options24Regular,
   Person24Regular,
   People24Regular,
@@ -34,86 +41,59 @@ import {
 import { SALTY } from "../api";
 
 const useStyles = makeStyles({
-  rail: {
-    height: "100vh",
-    overflow: "hidden auto",
-    display: "flex",
-    flexDirection: "column",
-    backgroundColor: tokens.colorNeutralBackground2,
-    borderRight: `1px solid ${tokens.colorNeutralStroke2}`,
-  },
-  head: { padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalS}` },
-  tree: { paddingInline: tokens.spacingHorizontalXS },
-  // Pushes Organize/Settings to the bottom of the rail, as the Uno app does.
-  spacer: { flex: 1, minHeight: tokens.spacingVerticalXL },
-  foot: {
-    padding: tokens.spacingHorizontalXS,
-    paddingBottom: tokens.spacingVerticalM,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "stretch",
-    gap: "2px",
-    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
-  },
-  footButton: { justifyContent: "flex-start" },
-  /* The rail's own selected state. Fluent's Tree selection renders radio/checkbox indicators,
-     which is a different idea from "this is the filter you are looking at". */
-  selected: {
-    backgroundColor: tokens.colorBrandBackground2,
-    fontWeight: tokens.fontWeightSemibold,
-  },
   empty: {
-    padding: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalXL}`,
+    display: "block",
+    padding: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalXXL}`,
     color: tokens.colorNeutralForeground3,
     fontSize: tokens.fontSizeBase200,
   },
-  collapsed: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: "2px",
-    paddingTop: tokens.spacingVerticalS,
-  },
+  footButton: { justifyContent: "flex-start" },
+  /* The hamburger had this row to itself and the rest of it was empty, so the app's identity
+     goes beside it rather than costing a row in the body. 24px to match the nav glyphs below:
+     the mark is a full-bleed coloured plate, and at Fluent's default 32 it was the loudest thing
+     in a rail of thin line icons. 192px source so it stays crisp -- the same file the tab favicon
+     and an installed shortcut use, so it is almost always already in cache. */
+  brand: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalS },
+  appIcon: { width: "24px", height: "24px", display: "block" },
 });
 
-/** A classifier group: a branch whose children filter the list. */
-function ClassifierGroup({ styles, kind, label, icon, items, filter, onFilter }) {
-  return (
-    <TreeItem itemType="branch" value={kind}>
-      <TreeItemLayout iconBefore={icon}>{label}</TreeItemLayout>
-      <Tree>
-        {items.length === 0 ? (
-          <TreeItem itemType="leaf" value={`${kind}:none`} disabled>
-            <TreeItemLayout>
-              <span className={styles.empty}>None yet</span>
-            </TreeItemLayout>
-          </TreeItem>
-        ) : (
-          items.map((it) => (
-            <TreeItem
-              key={it.id}
-              itemType="leaf"
-              value={`${kind}:${it.id}`}
-              onClick={() => onFilter(kind, it.id, it.name || "Untitled")}
-            >
-              <TreeItemLayout
-                className={mergeClasses(
-                  filter.kind === kind && filter.id === it.id && styles.selected,
-                )}
-              >
-                {it.name || "Untitled"}
-              </TreeItemLayout>
-            </TreeItem>
-          ))
-        )}
-      </Tree>
-    </TreeItem>
-  );
+/*
+ * Every destination in the rail is one string, which is what NavDrawer's `selectedValue` and
+ * `onNavItemSelect` trade in. Plain filters are their kind; classifiers and lists carry an id.
+ */
+const CLASSIFIER_GROUPS = [
+  { kind: "category", label: "Categories", icon: <Grid24Regular /> },
+  { kind: "course", label: "Courses", icon: <Food24Regular /> },
+  { kind: "tag", label: "Tags", icon: <Tag24Regular /> },
+];
+const LISTS_INDEX = "lists";
+
+function selectedValueFor({ section, filter }) {
+  // The rail has one destination for the lists, whichever list is open: the lists themselves are
+  // the middle column's, not the rail's, so there is nothing else here to select.
+  if (section === "lists") return LISTS_INDEX;
+  return filter.id ? `${filter.kind}:${filter.id}` : filter.kind;
 }
 
+/** The group a value lives in, so a collapsed group still shows that something inside is chosen. */
+function categoryFor(value) {
+  const [head] = value.split(":");
+  return CLASSIFIER_GROUPS.some((g) => g.kind === head) ? head : undefined;
+}
+
+/**
+ * The library rail: Fluent's NavDrawer.
+ *
+ * Inline at full width, where it is a column of the layout; an overlay when compact, where it is
+ * a drawer over the one pane there is room for. The same tree either way -- only `type` changes,
+ * and the hamburger that closes it is Fluent's, in the drawer's own header.
+ * Selection is NavDrawer's own (`selectedValue`), which is what a hand-styled Tree was standing in
+ * for before.
+ */
 export default function NavRail({
+  type,
   open,
-  onToggle,
+  onOpenChange,
   onUsers,
   onShoppingLists,
   section,
@@ -122,190 +102,109 @@ export default function NavRail({
   courses,
   categories,
   tags,
-  shoppingLists,
-  selectedListId,
-  onSelectList,
   onManageLibrary,
   onPreferences,
 }) {
   const styles = useStyles();
 
-  if (!open) {
-    return (
-      <nav className={mergeClasses(styles.rail, styles.collapsed)} aria-label="Library">
-        <Tooltip content="Show library" relationship="label">
-          <Button appearance="subtle" icon={<Navigation24Regular />} onClick={onToggle} />
-        </Tooltip>
-        <Tooltip content="All Recipes" relationship="label">
-          <Button
-            appearance="subtle"
-            icon={<BookOpen24Regular />}
-            onClick={() => onFilter("all", null, "All Recipes")}
-          />
-        </Tooltip>
-        <Tooltip content="Favorites" relationship="label">
-          <Button
-            appearance="subtle"
-            icon={<Heart24Regular />}
-            onClick={() => onFilter("favorites", null, "Favorites")}
-          />
-        </Tooltip>
-        <Tooltip content="Want to Make" relationship="label">
-          <Button
-            appearance="subtle"
-            icon={<Bookmark24Regular />}
-            onClick={() => onFilter("wantToMake", null, "Want to Make")}
-          />
-        </Tooltip>
-      </nav>
-    );
-  }
+  // Closed is gone, as in Fluent's own NavDrawer pattern: the control that reopens it is a
+  // Hamburger *outside* the drawer, which here is the one at the head of the list column. WinUI's
+  // NavigationView has a compact icon-rail mode; the web NavDrawer has no such thing, and an
+  // icon strip built by hand to imitate it would be the one part of the rail that was not Fluent's.
+  if (type === "inline" && !open) return null;
+
+  const groups = { category: categories, course: courses, tag: tags };
+  const selected = selectedValueFor({ section, filter });
+
+  const select = (value) => {
+    const [head, id] = value.split(":");
+    if (head === "classifiers") return onManageLibrary();
+    if (head === "settings") return onPreferences();
+    if (head === LISTS_INDEX) return onShoppingLists();
+    if (id) {
+      const name = groups[head].find((it) => it.id === id)?.name;
+      return onFilter(head, id, name || "Untitled");
+    }
+    return onFilter(head, null, { all: "All recipes", favorites: "Favorites", wantToMake: "Want to make" }[head]);
+  };
 
   return (
-    <nav className={styles.rail} aria-label="Library">
-      <div className={styles.head}>
-        <Tooltip content="Hide library" relationship="label">
-          <Button appearance="subtle" icon={<Navigation24Regular />} onClick={onToggle} />
-        </Tooltip>
-      </div>
+    <NavDrawer
+      type={type}
+      open={open}
+      separator
+      onOpenChange={(_, d) => onOpenChange(d.open)}
+      selectedValue={selected}
+      selectedCategoryValue={categoryFor(selected)}
+      onNavItemSelect={(_, d) => select(d.value)}
+      defaultOpenCategories={["category"]}
+      aria-label="Library"
+    >
+      <NavDrawerHeader>
+        <div className={styles.brand}>
+          <Tooltip content="Hide library" relationship="label">
+            <Hamburger onClick={() => onOpenChange(false)} />
+          </Tooltip>
+          <img src="/static/icon-192.png" alt="" className={styles.appIcon} />
+          <Subtitle2>Salty</Subtitle2>
+        </div>
+      </NavDrawerHeader>
 
-      <Tree
-        aria-label="Library"
-        className={styles.tree}
-        defaultOpenItems={["categories"]}
-        size="medium"
-      >
-        <TreeItem itemType="leaf" value="all" onClick={() => onFilter("all", null, "All Recipes")}>
-          <TreeItemLayout
-            iconBefore={<BookOpen24Regular />}
-            className={mergeClasses(
-              section === "recipes" && filter.kind === "all" && styles.selected,
-            )}
-          >
-            All Recipes
-          </TreeItemLayout>
-        </TreeItem>
+      <NavDrawerBody>
+        {/* Two sections, because the rail holds two unrelated things: ways of looking at the
+            recipes, and the shopping lists. Without the headings "All lists" reads as one more
+            recipe filter, which is the one thing it is not. */}
+        <NavSectionHeader>Recipes</NavSectionHeader>
 
-        <TreeItem
-          itemType="leaf"
-          value="favorites"
-          onClick={() => onFilter("favorites", null, "Favorites")}
-        >
-          <TreeItemLayout
-            iconBefore={<Heart24Regular />}
-            className={mergeClasses(
-              section === "recipes" && filter.kind === "favorites" && styles.selected,
-            )}
-          >
-            Favorites
-          </TreeItemLayout>
-        </TreeItem>
+        <NavItem value="all" icon={<BookOpen24Regular />}>
+          All recipes
+        </NavItem>
+        <NavItem value="favorites" icon={<Heart24Regular />}>
+          Favorites
+        </NavItem>
+        <NavItem value="wantToMake" icon={<Bookmark24Regular />}>
+          Want to make
+        </NavItem>
 
-        <TreeItem
-          itemType="leaf"
-          value="wantToMake"
-          onClick={() => onFilter("wantToMake", null, "Want to Make")}
-        >
-          <TreeItemLayout
-            iconBefore={<Bookmark24Regular />}
-            className={mergeClasses(
-              section === "recipes" && filter.kind === "wantToMake" && styles.selected,
-            )}
-          >
-            Want to Make
-          </TreeItemLayout>
-        </TreeItem>
+        {CLASSIFIER_GROUPS.map((g) => (
+          <NavCategory key={g.kind} value={g.kind}>
+            <NavCategoryItem icon={g.icon}>{g.label}</NavCategoryItem>
+            <NavSubItemGroup>
+              {groups[g.kind].length === 0 ? (
+                <span className={styles.empty}>None yet</span>
+              ) : (
+                groups[g.kind].map((it) => (
+                  <NavSubItem key={it.id} value={`${g.kind}:${it.id}`}>
+                    {it.name || "Untitled"}
+                  </NavSubItem>
+                ))
+              )}
+            </NavSubItemGroup>
+          </NavCategory>
+        ))}
 
-        <ClassifierGroup
-          styles={styles}
-          kind="category"
-          label="Categories"
-          icon={<Grid24Regular />}
-          items={categories}
-          filter={filter}
-          onFilter={onFilter}
-        />
-        <ClassifierGroup
-          styles={styles}
-          kind="course"
-          label="Courses"
-          icon={<Food24Regular />}
-          items={courses}
-          filter={filter}
-          onFilter={onFilter}
-        />
-        <ClassifierGroup
-          styles={styles}
-          kind="tag"
-          label="Tags"
-          icon={<Tag24Regular />}
-          items={tags}
-          filter={filter}
-          onFilter={onFilter}
-        />
+        {/* One row, not a group of the lists themselves: unlike recipes, the lists are not
+            classified, so the rail has nothing to branch on and the middle column is where they
+            belong -- which is also the shape the SwiftUI app keeps, three panes throughout. */}
+        <NavSectionHeader>Shopping lists</NavSectionHeader>
+        <NavItem value={LISTS_INDEX} icon={<Cart24Regular />}>
+          All lists
+        </NavItem>
+      </NavDrawerBody>
 
-        {/* Clicking the group shows the lists index, as well as expanding it. Expanding alone
-            left no route to the index pane -- you could only reach a list you could already name. */}
-        <TreeItem itemType="branch" value="lists" onClick={onShoppingLists}>
-          <TreeItemLayout
-            iconBefore={<Cart24Regular />}
-            className={mergeClasses(section === "lists" && !selectedListId && styles.selected)}
-          >
-            Shopping Lists
-          </TreeItemLayout>
-          <Tree>
-            {shoppingLists.length === 0 ? (
-              <TreeItem itemType="leaf" value="lists:none" disabled>
-                <TreeItemLayout>
-                  <span className={styles.empty}>None yet</span>
-                </TreeItemLayout>
-              </TreeItem>
-            ) : (
-              shoppingLists.map((l) => (
-                <TreeItem
-                  key={l.id}
-                  itemType="leaf"
-                  value={`list:${l.id}`}
-                  onClick={() => onSelectList(l.id)}
-                >
-                  <TreeItemLayout
-                    className={mergeClasses(
-                      section === "lists" && selectedListId === l.id && styles.selected,
-                    )}
-                  >
-                    {l.name || "Untitled list"}
-                  </TreeItemLayout>
-                </TreeItem>
-              ))
-            )}
-          </Tree>
-        </TreeItem>
-      </Tree>
-
-      <div className={styles.spacer} />
-
-      <div className={styles.foot}>
+      <NavDrawerFooter>
         {/* Down here with Settings, for the reason the Compose app gives in its own drawer:
             editing the classifiers is rare and app-level, so it is one row rather than an "Edit…"
             hung off each of the three groups above. The recipe list's toolbar is for actions on
-            the list. Label matches the Compose app's. */}
-        <Button
-          appearance="subtle"
-          icon={<Options24Regular />}
-          className={styles.footButton}
-          onClick={onManageLibrary}
-        >
-          Edit Classifiers
-        </Button>
-        <Button
-          appearance="subtle"
-          icon={<Settings24Regular />}
-          className={styles.footButton}
-          onClick={onPreferences}
-        >
+            the list. Label matches the Compose app's. Neither is ever `selectedValue`: they open
+            dialogs rather than changing what the panes show. */}
+        <NavItem value="classifiers" icon={<Options24Regular />}>
+          Edit classifiers
+        </NavItem>
+        <NavItem value="settings" icon={<Settings24Regular />}>
           Settings
-        </Button>
-        <Divider />
+        </NavItem>
+        <NavDivider />
 
         {/* The account's own actions, kept apart from the library's: signing out and administering
             users are not things you do to a recipe collection. */}
@@ -341,7 +240,7 @@ export default function NavRail({
             </MenuList>
           </MenuPopover>
         </Menu>
-      </div>
-    </nav>
+      </NavDrawerFooter>
+    </NavDrawer>
   );
 }

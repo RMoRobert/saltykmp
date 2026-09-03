@@ -38,6 +38,12 @@ const val WEB_API_AUTH = "auth-web-api"
 /** Minimum length enforced when an admin sets/resets a user's password via the web UI. */
 const val MIN_PASSWORD_LENGTH = 8
 
+/** Matches the `device_sync.device_id` column. See the login route for what it stops. */
+const val MAX_DEVICE_ID_LENGTH = 128
+
+/** Matches the `users.username` column. */
+const val MAX_USERNAME_LENGTH = 255
+
 /**
  * How long a browser session stays valid, measured from login.
  *
@@ -159,6 +165,15 @@ fun Route.authRoutes(
                 HttpStatusCode.BadRequest,
                 mapOf("error" to "This client is too old to sign in. Update it and try again."),
             )
+        // The column is varchar(128). Longer used to travel all the way to the insert and come back
+        // as a 500 with a SQL stack trace in the log, when the honest answer is that the id is not
+        // one this server can store.
+        if (deviceId.length > MAX_DEVICE_ID_LENGTH) {
+            return@post call.respond(
+                HttpStatusCode.BadRequest,
+                mapOf("error" to "That device id is too long (max $MAX_DEVICE_ID_LENGTH characters)"),
+            )
+        }
         val minted = deviceTokens.generate()
         DeviceRepository.issueToken(user.id, deviceId, req.deviceName, deviceTokens.hash(minted))
         call.respond(AuthResponse(username = user.username, deviceToken = minted))

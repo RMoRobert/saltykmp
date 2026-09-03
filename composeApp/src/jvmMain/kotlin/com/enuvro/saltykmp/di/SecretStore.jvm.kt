@@ -25,7 +25,51 @@ actual fun createSecretStore(fallback: KeyValueStore): SecretStore {
         os.startsWith("Linux", ignoreCase = true) -> LinuxSecretToolStore()
         else -> null
     }
-    return platform?.verifiedOrNull() ?: ObfuscatedSecretStore(fallback)
+    return CachingSecretStore(platform?.verifiedOrNull() ?: ObfuscatedSecretStore(fallback))
+}
+
+/**
+ * Remembers what the vault said, so reading a secret is not a subprocess.
+ *
+ * The macOS and Linux stores shell out — `/usr/bin/security`, `secret-tool` — and every read is a
+ * process spawn with a ten-second timeout, on whichever thread asked. Two of those reads sit in
+ * places that are called constantly: `SettingsState.serverUse` consults the token whenever the switch
+ * was never explicitly set (so every local edit, through `onLocalChange`), and Settings recomputes
+ * `hasSyncCredentials` on every recomposition — which means two or three `security` processes per
+ * keystroke in the Server URL field, on the UI thread.
+ *
+ * Correct because this process is the only writer: every write goes through [put] or [clear] and
+ * updates the cache with it. A secret changed in Keychain Access while the app runs is not noticed
+ * until restart, which is a trade worth making for a value only this app writes.
+ *
+ * ConcurrentHashMap rather than a plain map: syncs read these from background threads while the UI
+ * reads them on the main one. It cannot hold nulls, so [ABSENT] stands in for "looked, found
+ * nothing" — the miss is worth caching too, since an unconfigured device answers it constantly.
+ */
+private class CachingSecretStore(private val delegate: SecretStore) : SecretStore {
+
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    override fun get(key: String): String? =
+        cache.computeIfAbsent(key) { delegate.get(it) ?: ABSENT }.takeIf { it !== ABSENT }
+
+    override fun put(key: String, value: String, account: String?) {
+        delegate.put(key, value, account)
+        cache[key] = value.ifEmpty { ABSENT } // an empty write is a clear; see MacKeychainStore.put
+    }
+
+    override fun clear(key: String) {
+        delegate.clear(key)
+        cache[key] = ABSENT
+    }
+
+    override val isPlatformBacked: Boolean get() = delegate.isPlatformBacked
+    override val backendName: String get() = delegate.backendName
+
+    private companion object {
+        /** Identity-compared sentinel for "no such secret". */
+        val ABSENT = String("\u0000salty-absent".toCharArray())
+    }
 }
 
 /**

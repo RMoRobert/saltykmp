@@ -40,7 +40,12 @@ val ApiCsrfGuard = createRouteScopedPlugin("ApiCsrfGuard") {
 
         val session = call.principal<UserSession>() ?: return@on
         val presented = call.request.header(CSRF_HEADER)
-        if (session.csrfToken.isEmpty() || presented != session.csrfToken) {
+        // Constant-time: this is application code comparing a secret the caller supplied against one
+        // it does not hold, which is exactly the comparison DeviceTokenService wrote its helper for.
+        if (session.csrfToken.isEmpty() ||
+            presented == null ||
+            !DeviceTokenService.constantTimeEquals(presented, session.csrfToken)
+        ) {
             call.respond(
                 HttpStatusCode.Forbidden,
                 mapOf("error" to "Missing or invalid CSRF token"),

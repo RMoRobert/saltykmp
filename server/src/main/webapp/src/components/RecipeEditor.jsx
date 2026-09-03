@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Accordion,
   AccordionHeader,
@@ -105,10 +105,21 @@ const useStyles = makeStyles({
  */
 function ImageField({ styles, recipe, file, removed, onPick, onRemove, notify }) {
   const input = useRef(null);
-  const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
+  const [previewUrl, setPreviewUrl] = useState(null);
 
+  // Created and revoked by the SAME effect. Split across a useMemo and an effect it survived only
+  // one mount: StrictMode runs mount, cleanup, mount in development, and the cleanup revoked the URL
+  // the memo was still handing back -- so a freshly picked photo previewed as a broken image.
   // A blob URL is held by the document until revoked, so trying five photos would leak five of them.
-  useEffect(() => () => previewUrl && URL.revokeObjectURL(previewUrl), [previewUrl]);
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl(null);
+      return undefined;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
 
   const shown = previewUrl || (removed ? null : imageUrl(recipe));
 
@@ -177,7 +188,12 @@ function ListRow({ styles, row, index, count, onChange, onMove, onRemove, allowM
         className={styles.handle}
         draggable
         aria-hidden="true"
-        onDragStart={() => drag.setFromIndex(index)}
+        onDragStart={(e) => {
+          // Firefox will not start a drag at all without payload on the event.
+          e.dataTransfer.setData("text/plain", String(index));
+          e.dataTransfer.effectAllowed = "move";
+          drag.setFromIndex(index);
+        }}
         onDragEnd={drag.end}
       >
         <ReOrderDotsVertical20Regular />
@@ -257,7 +273,11 @@ function EditableList({ styles, title, rows, onRows, allowMain, addLabel }) {
       if (fromIndex !== null && fromIndex !== to) {
         const next = [...rows];
         const [item] = next.splice(fromIndex, 1);
-        next.splice(to, 0, item);
+        // The line is drawn on TOP of the row under the cursor, so the drop means "before this
+        // row". Removing the dragged row first shifts everything after it up by one, so a downward
+        // drag has to aim one lower to land where the line was -- without this, dropping the first
+        // row onto the third put it after the third.
+        next.splice(to > fromIndex ? to - 1 : to, 0, item);
         onRows(next);
       }
       setFromIndex(null);
@@ -309,8 +329,17 @@ function EditableList({ styles, title, rows, onRows, allowMain, addLabel }) {
   );
 }
 
+/**
+ * The editor. App mounts it with `key={recipe.id}`, so opening a different recipe starts a fresh
+ * draft rather than this component having to notice the prop change and reset itself.
+ *
+ * `unsaved` says the recipe has never been written -- a blank new one, or the draft a web import
+ * handed back. Nothing on the server holds either, so leaving one that has content in it loses
+ * that content, and the guard has to know that even though nothing has been *typed* into it.
+ */
 export default function RecipeEditor({
   recipe,
+  unsaved,
   courses,
   categories,
   tags,
@@ -326,23 +355,28 @@ export default function RecipeEditor({
   const [imageRemoved, setImageRemoved] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    setDraft(recipe);
-    setImageFile(null);
-    setImageRemoved(false);
-  }, [recipe]);
-
-  // What the unsaved-changes guard reads. Comparing the whole draft rather than setting a flag on
-  // every edit means typing a character and typing it back again leaves nothing to warn about.
-  useEffect(() => {
-    onDirtyChange?.(
-      JSON.stringify(draft) !== JSON.stringify(recipe) || !!imageFile || imageRemoved,
-    );
-  }, [draft, recipe, imageFile, imageRemoved, onDirtyChange]);
-
-  const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const ingredients = draft.ingredients ?? [];
   const directions = draft.directions ?? [];
+
+  // What the unsaved-changes guard reads. Comparing the whole draft rather than setting a flag on
+  // every edit means typing a character and typing it back again leaves nothing to warn about. An
+  // untouched blank draft is not worth a prompt; an untouched import is, because it is not blank.
+  // Compared through cleanNutrition, which is what save applies: typing a calorie count and then
+  // clearing it leaves `{ id, calories: null }` where there was nothing before, and comparing the
+  // raw drafts called that an edit and asked whether to discard a recipe nobody had changed.
+  const normalized = (r) => JSON.stringify({ ...r, nutrition: cleanNutrition(r.nutrition) });
+  const edited = normalized(draft) !== normalized(recipe) || !!imageFile || imageRemoved;
+  const holdsContent = !!(draft.name?.trim() || ingredients.length || directions.length);
+  const dirty = edited || (unsaved && holdsContent);
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+  // And nothing to discard once this is gone. Without it the flag stayed true after the editor
+  // unmounted -- entering select mode does that -- so the next click asked about edits that no
+  // longer existed and the browser's own leave-the-page prompt stayed armed.
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
+  const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const times = draft.preparationTimes ?? [];
   const notes = draft.notes ?? [];
   const variations = draft.variations ?? [];
@@ -370,7 +404,9 @@ export default function RecipeEditor({
 
       <div className={styles.scroll}>
         <div className={styles.doc}>
-          <Field label="Name" required>
+          {/* Not `required`: the Swift and Compose apps accept an untitled recipe and the list
+              shows "Untitled" for one, so an asterisk here promised a rule nothing enforced. */}
+          <Field label="Name">
             <Input
               value={draft.name ?? ""}
               onChange={(_, d) => set({ name: d.value })}

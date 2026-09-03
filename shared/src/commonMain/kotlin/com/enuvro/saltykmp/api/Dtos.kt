@@ -57,6 +57,43 @@ data class ServerRecipe(
     val tagIds: List<String>? = null,
 )
 
+/**
+ * A recipe as a *list* needs it (GET /api/recipes?fields=summary).
+ *
+ * The same names as the matching fields of [ServerRecipe], so a client can hold summaries and full
+ * recipes in one collection and let a fetched recipe overwrite its summary. What is missing is the
+ * bulk: ingredients, directions, notes, variations, times and nutrition are around 88% of a library
+ * by bytes and none of it reaches a row -- on a real library that is ~325 KB of the ~390 KB the
+ * web app used to download to draw a column of names.
+ *
+ * It is a separate type rather than a [ServerRecipe] with the heavy fields nulled out, because
+ * those two things have to stay distinguishable: null ingredients would otherwise mean both "this
+ * recipe has none" and "you did not ask for them".
+ *
+ * Every field here earns its place in the browser: the dates and the name are what the sorts order
+ * by, course/category/tag ids are what the library filters match on, the introduction and source
+ * are the row's second line, and the image stamp is what versions the thumbnail URL.
+ */
+@Serializable
+data class ServerRecipeSummary(
+    val id: String,
+    val name: String = "",
+    val createdDate: String? = null,
+    val lastModifiedDate: String? = null,
+    val lastPrepared: String? = null,
+    val source: String? = null,
+    val sourceDetails: String? = null,
+    val introduction: String? = null,
+    val rating: Int? = null,
+    val imageFilename: String? = null,
+    val lastModifiedImageDate: String? = null,
+    val isFavorite: Boolean? = null,
+    val wantToMake: Boolean? = null,
+    val courseId: String? = null,
+    val categoryIds: List<String>? = null,
+    val tagIds: List<String>? = null,
+)
+
 @Serializable
 data class ServerCourse(val id: String, val name: String? = null, val lastModifiedDate: String? = null)
 

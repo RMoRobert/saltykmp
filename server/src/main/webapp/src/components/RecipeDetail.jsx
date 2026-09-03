@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   Link,
   Menu,
   MenuDivider,
+  MenuGroup,
+  MenuGroupHeader,
   MenuItem,
   MenuList,
   MenuPopover,
@@ -25,17 +27,19 @@ import {
   BookOpen48Regular,
   Bookmark20Filled,
   Bookmark20Regular,
+  CalendarCheckmark20Regular,
   Delete20Regular,
   Edit20Regular,
   Heart20Filled,
   Heart20Regular,
+  Info20Regular,
   MoreHorizontal24Regular,
   PlayCircle20Regular,
   Subtract20Regular,
 } from "@fluentui/react-icons";
 
 import { imageUrl } from "../api";
-import { SCALES, difficultyLabel, scaleLine, sourceLink, stepNumbers } from "../model";
+import { SCALES, difficultyLabel, formatDay, scaleLine, sourceLink, stepNumbers, wireNow } from "../model";
 
 const useStyles = makeStyles({
   bar: {
@@ -84,7 +88,6 @@ const useStyles = makeStyles({
     marginTop: tokens.spacingVerticalM,
     color: tokens.colorNeutralForeground2,
   },
-  main: { fontWeight: tokens.fontWeightSemibold },
   /* The scaled quantity is the only thing on the line that is not what the author typed. */
   scaled: { color: tokens.colorBrandForeground1, fontWeight: tokens.fontWeightSemibold },
   stepNo: { color: tokens.colorNeutralForeground3, minWidth: "1.6rem" },
@@ -105,18 +108,48 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
   },
   favActive: { color: tokens.colorPaletteRedForeground1 },
-  /* Chef mode: the same document, sized for reading it from across a kitchen. Fluent's ramp does
-     not go this large, so the two values here are the only hand-picked sizes in the app. */
-  chefDoc: { fontSize: "1.35rem", lineHeight: "2rem", maxWidth: "64rem" },
+  /* Chef mode: the same document, sized for reading it from across a kitchen. The top of Fluent's
+     base ramp reaches far enough, so nothing here is a hand-picked size. */
+  chefDoc: {
+    fontSize: tokens.fontSizeBase600,
+    lineHeight: tokens.lineHeightBase600,
+    maxWidth: "64rem",
+  },
+  /* The reading-size line height is set on the lists themselves, so it would otherwise win over
+     the document's and pack 24px text into 22px lines. */
+  chefText: { lineHeight: tokens.lineHeightBase600 },
+  /* Two pixels between lines reads as a paragraph, not as a list of things to do one at a time. */
+  chefItem: { paddingBlock: tokens.spacingVerticalS },
+  /* Wide enough for a two-digit step, so the tenth direction starts where the ninth did. */
+  chefStepNo: { minWidth: "2.6rem" },
+  chefSection: { marginTop: tokens.spacingVerticalXXXL },
+  chefSubhead: { marginTop: tokens.spacingVerticalL },
   chefBar: { justifyContent: "space-between" },
 });
 
-function Placeholder({ styles }) {
+/**
+ * Nothing open.
+ *
+ * It carries the back button when there is one, because compact shows a single pane: deleting a
+ * recipe, or cancelling a new one, left this on screen with the list unmounted, the rail unmounted,
+ * and nothing at all to press.
+ */
+function Placeholder({ styles, onBack }) {
   return (
-    <div className={styles.empty}>
-      <BookOpen48Regular />
-      <span>Select a recipe.</span>
-    </div>
+    <>
+      {onBack ? (
+        <div className={styles.bar}>
+          <Tooltip content="Back to the list" relationship="label">
+            <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} />
+          </Tooltip>
+          <span className={styles.barSpace} />
+        </div>
+      ) : null}
+      <div className={styles.empty}>
+        <BookOpen48Regular />
+        <span>Select a recipe.</span>
+      </div>
+    </>
   );
 }
 
@@ -127,6 +160,9 @@ export default function RecipeDetail({
   onBack,
   onEdit,
   onDelete,
+  onGetInfo,
+  onSetPrepared,
+  onPickLastMade,
   onToggleFavorite,
   onToggleWantToMake,
   onEnterChefMode,
@@ -140,14 +176,21 @@ export default function RecipeDetail({
   const Heading = chefMode ? Title3 : Subtitle2;
   const PageTitle = chefMode ? Title1 : Title2;
 
-  // A scale belongs to the recipe you were reading, not to the pane.
-  useEffect(() => setScaleIdx(1), [recipe?.id]);
+  // A scale belongs to the recipe you were reading, not to the pane: App keys this component by
+  // recipe id, so opening another one starts it over at 1x without an effect to reset it.
 
   const ingredients = recipe?.ingredients ?? [];
   const directions = recipe?.directions ?? [];
   const numbers = useMemo(() => stepNumbers(directions), [directions]);
 
-  if (!recipe) return <Placeholder styles={styles} />;
+  if (!recipe) return <Placeholder styles={styles} onBack={onBack} />;
+
+  // Chef mode is the reading document with more air in it; merging once here keeps the five
+  // sections below from repeating the same conditional.
+  const sectionCls = mergeClasses(styles.section, chefMode && styles.chefSection);
+  const listCls = mergeClasses(styles.list, chefMode && styles.chefText);
+  const itemCls = mergeClasses(styles.item, chefMode && styles.chefItem);
+  const subheadCls = mergeClasses(styles.heading, chefMode && styles.chefSubhead);
 
   const factor = SCALES[scaleIdx];
   const courseName = courses.find((c) => c.id === recipe.courseId)?.name;
@@ -192,6 +235,24 @@ export default function RecipeDetail({
               </MenuTrigger>
               <MenuPopover>
                 <MenuList>
+                  <MenuItem icon={<Info20Regular />} onClick={onGetInfo}>
+                    Get info
+                  </MenuItem>
+                  <Menu>
+                    <MenuTrigger disableButtonEnhancement>
+                      <MenuItem icon={<CalendarCheckmark20Regular />}>Last prepared date</MenuItem>
+                    </MenuTrigger>
+                    <MenuPopover>
+                      <MenuList>
+                        <MenuGroup>
+                          <MenuGroupHeader>{"Last prepared: " + (formatDay(recipe.lastPrepared) || "not set")}</MenuGroupHeader>
+                          <MenuItem onClick={() => onSetPrepared(wireNow())}>Set to today</MenuItem>
+                          <MenuItem onClick={onPickLastMade}>Set as date…</MenuItem>
+                        </MenuGroup>
+                      </MenuList>
+                    </MenuPopover>
+                  </Menu>
+                  <MenuDivider />
                   <MenuItem
                     icon={recipe.isFavorite ? <Heart20Filled /> : <Heart20Regular />}
                     onClick={() => onToggleFavorite(recipe)}
@@ -202,7 +263,7 @@ export default function RecipeDetail({
                     icon={recipe.wantToMake ? <Bookmark20Filled /> : <Bookmark20Regular />}
                     onClick={() => onToggleWantToMake(recipe)}
                   >
-                    {recipe.wantToMake ? "Remove from Want to Make" : "Add to Want to Make"}
+                    {recipe.wantToMake ? "Remove from want to make" : "Add to want to make"}
                   </MenuItem>
                   <MenuDivider />
                   <MenuItem icon={<Delete20Regular />} onClick={() => onDelete(recipe)}>
@@ -250,10 +311,14 @@ export default function RecipeDetail({
             </p>
           ) : null}
 
-          {recipe.introduction ? <p className={styles.intro}>{recipe.introduction}</p> : null}
+          {recipe.introduction ? (
+            <p className={mergeClasses(styles.intro, chefMode && styles.chefText)}>
+              {recipe.introduction}
+            </p>
+          ) : null}
 
           {ingredients.length ? (
-            <section className={styles.section}>
+            <section className={sectionCls}>
               <div className={styles.sectionHead}>
                 <Heading as="h2">Ingredients</Heading>
                 <div className={styles.scaler}>
@@ -278,21 +343,22 @@ export default function RecipeDetail({
                   </Tooltip>
                 </div>
               </div>
-              <ul className={styles.list}>
+              <ul className={listCls}>
                 {ingredients.map((row) => {
                   if (row.isHeading) {
                     return (
-                      <li key={row.id} className={styles.heading}>
+                      <li key={row.id} className={subheadCls}>
                         {row.text}
                       </li>
                     );
                   }
                   const { amount, rest } = scaleLine(row.text, factor);
+                  // `row.isMain` is deliberately not rendered. The editor still sets it and it
+                  // still travels with the recipe -- it is reserved for search and the like, and
+                  // bolding the main ingredients was competing with the scaled quantity for the
+                  // only emphasis an ingredient line has.
                   return (
-                    <li
-                      key={row.id}
-                      className={mergeClasses(styles.item, row.isMain && styles.main)}
-                    >
+                    <li key={row.id} className={itemCls}>
                       <span className={styles.bullet} aria-hidden="true">
                         ·
                       </span>
@@ -308,19 +374,21 @@ export default function RecipeDetail({
           ) : null}
 
           {directions.length ? (
-            <section className={styles.section}>
+            <section className={sectionCls}>
               <Heading as="h2">Directions</Heading>
               {/* A <ul> with explicit numbers, not an <ol>: section headings are list items too,
                   and an <ol> counts them, so every heading shifts the numbering. */}
-              <ul className={styles.list}>
+              <ul className={listCls}>
                 {directions.map((row, i) =>
                   row.isHeading ? (
-                    <li key={row.id} className={styles.heading}>
+                    <li key={row.id} className={subheadCls}>
                       {row.text}
                     </li>
                   ) : (
-                    <li key={row.id} className={styles.item}>
-                      <span className={styles.stepNo}>{numbers[i]}.</span>
+                    <li key={row.id} className={itemCls}>
+                      <span className={mergeClasses(styles.stepNo, chefMode && styles.chefStepNo)}>
+                        {numbers[i]}.
+                      </span>
                       <span>{row.text}</span>
                     </li>
                   ),
@@ -330,7 +398,7 @@ export default function RecipeDetail({
           ) : null}
 
           {times.length ? (
-            <section className={styles.section}>
+            <section className={sectionCls}>
               <Heading as="h2">Times</Heading>
               <dl className={styles.pairs}>
                 {times.map((t) => (
@@ -344,7 +412,7 @@ export default function RecipeDetail({
           ) : null}
 
           {(recipe.notes ?? []).length ? (
-            <section className={styles.section}>
+            <section className={sectionCls}>
               <Heading as="h2">Notes</Heading>
               {recipe.notes.map((n) => (
                 <div key={n.id} className={styles.block}>
@@ -356,7 +424,7 @@ export default function RecipeDetail({
           ) : null}
 
           {(recipe.variations ?? []).length ? (
-            <section className={styles.section}>
+            <section className={sectionCls}>
               <Heading as="h2">Variations</Heading>
               {recipe.variations.map((v) => (
                 <div key={v.id} className={styles.block}>

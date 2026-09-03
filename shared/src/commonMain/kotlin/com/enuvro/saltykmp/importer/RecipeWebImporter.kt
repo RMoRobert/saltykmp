@@ -5,7 +5,9 @@ import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
-import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.utils.io.readRemaining
+import kotlinx.io.readByteArray
 import io.ktor.client.statement.readRawBytes
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.URLBuilder
@@ -50,7 +52,14 @@ class RecipeWebImporter(engine: HttpClientEngine) {
                 header("Accept", "text/html,application/xhtml+xml")
             }
             if (!response.status.isSuccess()) return WebImportResult.Failed(httpMessage(response.status))
-            response.bodyAsText()
+            // A BOUNDED read. `bodyAsText()` pulled the whole response into memory first and the parser's
+            // cap then rejected it afterwards, which is the wrong order: a hostile or merely enormous
+            // page was already resident by the time anything objected. One byte past the cap is enough
+            // for the parser to refuse it.
+            response.bodyAsChannel()
+                .readRemaining((SchemaOrgRecipeParser.Limits.MAX_INPUT_BYTES + 1).toLong())
+                .readByteArray()
+                .decodeToString()
         }.getOrElse { return WebImportResult.Failed("Couldn't load that page: ${it.message ?: "network error"}") }
 
         val parsed = SchemaOrgRecipeParser.parse(html).firstOrNull() ?: return WebImportResult.NoRecipeFound
