@@ -103,6 +103,49 @@ data class ServerCategory(val id: String, val name: String? = null, val lastModi
 @Serializable
 data class ServerTag(val id: String, val name: String? = null, val lastModifiedDate: String? = null)
 
+/**
+ * Fold several courses, categories or tags into one (POST /api/{courses|categories|tags}/merge).
+ *
+ * The survivor keeps its id, name and stamp; every recipe that used a duplicate is re-pointed at it
+ * and the duplicates are deleted. The server bumps `lastModifiedDate` on each recipe it re-pointed,
+ * which is how the change reaches the native clients: membership travels on the recipe payload, and
+ * the classifier rows are reconciled by id, so a duplicate that vanishes from the list is deleted
+ * locally and the recipes arrive re-pointed. The same fold the clients run on-device
+ * (`LibraryDuplicateMerger`), performed on the server for the web app, which has no local database.
+ */
+@Serializable
+data class LibraryMergeRequest(val survivorId: String, val duplicateIds: List<String>)
+
+/** What a merge changed. [removedIds] lists the duplicates actually deleted (ones already gone are skipped). */
+@Serializable
+data class LibraryMergeResponse(
+    val survivorId: String,
+    val removedIds: List<String>,
+    /** Recipes re-pointed, and whose `lastModifiedDate` therefore moved. */
+    val touchedRecipeIds: List<String>,
+)
+
+/**
+ * Delete several courses, categories or tags at once (POST /api/{courses|categories|tags}/delete).
+ *
+ * The user-facing delete, as distinct from `DELETE /api/{kind}/{id}`, which the sync passes use to
+ * apply a deletion a client already made and has already moved its recipes' stamps for. This one
+ * clears the recipes' side too -- junction rows, or the course column -- and bumps
+ * `lastModifiedDate` on each recipe that lost the classification, the way the clients'
+ * `LibraryClassifierEditor` does, so the loss travels on the recipe payload rather than relying on
+ * every device noticing the row is gone.
+ */
+@Serializable
+data class LibraryDeleteRequest(val ids: List<String>)
+
+/** What a bulk delete changed. Ids already gone, or not the caller's, are skipped rather than failed. */
+@Serializable
+data class LibraryDeleteResponse(
+    val removedIds: List<String>,
+    /** Recipes that lost a classification, and whose `lastModifiedDate` therefore moved. */
+    val touchedRecipeIds: List<String>,
+)
+
 /** Lightweight sync-index entry (GET /api/recipes/sync/manifest). Carries the image filename + image
  * timestamp so clients reconcile image transfer independently of the recipe body, without extra probes —
  * and likewise the prepared-date stamp, so "last made on" reconciles on its own clock. */

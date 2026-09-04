@@ -33,6 +33,7 @@ import {
   Delete20Regular,
   Dismiss24Regular,
   Key20Regular,
+  Merge20Regular,
   Rename20Regular,
 } from "@fluentui/react-icons";
 
@@ -54,6 +55,22 @@ const useStyles = makeStyles({
     fontSize: tokens.fontSizeBase200,
   },
   addRow: { display: "flex", gap: tokens.spacingHorizontalS, marginTop: tokens.spacingVerticalM },
+  /* The bar under the tabs: Select on the right normally; the count, Merge and Done while selecting. */
+  selectBar: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: tokens.spacingHorizontalS,
+    marginTop: tokens.spacingVerticalS,
+    minHeight: "32px",
+  },
+  selectCount: { flex: 1, color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 },
+  /* A selectable row is the checkbox's own label plus the count, at the same height as an Input row
+     so entering Select mode does not reflow the list. */
+  checkRow: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalXS, minHeight: "32px" },
+  /* Full width on purpose: RadioGroup lays its children out without stretching them, and the count
+     belongs at the right edge, as it is in the list behind the dialog. */
+  candidate: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalXS, width: "100%" },
   fields: { display: "grid", gap: tokens.spacingVerticalM },
   kv: { display: "grid", gridTemplateColumns: "auto 1fr", gap: tokens.spacingHorizontalM },
   key: { color: tokens.colorNeutralForeground3 },
@@ -523,6 +540,90 @@ const KINDS = [
   { kind: "tag", label: "Tags", singular: "tag" },
 ];
 
+/**
+ * Rows in survivor order: the one a merge should keep comes first. The rule the native apps' duplicate
+ * scan uses for a user-facing merge -- most recipes, ties to the oldest row -- so the common case is
+ * one click, with the name that survives still on screen to be changed. Ids are UUIDv7, so the
+ * smallest is the earliest-created.
+ */
+function rankForMerge(rows) {
+  return [...rows].sort((a, b) => b.recipeCount - a.recipeCount || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/** "A", "A and B", "A, B, and C". */
+function andList(items) {
+  if (items.length <= 1) return items[0] ?? "";
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+}
+
+/** Title for the delete confirmation, naming the single row where there is one. */
+function deletionTitle(rows, k) {
+  return rows.length === 1 ? `Delete "${rows[0].name}"?` : `Delete ${rows.length} ${k.label.toLowerCase()}?`;
+}
+
+/**
+ * What the delete costs, in recipes. Recipes are never deleted -- they only lose the classification,
+ * which is the part worth saying out loud before a category disappears from thirty of them. An
+ * unused row still gets a confirmation, just a shorter one: a delete that asks only sometimes is a
+ * delete you stop reading. Word for word the Compose app's `classifierDeletionMessage`.
+ */
+function deletionMessage(rows, k) {
+  const affected = rows.reduce((n, r) => n + r.recipeCount, 0);
+  if (affected === 0) return "This cannot be undone.";
+  // One recipe can hold two of the categories/tags being deleted, so a multi-row total is an upper
+  // bound. A recipe has only one course, so that total is exact.
+  const many = rows.length > 1;
+  const mayDoubleCount = many && k.kind !== "course";
+  const count = affected === 1 ? "1 recipe" : `${affected} recipes`;
+  const recipes = mayDoubleCount ? `up to ${count}` : count;
+  if (k.kind === "course") {
+    const subject = many ? "these courses" : "this course";
+    const remain =
+      affected === 1
+        ? "That recipe will remain, but its course selection will be removed."
+        : "Those recipes will remain, but their course selection will be removed.";
+    return `${recipes} ${affected === 1 ? "is" : "are"} currently classified with ${subject}. ${remain} This cannot be undone.`;
+  }
+  return many
+    ? `These ${k.label.toLowerCase()} are being used by ${recipes}. Removing them will remove them from those recipes, but the recipes will remain. This cannot be undone.`
+    : `This ${k.singular} is being used by ${recipes}. Removing it will remove it from those recipes, but the recipes will remain. This cannot be undone.`;
+}
+
+/** Title for the merge dialog. Counts rather than names: the names are listed right below it. */
+function mergeTitle(rows, k) {
+  return `Merge ${rows.length} ${rows.length === 1 ? k.singular : k.label.toLowerCase()}`;
+}
+
+/**
+ * What the merge does, in the survivor's own name -- which is the whole reason the dialog exists,
+ * since the survivor's spelling is the one that remains. Word for word the Compose app's
+ * `classifierMergeMessage`, so the three clients say the same thing about the same action.
+ */
+function mergeMessage(rows, survivorId, k) {
+  const survivor = rows.find((r) => r.id === survivorId);
+  if (!survivor) return `Choose which ${k.singular} to keep.`;
+  const losing = rows.filter((r) => r.id !== survivor.id);
+  if (losing.length === 0) return `Nothing to merge into "${survivor.name}".`;
+  const subject =
+    losing.length <= 3
+      ? andList(losing.map((r) => `"${r.name}"`))
+      : `The other ${losing.length} ${k.label.toLowerCase()}`;
+  const verb =
+    losing.length === 1 ? "will be deleted, and its recipes" : "will be deleted, and their recipes";
+  const outcome =
+    k.kind === "course" ? `will use "${survivor.name}" instead` : `will be added to "${survivor.name}"`;
+  return `${subject} ${verb} ${outcome}. The recipes themselves are not deleted. This cannot be undone.`;
+}
+
+/**
+ * Add, rename, delete -- and, in Select mode, merge or delete several at once. Select is a mode
+ * rather than a permanent column of checkboxes, as in the Compose app: it exists for the two jobs
+ * that are miserable a row at a time, clearing out a drift of unused tags and folding "Deserts" /
+ * "desserts" / "Dessert " back into one. Both run on the server (`api.classifiers.merge` and
+ * `removeMany`), which re-points or clears the recipes and moves their stamps so the native clients
+ * pick the change up on their next sync.
+ */
 export function ManageLibraryDialog({
   open,
   onClose,
@@ -531,6 +632,7 @@ export function ManageLibraryDialog({
   tags,
   recipes,
   onChanged,
+  onRecipesTouched,
   notify,
   ask,
 }) {
@@ -538,8 +640,17 @@ export function ManageLibraryDialog({
   const [kind, setKind] = useState("category");
   const [draftName, setDraftName] = useState("");
   const [edits, setEdits] = useState({});
+  /* Select mode and what is checked. Switching tabs leaves it: ids only mean anything in the tab
+     they came from. */
+  const [selecting, setSelecting] = useState(false);
+  const [checked, setChecked] = useState([]);
+  /* The merge being confirmed: the rows captured when it opened, ranked, and the survivor picked so
+     far. Captured rather than derived, because the list under the dialog keeps updating. */
+  const [merge, setMerge] = useState(null);
+  const [merging, setMerging] = useState(false);
 
   const items = kind === "category" ? categories : kind === "course" ? courses : tags;
+  const kindInfo = KINDS.find((k) => k.kind === kind);
 
   const countFor = (id) =>
     recipes.filter((r) =>
@@ -561,20 +672,73 @@ export function ManageLibraryDialog({
     }
   };
 
-  const remove = (item) => {
-    const n = countFor(item.id);
+  const leaveSelectMode = () => {
+    setSelecting(false);
+    setChecked([]);
+  };
+
+  const showKind = (next) => {
+    if (next === kind) return;
+    setKind(next);
+    leaveSelectMode();
+  };
+
+  const toggleChecked = (id, on) =>
+    setChecked((ids) => (on ? [...new Set([...ids, id])] : ids.filter((x) => x !== id)));
+
+  /** Opens the merge dialog over the rows checked, the survivor pre-picked. Two is the minimum. */
+  const requestMerge = () => {
+    const rows = rankForMerge(
+      items.filter((i) => checked.includes(i.id)).map((i) => ({ ...i, recipeCount: countFor(i.id) })),
+    );
+    if (rows.length < 2) return;
+    setMerge({ candidates: rows, survivorId: rows[0].id });
+  };
+
+  const confirmMerge = async () => {
+    if (!merge) return;
+    const { candidates, survivorId } = merge;
+    const survivor = candidates.find((c) => c.id === survivorId);
+    const duplicateIds = candidates.filter((c) => c.id !== survivorId).map((c) => c.id);
+    if (!survivor || duplicateIds.length === 0) return;
+    setMerging(true);
+    try {
+      const result = await api.classifiers.merge(kind, survivorId, duplicateIds);
+      setMerge(null);
+      leaveSelectMode();
+      await onRecipesTouched(result);
+      const n = result.removedIds.length;
+      notify(`Merged ${n} ${n === 1 ? kindInfo.singular : kindInfo.label.toLowerCase()} into ${survivor.name}`);
+    } catch (e) {
+      notify(e.message || "Could not merge", "error");
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  /**
+   * Opens the delete confirmation for the rows given, one or many. Every delete is confirmed: one
+   * that asks only sometimes is one you stop reading. The rows are captured with their counts as
+   * they were shown, since the list under the dialog keeps updating.
+   */
+  const requestDeletion = (rows) => {
+    const captured = rows.map((r) => ({ ...r, recipeCount: countFor(r.id) }));
+    if (captured.length === 0) return;
     ask({
-      title: "Delete from library",
-      body: n
-        ? `${item.name} is used by ${n} recipe${n === 1 ? "" : "s"}. They keep their other details.`
-        : `${item.name} is not used by any recipe.`,
+      title: deletionTitle(captured, kindInfo),
+      body: deletionMessage(captured, kindInfo),
       confirmLabel: "Delete",
       onConfirm: async () => {
-        await api.classifiers.remove(kind, item.id);
-        await onChanged();
+        const result = await api.classifiers.removeMany(kind, captured.map((r) => r.id));
+        leaveSelectMode();
+        await onRecipesTouched(result);
+        const n = result.removedIds.length;
+        notify(`Deleted ${n} ${n === 1 ? kindInfo.singular : kindInfo.label.toLowerCase()}`);
       },
     });
   };
+
+  const remove = (item) => requestDeletion([item]);
 
   const add = async () => {
     const name = draftName.trim();
@@ -593,10 +757,16 @@ export function ManageLibraryDialog({
   // Rename boxes hold what was typed into them until the rename lands. A failed one used to stay
   // here for the life of the tab, so reopening the dialog showed a name the server had never taken.
   useEffect(() => {
-    if (!open) setEdits({});
+    if (!open) {
+      setEdits({});
+      setSelecting(false);
+      setChecked([]);
+      setMerge(null);
+    }
   }, [open]);
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
       <DialogSurface className={styles.wide}>
         <DialogBody>
@@ -610,7 +780,7 @@ export function ManageLibraryDialog({
             Edit classifiers
           </DialogTitle>
           <DialogContent>
-            <TabList selectedValue={kind} onTabSelect={(_, d) => setKind(d.value)}>
+            <TabList selectedValue={kind} onTabSelect={(_, d) => showKind(d.value)}>
               {KINDS.map((k) => (
                 <Tab key={k.kind} value={k.kind}>
                   {k.label}
@@ -618,9 +788,62 @@ export function ManageLibraryDialog({
               ))}
             </TabList>
 
+            {/* Select needs something to merge into, so it is offered only from two rows up. */}
+            <div className={styles.selectBar}>
+              {selecting ? (
+                <>
+                  <span className={styles.selectCount} aria-live="polite">
+                    {checked.length === 0
+                      ? `Select ${kindInfo.label.toLowerCase()} to merge`
+                      : `${checked.length} selected`}
+                  </span>
+                  <Button
+                    icon={<Merge20Regular />}
+                    disabled={checked.length < 2}
+                    onClick={requestMerge}
+                  >
+                    Merge…
+                  </Button>
+                  <Button
+                    icon={<Delete20Regular />}
+                    disabled={checked.length === 0}
+                    onClick={() => requestDeletion(items.filter((i) => checked.includes(i.id)))}
+                  >
+                    Delete
+                  </Button>
+                  <Button appearance="subtle" onClick={leaveSelectMode}>
+                    Done
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  appearance="subtle"
+                  disabled={items.length < 2}
+                  onClick={() => setSelecting(true)}
+                >
+                  Select
+                </Button>
+              )}
+            </div>
+
             <div className={styles.rows}>
               {items.length === 0 ? (
                 <Body1>Nothing here yet.</Body1>
+              ) : selecting ? (
+                items.map((item) => (
+                  <div key={item.id} className={styles.checkRow}>
+                    <div className={styles.rowText}>
+                      <Checkbox
+                        label={item.name || "(unnamed)"}
+                        checked={checked.includes(item.id)}
+                        onChange={(_, d) => toggleChecked(item.id, !!d.checked)}
+                      />
+                    </div>
+                    <span className={styles.count}>
+                      {countFor(item.id)} recipe{countFor(item.id) === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                ))
               ) : (
                 items.map((item) => (
                   <div key={item.id} className={styles.row}>
@@ -645,27 +868,74 @@ export function ManageLibraryDialog({
               )}
             </div>
 
-            <div className={styles.addRow}>
-              <Input
-                className={styles.rowInput}
-                placeholder={`New ${KINDS.find((k) => k.kind === kind).singular}`}
-                value={draftName}
-                onChange={(_, d) => setDraftName(d.value)}
-                onKeyDown={(e) => e.key === "Enter" && add()}
-              />
-              <Button
-                appearance="primary"
-                icon={<Add20Regular />}
-                disabled={!draftName.trim()}
-                onClick={add}
-              >
-                Add
-              </Button>
-            </div>
+            {selecting ? null : (
+              <div className={styles.addRow}>
+                <Input
+                  className={styles.rowInput}
+                  placeholder={`New ${kindInfo.singular}`}
+                  value={draftName}
+                  onChange={(_, d) => setDraftName(d.value)}
+                  onKeyDown={(e) => e.key === "Enter" && add()}
+                />
+                <Button
+                  appearance="primary"
+                  icon={<Add20Regular />}
+                  disabled={!draftName.trim()}
+                  onClick={add}
+                >
+                  Add
+                </Button>
+              </div>
+            )}
           </DialogContent>
         </DialogBody>
       </DialogSurface>
     </Dialog>
+
+      {/* Confirms a merge, and is the only place the survivor is chosen -- which matters because the
+          survivor's spelling is the one that remains. A dialog of its own rather than the app's
+          confirm(): the choice is a list, and the outcome is irreversible. A sibling of the manager
+          rather than a child: a Dialog given two children reads the first as its trigger. */}
+      <Dialog open={!!merge} onOpenChange={(_, d) => !d.open && !merging && setMerge(null)}>
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>{merge ? mergeTitle(merge.candidates, kindInfo) : ""}</DialogTitle>
+            <DialogContent>
+              {merge ? (
+                <>
+                  <Field label={`${kindInfo.singular[0].toUpperCase()}${kindInfo.singular.slice(1)} to keep`}>
+                    <RadioGroup
+                      value={merge.survivorId}
+                      onChange={(_, d) => setMerge((m) => m && { ...m, survivorId: d.value })}
+                    >
+                      {merge.candidates.map((c) => (
+                        <div key={c.id} className={styles.candidate}>
+                          <div className={styles.rowText}>
+                            <Radio value={c.id} label={c.name || "(unnamed)"} />
+                          </div>
+                          <span className={styles.count}>
+                            {c.recipeCount} recipe{c.recipeCount === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                      ))}
+                    </RadioGroup>
+                  </Field>
+                  <p className={styles.radioHint}>{mergeMessage(merge.candidates, merge.survivorId, kindInfo)}</p>
+                </>
+              ) : null}
+            </DialogContent>
+            <DialogActions>
+              <Button appearance="secondary" disabled={merging} onClick={() => setMerge(null)}>
+                Cancel
+              </Button>
+              <Button appearance="primary" disabled={merging || !merge?.survivorId} onClick={confirmMerge}>
+                {merging ? <Spinner size="tiny" /> : "Merge"}
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+    </>
   );
 }
 

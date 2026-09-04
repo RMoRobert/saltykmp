@@ -1,3 +1,4 @@
+import { useCallback, useState } from "react";
 import {
   Button,
   Hamburger,
@@ -8,6 +9,7 @@ import {
   MenuGroup,
   MenuGroupHeader,
   MenuItem,
+  MenuItemLink,
   MenuItemRadio,
   MenuList,
   MenuPopover,
@@ -23,19 +25,27 @@ import {
 } from "@fluentui/react-components";
 import {
   Add24Regular,
+  Bookmark20Filled,
+  Bookmark20Regular,
+  CalendarCheckmark20Regular,
+  Delete20Regular,
   Delete24Regular,
   Dismiss24Regular,
+  Edit20Regular,
+  Heart16Filled,
+  Heart20Filled,
+  Heart20Regular,
+  Info20Regular,
+  Link24Regular,
+  MoreHorizontal24Regular,
   SelectAllOn24Regular,
   TextBulletListSquare16Regular,
   TextBulletListSquare20Regular,
   TextBulletListSquare24Regular,
-  Heart16Filled,
-  Heart20Filled,
-  Link24Regular,
-  MoreHorizontal24Regular,
+  WindowNew20Regular,
 } from "@fluentui/react-icons";
 
-import { SORT_OPTIONS, rowSubtitle } from "../model";
+import { SORT_OPTIONS, formatDay, rowSubtitle, wireNow } from "../model";
 import { thumbUrl } from "../api";
 
 const useStyles = makeStyles({
@@ -62,6 +72,15 @@ const useStyles = makeStyles({
      does real work rather than decoration. A theme key of our own rather than Fluent's
      colorBrandBackground2, which is a step too faint to read as a selection -- see theme.js. */
   rowSelected: { backgroundColor: "var(--colorSaltySelectedBackground)" },
+  /* The row a context menu is open on, which is not the same thing as the row being read: a
+     right-click acts on a recipe without opening it, so the menu has to say which one it is about.
+     An inset outline rather than a background, so it reads the same over a selected row as over a
+     plain one, and neutral rather than brand, so it does not compete with the selection above. */
+  rowContext: {
+    outline: `2px solid ${tokens.colorNeutralStroke1}`,
+    outlineOffset: "-2px",
+    borderRadius: tokens.borderRadiusMedium,
+  },
   /* Both dense styles are as tall as their text rather than their thumbnail, so the padding is
      what is left to give and both spend it: 2px a side, taking "Small icons" to 40px and "List" to
      24px -- which is Fluent's own small row height, what a TreeItem or a MenuItem takes at
@@ -142,7 +161,7 @@ const useStyles = makeStyles({
  * it is: every style is the same ListItem with the same value, semantics and selection, so nothing
  * above this function has to know which one is in force.
  */
-function Row({ recipe, selected, styles, sortBy, selectMode, listStyle }) {
+function Row({ recipe, selected, contextOpen, onContext, styles, sortBy, selectMode, listStyle }) {
   const tiny = listStyle === "list";
   const small = listStyle === "smallIcons";
   const thumb = thumbUrl(recipe);
@@ -164,11 +183,13 @@ function Row({ recipe, selected, styles, sortBy, selectMode, listStyle }) {
       // No checkbox outside select mode: a column of them on every row is a standing invitation to
       // a gesture almost nobody wants, and it costs the names the width it takes.
       checkmark={selectMode ? undefined : null}
+      onContextMenu={onContext ? (e) => onContext(recipe, e) : undefined}
       className={mergeClasses(
         styles.row,
         small && styles.rowSmall,
         tiny && styles.rowTiny,
         selected && styles.rowSelected,
+        contextOpen && styles.rowContext,
       )}
     >
       {thumb ? (
@@ -222,6 +243,96 @@ function Row({ recipe, selected, styles, sortBy, selectMode, listStyle }) {
   );
 }
 
+
+/**
+ * The row's own menu, on right-click -- the browser's menu is about the page, and nothing on it is
+ * about a recipe.
+ *
+ * One controlled Menu for the whole list rather than a MenuTrigger per row: the popover is the same
+ * popover wherever it opens, and a library of a few hundred recipes would otherwise mount a few
+ * hundred of them. What moves is the target it is positioned against, which is a virtual element
+ * standing where the pointer was -- Fluent's own way of doing a context menu.
+ *
+ * Every item works off the LIST ROW, which is a summary. That is enough for all of them: the row
+ * carries the last-prepared date this menu prints, and the favourite and want-to-make flags it
+ * toggles, so the menu opens on what is already on screen rather than on a fetch. The two writes
+ * that need the whole recipe re-read it on the server's copy anyway (see patchRecipe), which is
+ * safer than sending a body this list never had.
+ *
+ * "Open in new tab" is a real link rather than a click handler, so the middle button and the
+ * modifier keys do what they do everywhere else. It is possible at all because a recipe now has an
+ * address; see useHashRoute.
+ */
+function RowMenu({ menu, onOpenChange, actions }) {
+  const recipe = menu?.recipe;
+  if (!recipe) return null;
+
+  const prepared = formatDay(recipe.lastPrepared);
+
+  return (
+    <Menu
+      open
+      onOpenChange={onOpenChange}
+      positioning={{ target: menu.target }}
+      // The list scrolls under the popover, and a menu pinned to a point the row has left is a menu
+      // pointing at the wrong recipe.
+      closeOnScroll
+    >
+      <MenuPopover>
+        <MenuList>
+          <MenuItemLink href={actions.href(recipe.id)} target="_blank" icon={<WindowNew20Regular />}>
+            Open in new tab
+          </MenuItemLink>
+          <MenuItem icon={<Edit20Regular />} onClick={() => actions.onEdit(recipe)}>
+            Edit
+          </MenuItem>
+          <MenuDivider />
+          <Menu>
+            <MenuTrigger disableButtonEnhancement>
+              <MenuItem icon={<CalendarCheckmark20Regular />}>Last prepared date</MenuItem>
+            </MenuTrigger>
+            <MenuPopover>
+              <MenuList>
+                <MenuGroup>
+                  <MenuGroupHeader>{`Last prepared: ${prepared || "not set"}`}</MenuGroupHeader>
+                  <MenuItem onClick={() => actions.onSetPrepared(recipe, wireNow())}>
+                    Set to today
+                  </MenuItem>
+                  {/* The same two items the detail pane's menu has, and no Clear: clearing lives in
+                      the dialog behind "Set as date…", where Cancel can still undo it. A menu item
+                      that wrote it outright would be the one destructive gesture in this app with
+                      nothing between the click and the write. */}
+                  <MenuItem onClick={() => actions.onPickLastMade(recipe)}>Set as date…</MenuItem>
+                </MenuGroup>
+              </MenuList>
+            </MenuPopover>
+          </Menu>
+          <MenuItem
+            icon={recipe.isFavorite ? <Heart20Filled /> : <Heart20Regular />}
+            onClick={() => actions.onToggleFavorite(recipe)}
+          >
+            {recipe.isFavorite ? "Remove from favorites" : "Add to favorites"}
+          </MenuItem>
+          <MenuItem
+            icon={recipe.wantToMake ? <Bookmark20Filled /> : <Bookmark20Regular />}
+            onClick={() => actions.onToggleWantToMake(recipe)}
+          >
+            {recipe.wantToMake ? "Remove from want to make" : "Add to want to make"}
+          </MenuItem>
+          <MenuDivider />
+          <MenuItem icon={<Info20Regular />} onClick={() => actions.onGetInfo(recipe)}>
+            Get info
+          </MenuItem>
+          <MenuDivider />
+          <MenuItem icon={<Delete20Regular />} onClick={() => actions.onDelete(recipe)}>
+            Delete recipe…
+          </MenuItem>
+        </MenuList>
+      </MenuPopover>
+    </Menu>
+  );
+}
+
 export default function RecipeList({
   title,
   rows,
@@ -242,9 +353,43 @@ export default function RecipeList({
   onImport,
   onShowRail,
   listStyle,
+  rowActions,
 }) {
   const styles = useStyles();
   const active = SORT_OPTIONS.find((o) => o.key === sortBy) ?? SORT_OPTIONS[0];
+
+  /** Which row's menu is open, and where it opened. Null the rest of the time. See RowMenu. */
+  const [menu, setMenu] = useState(null);
+
+  const openRowMenu = useCallback((recipe, e) => {
+    e.preventDefault(); // the page's menu has nothing on it about a recipe
+    /*
+     * A point, as a positioning target Fluent can measure.
+     *
+     * Shift+F10 and the Menu key raise the same event with no pointer behind it, and those arrive
+     * at 0,0 -- which would open the menu in the corner of the window rather than at the row it is
+     * about. So a keyboard invocation is positioned against the row instead, which is where the
+     * focus that raised it already is.
+     */
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX || rect.left + rect.width / 2;
+    const y = e.clientY || rect.bottom;
+    setMenu({
+      recipe,
+      target: {
+        getBoundingClientRect: () => ({
+          x,
+          y,
+          left: x,
+          top: y,
+          right: x,
+          bottom: y,
+          width: 0,
+          height: 0,
+        }),
+      },
+    });
+  }, []);
 
   return (
     <>
@@ -369,6 +514,10 @@ export default function RecipeList({
                 key={r.id}
                 recipe={r}
                 selected={!selectMode && r.id === selectedId}
+                contextOpen={menu?.recipe.id === r.id}
+                // No row menu in select mode: there the row means "in the set", the header holds the
+                // one action the set has, and the menu's items are all about a single recipe.
+                onContext={rowActions && !selectMode ? openRowMenu : null}
                 styles={styles}
                 sortBy={sortBy}
                 selectMode={selectMode}
@@ -378,6 +527,16 @@ export default function RecipeList({
           </List>
         )}
       </div>
+
+      {/* Outside the scroller, because a popover positioned against a point should not be clipped
+          by the box that point happens to be in. */}
+      <RowMenu
+        menu={menu}
+        onOpenChange={(_, d) => {
+          if (!d.open) setMenu(null);
+        }}
+        actions={rowActions}
+      />
     </>
   );
 }

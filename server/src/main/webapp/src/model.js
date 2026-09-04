@@ -115,7 +115,7 @@ export const SORT_OPTIONS = [
   { key: "name", label: "Name", asc: "A → Z", desc: "Z → A" },
   { key: "modified", label: "Date modified", asc: "Oldest first", desc: "Newest first" },
   { key: "created", label: "Date created", asc: "Oldest first", desc: "Newest first" },
-  { key: "prepared", label: "Last made", asc: "Oldest first", desc: "Newest first" },
+  { key: "prepared", label: "Last prepared", asc: "Oldest first", desc: "Newest first" },
 ];
 
 const byText = (a, b) =>
@@ -210,13 +210,13 @@ export const listStyleKey = (v) =>
 /**
  * The row's second line.
  *
- * Sorting by "Last Made" swaps it for the date being sorted on, as the Compose app does and for the
+ * Sorting by "Last prepared" swaps it for the date being sorted on, as the Compose app does and for the
  * same reason: otherwise that ordering has no visible explanation, and the block of never-made
  * recipes at the end reads as a bug rather than as the point.
  */
 export function rowSubtitle(r, sortBy) {
   if (sortBy === "prepared") {
-    return everMade(r) ? `Made ${relativeDate(r.lastPrepared)}` : "Never made";
+    return everMade(r) ? `Last prepared ${relativeDate(r.lastPrepared)}` : "Never prepared";
   }
   return (r.introduction || r.source || r.sourceDetails || "").trim();
 }
@@ -322,10 +322,10 @@ export function formatMoment(iso) {
     : null;
 }
 
-/* ----------------------------------------------------------------- last made -- */
+/* ------------------------------------------------------------ last prepared -- */
 
 /*
- * "Last made on" is a calendar DAY, but the column holding it is a UTC timestamp that every client
+ * "Last prepared on" is a calendar DAY, but the column holding it is a UTC timestamp that every client
  * renders in local time. So a picked day is stored at LOCAL NOON: local midnight would render as
  * the PREVIOUS day for anyone west of UTC, while noon stays on the right day across every real
  * offset (UTC-12…UTC+14) and DST shift.
@@ -340,7 +340,7 @@ const dayValue = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.get
 /** Today as an `<input type="date">` value -- the cap on a field that cannot accept the future. */
 export const todayValue = () => dayValue(new Date());
 
-/** A stored "last made" stamp as the local day to seed a date field with, or "" for never made. */
+/** A stored "last prepared" stamp as the local day to seed a date field with, or "" for never made. */
 export function preparedToDayValue(iso) {
   const t = Date.parse(iso || "");
   return Number.isFinite(t) ? dayValue(new Date(t)) : "";

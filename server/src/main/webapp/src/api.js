@@ -100,7 +100,20 @@ export const api = {
     create: (kind, name) => post(`/api/${CLASSIFIER_PATH[kind]}`, { id: uuidv7(), name }),
     rename: (kind, id, name) =>
       put(`/api/${CLASSIFIER_PATH[kind]}/${encodeURIComponent(id)}`, { id, name }),
-    remove: (kind, id) => del(`/api/${CLASSIFIER_PATH[kind]}/${encodeURIComponent(id)}`),
+    /**
+     * Delete several at once -- and one, since a single delete is the same operation. Not the
+     * DELETE /{id} the native clients' sync uses: that applies a deletion a client has already made
+     * and restamped its recipes for. This endpoint does the recipes' side on the server, so a
+     * classifier deleted here is gone from its recipes everywhere, not only from the list.
+     */
+    removeMany: (kind, ids) => post(`/api/${CLASSIFIER_PATH[kind]}/delete`, { ids }),
+    /**
+     * Fold several rows into one, on the server. The native apps run the same fold locally and let
+     * sync carry it; the browser has no library of its own, so the server re-points the recipes
+     * and bumps their stamps itself. Answers with the ids it removed and the recipes it touched.
+     */
+    merge: (kind, survivorId, duplicateIds) =>
+      post(`/api/${CLASSIFIER_PATH[kind]}/merge`, { survivorId, duplicateIds }),
   },
   shoppingLists: {
     list: () => get("/api/shoppingLists"),

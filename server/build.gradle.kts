@@ -16,7 +16,13 @@ application {
     mainClass.set("com.enuvro.saltykmp.ApplicationKt")
 
     val isDevelopment: Boolean = project.ext.has("development")
-    applicationDefaultJvmArgs = listOf("-Dio.ktor.development=$isDevelopment")
+    // --enable-native-access mirrors the Dockerfile's ENTRYPOINT so `:server:run` behaves like a
+    // deployed container. It is a no-op on JDK 21 and only starts mattering on JDK 24+; see
+    // server/Dockerfile for the full reasoning.
+    applicationDefaultJvmArgs = listOf(
+        "-Dio.ktor.development=$isDevelopment",
+        "--enable-native-access=ALL-UNNAMED",
+    )
 }
 
 // Predictable runtime bytecode — matches the temurin:21-jre Docker base. Kotlin + Java targets aligned.
@@ -43,16 +49,65 @@ ktor {
  * outputs so Gradle skips them entirely when nothing has changed -- a no-op build pays nothing.
  *
  * Plain `Exec` rather than the com.github.node-gradle.node plugin: that plugin's configuration
- * cache support is still an open issue, and this build uses the configuration cache. The cost is
- * that Node has to be on PATH, which for a single-maintainer project it is.
+ * cache support is still an open issue, and this build uses the configuration cache.
  */
 val webappDir = layout.projectDirectory.dir("src/main/webapp")
 val webappDist = layout.buildDirectory.dir("webapp")
 
+/*
+ * npm by absolute path, found here rather than left to the daemon's PATH.
+ *
+ * `commandLine("npm", ...)` builds fine from a terminal and fails from IntelliJ with
+ * `Cannot run program "npm" ... error: 2`, because a daemon started by the IDE inherits the GUI
+ * app's environment -- which on macOS is the bare `/usr/bin:/bin:/usr/sbin:/sbin`, with no Homebrew
+ * and no version manager on it. The daemon is long-lived, so it is not something a clean or a
+ * re-sync clears: it outlives both.
+ *
+ * PATH first (a terminal build, CI, and anyone whose node is somewhere of their own), then the
+ * places a Mac or Linux install actually puts it. `-PnpmExecutable=/path/to/npm` or `SALTY_NPM`
+ * overrides the lot, which is also the answer for a version manager that resolves npm per shell.
+ */
+val npmExecutable: String = run {
+    val explicit = (findProperty("npmExecutable") as String?) ?: System.getenv("SALTY_NPM")
+    if (!explicit.isNullOrBlank()) return@run explicit
+
+    val fromPath = (System.getenv("PATH") ?: "").split(File.pathSeparator)
+    val wellKnown = listOf(
+        "/opt/homebrew/bin",                              // Apple silicon Homebrew
+        "/usr/local/bin",                                 // Intel Homebrew, and node's own installer
+        "${System.getProperty("user.home")}/.volta/bin",
+        "${System.getProperty("user.home")}/.local/bin",
+        "/usr/bin",
+    )
+    (fromPath + wellKnown)
+        .asSequence()
+        .filter { it.isNotBlank() }
+        .map { File(it, "npm") }
+        .firstOrNull { it.isFile && it.canExecute() }
+        ?.absolutePath
+        // Not an error at configuration time: `./gradlew help` and every task that does not touch
+        // the web UI should still work on a machine with no Node at all. The Exec task fails with
+        // this name if and when it is actually run, which is the point at which it matters.
+        ?: "npm"
+}
+
+/**
+ * npm is a shell script that execs `node`, so finding npm is only half of it: run it with a PATH
+ * that has no Node on it and it dies with exit 127 rather than a message. Its own directory goes on
+ * the front of the child's PATH, which is where the matching node is in every install above.
+ */
+fun Exec.npm(vararg args: String) {
+    workingDir = webappDir.asFile
+    commandLine(listOf(npmExecutable) + args)
+    val binDir = File(npmExecutable).parentFile?.absolutePath
+    if (binDir != null) {
+        environment("PATH", binDir + File.pathSeparator + (System.getenv("PATH") ?: ""))
+    }
+}
+
 val npmInstall by tasks.registering(Exec::class) {
     description = "Installs the web UI's npm dependencies."
-    workingDir = webappDir.asFile
-    commandLine("npm", "install", "--no-audit", "--no-fund")
+    npm("install", "--no-audit", "--no-fund")
     inputs.file(webappDir.file("package.json"))
     inputs.file(webappDir.file("package-lock.json"))
     // node_modules is the real output; naming it is what lets Gradle skip a warm install.
@@ -62,8 +117,7 @@ val npmInstall by tasks.registering(Exec::class) {
 val buildWebapp by tasks.registering(Exec::class) {
     description = "Builds the React web UI into build/webapp."
     dependsOn(npmInstall)
-    workingDir = webappDir.asFile
-    commandLine("npm", "run", "build")
+    npm("run", "build")
     inputs.dir(webappDir.dir("src"))
     inputs.file(webappDir.file("index.html"))
     inputs.file(webappDir.file("vite.config.js"))

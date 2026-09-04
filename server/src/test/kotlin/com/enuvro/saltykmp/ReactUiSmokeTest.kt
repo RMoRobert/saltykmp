@@ -85,6 +85,7 @@ class ReactUiSmokeTest {
         private const val CATEGORY_BAKING = "01A05100-0000-7000-8000-00000000RK01"
         private const val TAG_QUICK = "01A05100-0000-7000-8000-00000000RT01"
         private const val PIES_ID = "01A05100-0000-7000-8000-00000000RR01"
+        private const val CORNBREAD_ID = "01A05100-0000-7000-8000-00000000RR04"
         private const val LIST_ID = "01A05100-0000-7000-8000-00000000RL01"
         private const val FREEFORM_ID = "01A05100-0000-7000-8000-00000000RL02"
 
@@ -414,18 +415,47 @@ class ReactUiSmokeTest {
 
     private fun storedPies() = runBlocking { RecipeRepository.getById(userId(), PIES_ID) }
 
+    private fun stored(id: String) = runBlocking { RecipeRepository.getById(userId(), id) }
+
     /**
      * Waits for a write that the UI acknowledges optimistically and reports no toast for -- the
      * Last prepared menu's date, which updates on screen before the PUT has landed. Polling the row is
      * what makes reading it back deterministic rather than a guess at how long the request takes.
      */
-    private fun awaitPies(what: String, until: (com.enuvro.saltykmp.api.ServerRecipe?) -> Boolean) {
+    private fun awaitPies(what: String, until: (com.enuvro.saltykmp.api.ServerRecipe?) -> Boolean) =
+        awaitRecipe(PIES_ID, what, until)
+
+    private fun awaitRecipe(
+        id: String,
+        what: String,
+        until: (com.enuvro.saltykmp.api.ServerRecipe?) -> Boolean,
+    ) {
         val deadline = System.currentTimeMillis() + 5_000
         while (System.currentTimeMillis() < deadline) {
-            if (until(storedPies())) return
+            if (until(stored(id))) return
             Thread.sleep(50)
         }
         throw AssertionError("timed out waiting for $what")
+    }
+
+    /**
+     * Waits for the address to say `hash`.
+     *
+     * `waitForURL` is the obvious tool and the wrong one: it waits for a navigation, and a route
+     * change here is a pushState in a page that never navigates.
+     */
+    private fun awaitHash(page: Page, hash: String) =
+        page.waitForFunction("h => window.location.hash === h", hash)
+
+    /** Right-clicks a row and waits for its menu. The row is NOT opened by this -- that is the point. */
+    private fun openRowMenu(page: Page, name: String) {
+        page.locator("[role=option]").filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText(name)
+        ).first().click(
+            com.microsoft.playwright.Locator.ClickOptions()
+                .setButton(com.microsoft.playwright.options.MouseButton.RIGHT)
+        )
+        page.waitForSelector("text=Open in new tab")
     }
 
     private fun storedCount() = runBlocking {
@@ -608,18 +638,18 @@ class ReactUiSmokeTest {
             "() => document.querySelectorAll('[role=option]')[0].textContent.startsWith('Skillet')"
         )
 
-        // Last made puts the never-made block at the end in both directions -- every recipe in this
+        // Last prepared puts the never-prepared block at the end in both directions -- every recipe in this
         // fixture is never-made, so the assertion is that the list survives the ordering at all.
         page.getByLabel("List options").click()
         page.getByRole(AriaRole.MENUITEMRADIO).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Last made")
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Last prepared")
         ).click()
-        page.waitForSelector("text=Never made")
+        page.waitForSelector("text=Never prepared")
 
         // Remembered across a reload, and ticked when the menu comes back.
         page.reload()
         page.waitForSelector("[role=option]")
-        assertTrue(page.getByText("Never made").first().isVisible, "the ordering is remembered")
+        assertTrue(page.getByText("Never prepared").first().isVisible, "the ordering is remembered")
         page.close()
     }
 
@@ -647,7 +677,7 @@ class ReactUiSmokeTest {
 
         val panel = page.getByRole(AriaRole.DIALOG)
         panel.getByText("Added").waitFor()
-        // Exact: "Last made" appears twice in the panel, the second time under Sync details.
+        // Exact: "Last prepared" appears twice in the panel, the second time under Sync details.
         assertTrue(
             panel.getByText(
                 "Modified",
@@ -1000,6 +1030,108 @@ class ReactUiSmokeTest {
         page.close()
     }
 
+    /**
+     * Select mode folds two courses into one, with the survivor chosen in the dialog.
+     *
+     * "Breads" has three recipes and "Main" one, so Breads is what the dialog pre-picks; the test
+     * picks Main instead, which is what proves the choice is honoured rather than the ranking. The
+     * database is then checked for the two halves of the sync contract: every recipe re-pointed,
+     * and only the re-pointed ones restamped.
+     */
+    @Test
+    fun theLibraryManagerMergesWithTheSurvivorChosen() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit classifiers")
+        ).first().click()
+        page.waitForSelector("text=Edit classifiers")
+        val manager = page.getByRole(AriaRole.DIALOG).first()
+        manager.getByRole(AriaRole.TAB, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Courses")).click()
+        manager.getByRole(AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Select").setExact(true)).click()
+
+        // Two rows checked: the bar counts them, and Merge wakes up.
+        val merge = manager.getByRole(AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Merge…"))
+        assertTrue(merge.isDisabled, "one row is nothing to merge into")
+        manager.getByRole(AriaRole.CHECKBOX, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Breads")).check()
+        manager.getByRole(AriaRole.CHECKBOX, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Main")).check()
+        page.waitForSelector("text=2 selected")
+        merge.click()
+
+        page.waitForSelector("text=Merge 2 courses")
+        val confirm = page.getByRole(AriaRole.DIALOG).last()
+        // Breads (3 recipes) is pre-picked, and the message is written in its name.
+        assertTrue(confirm.getByRole(AriaRole.RADIO, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Breads")).isChecked)
+        page.waitForSelector("text=\"Main\" will be deleted, and its recipes will use \"Breads\" instead")
+        // Choose the other one; the message follows.
+        confirm.getByRole(AriaRole.RADIO, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Main")).check()
+        page.waitForSelector("text=\"Breads\" will be deleted, and its recipes will use \"Main\" instead")
+        confirm.getByRole(AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Merge").setExact(true)).click()
+
+        // The toast says what happened, and the rail no longer lists the course that went.
+        page.waitForSelector("text=Merged 1 course into Main")
+        page.waitForSelector(
+            "text=Breads",
+            com.microsoft.playwright.Page.WaitForSelectorOptions().setState(com.microsoft.playwright.options.WaitForSelectorState.DETACHED),
+        )
+
+        val courses = runBlocking { LibraryRepository.listCourses(userId()) }
+        assertEquals(listOf("Main"), courses.map { it.name })
+        val recipes = runBlocking { RecipeRepository.listForSync(userId(), null, null, 100).recipes }
+        assertTrue(recipes.all { it.courseId == COURSE_MAIN }, "every recipe now uses the survivor: ${recipes.map { it.name to it.courseId }}")
+        val cornbread = runBlocking { RecipeRepository.getById(userId(), CORNBREAD_ID)!! }
+        assertTrue(cornbread.lastModifiedDate!! > "2026-08-03T00:00:00.000Z", "a re-pointed recipe is restamped, so the native clients download it")
+        assertEquals("2026-08-20T00:00:00.000Z", storedPies()!!.lastModifiedDate, "the recipe that already had the survivor is untouched")
+        assertEquals(emptyList<String>(), errors, "merging should not log console errors")
+        page.close()
+    }
+
+    /**
+     * Select mode deletes several rows at once, after a confirmation that counts what they cost.
+     * Both seeded courses go, which also proves the last row of a kind can be deleted from here,
+     * and every recipe that had a course is restamped for the sync.
+     */
+    @Test
+    fun theLibraryManagerDeletesSeveralAtOnce() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit classifiers")
+        ).first().click()
+        page.waitForSelector("text=Edit classifiers")
+        val manager = page.getByRole(AriaRole.DIALOG).first()
+        manager.getByRole(AriaRole.TAB, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Courses")).click()
+        manager.getByRole(AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Select").setExact(true)).click()
+
+        val delete = manager.getByRole(AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Delete").setExact(true))
+        assertTrue(delete.isDisabled, "nothing checked, nothing to delete")
+        manager.getByRole(AriaRole.CHECKBOX, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Breads")).check()
+        manager.getByRole(AriaRole.CHECKBOX, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Main")).check()
+        page.waitForSelector("text=2 selected")
+        delete.click()
+
+        // The confirmation counts the recipes: three under Breads and one under Main.
+        page.waitForSelector("text=Delete 2 courses?")
+        page.waitForSelector("text=4 recipes are currently classified with these courses.")
+        page.getByRole(AriaRole.DIALOG).last()
+            .getByRole(AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Delete").setExact(true)).click()
+
+        page.waitForSelector("text=Deleted 2 courses")
+        page.waitForSelector(
+            "text=Breads",
+            com.microsoft.playwright.Page.WaitForSelectorOptions().setState(com.microsoft.playwright.options.WaitForSelectorState.DETACHED),
+        )
+
+        assertEquals(0, runBlocking { LibraryRepository.countCourses(userId()) })
+        val recipes = runBlocking { RecipeRepository.listForSync(userId(), null, null, 100).recipes }
+        assertTrue(recipes.all { it.courseId == null }, "no recipe still names a deleted course: ${recipes.map { it.name to it.courseId }}")
+        assertTrue(storedPies()!!.lastModifiedDate!! > "2026-08-20T00:00:00.000Z", "a recipe that lost its course is restamped for the sync")
+        assertEquals(emptyList<String>(), errors, "deleting should not log console errors")
+        page.close()
+    }
+
     /** An empty classifier group offers nothing to select. */
     @Test
     fun anEmptyLibraryGroupIsNotSelectable() {
@@ -1178,6 +1310,168 @@ class ReactUiSmokeTest {
         page.close()
     }
 
+    /* ---------------------------------------------------- addressable recipes -- */
+
+    /**
+     * A recipe is addressable, and Back walks back through the ones that were opened.
+     *
+     * The address is what opens a recipe -- a click sets it and the route effect does the rest -- so
+     * this is also what proves that a click and a press of Back are the same code path.
+     */
+    @Test
+    fun aRecipeIsAddressableAndBackReturnsToTheOneBefore() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+        assertTrue(page.url().endsWith("#/recipe/$PIES_ID"), "the open recipe is the address: ${page.url()}")
+
+        page.getByText("Skillet Cornbread").first().click()
+        awaitHash(page, "#/recipe/$CORNBREAD_ID")
+
+        page.goBack()
+        awaitHash(page, "#/recipe/$PIES_ID")
+        // The address arrives first and the recipe follows it -- Back is a route change like any
+        // other, so what proves it worked is the fetch it starts landing in the pane.
+        page.waitForSelector("text=Fill the tins and bake 25 minutes.")
+        assertEquals(emptyList<String>(), errors, "recipe routing should not log console errors")
+        page.close()
+    }
+
+    /**
+     * The address works in a tab that has never seen the list -- which is the whole point of having
+     * one -- and `/edit` lands in the editor rather than the read view.
+     */
+    @Test
+    fun aPastedRecipeAddressOpensThatRecipe() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.navigate("http://localhost:$port/app#/recipe/$PIES_ID")
+        page.waitForSelector("text=Ingredients")
+        assertTrue(page.getByText("Fill the tins and bake 25 minutes.").isVisible)
+
+        page.navigate("http://localhost:$port/app#/recipe/$PIES_ID/edit")
+        page.waitForSelector("text=Edit recipe")
+        assertEquals(
+            "Australian Mini Meat Pies", page.getByLabel("Name").inputValue(),
+            "the editor opened on the addressed recipe",
+        )
+        assertEquals(emptyList<String>(), errors, "a pasted address should not log console errors")
+        page.close()
+    }
+
+    /**
+     * A bookmark outlives the recipe it names. Landing on one that is gone says so and falls back to
+     * the list, rather than sitting on an empty pane under an address that will never resolve.
+     */
+    @Test
+    fun anAddressForAMissingRecipeFallsBackToTheList() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.navigate("http://localhost:$port/app#/recipe/01A05100-0000-7000-8000-00000000RR99")
+        // The address giving up is the assertion: the placeholder below is on screen from the moment
+        // the app mounts, so waiting for it would prove nothing about the load that failed.
+        awaitHash(page, "")
+        assertTrue(page.getByText("Select a recipe.").isVisible, "the pane says there is nothing open")
+        assertEquals(
+            0, page.locator("[role=option][aria-selected=true]").count(),
+            "and nothing is left selected in the list",
+        )
+        page.close()
+    }
+
+    /* --------------------------------------------------------- the row's menu -- */
+
+    /**
+     * The row menu's whole reason for existing: it acts on a recipe WITHOUT opening it, which is
+     * what the desktop app's right-click does and what the detail pane's own menu cannot do.
+     *
+     * Every item works off the list row, which is a summary -- the favourite flag this toggles and
+     * the date the submenu prints are both on it, so the menu needs no fetch of its own.
+     */
+    @Test
+    fun theRowMenuActsOnARowWithoutOpeningIt() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        openRowMenu(page, "Skillet Cornbread")
+        page.getByText("Add to favorites").click()
+
+        awaitRecipe(CORNBREAD_ID, "the favourite to be written") { it?.isFavorite == true }
+        assertTrue(
+            page.getByText("Select a recipe.").isVisible,
+            "the recipe was never opened -- the detail pane is still empty",
+        )
+        assertTrue(page.url().endsWith("/app"), "and the address did not move: ${page.url()}")
+        assertEquals(emptyList<String>(), errors, "the row menu should not log console errors")
+        page.close()
+    }
+
+    /** Last prepared, set from the row rather than from the open recipe. */
+    @Test
+    fun theRowMenuSetsTheLastPreparedDate() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        openRowMenu(page, "Australian Mini Meat Pies")
+        page.getByText("Last prepared date").click()
+        page.getByText("Set to today").click()
+
+        awaitPies("the last prepared date to be written") { it?.lastPrepared != null }
+        assertTrue(page.getByText("Select a recipe.").isVisible, "still nothing open")
+        page.close()
+    }
+
+    /**
+     * Delete from a row's menu takes that row, and only that row.
+     *
+     * The pane used to be emptied whatever was deleted, because the only way to reach Delete was
+     * from the recipe that was open. Reached from a row, that closed the recipe the reader was
+     * reading because they right-clicked a different one.
+     */
+    @Test
+    fun deletingFromARowMenuLeavesTheOpenRecipeAlone() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+
+        openRowMenu(page, "Banana-Oat Waffles")
+        page.getByText("Delete recipe…").click()
+        page.getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Page.GetByRoleOptions().setName("Delete").setExact(true),
+        ).first().click()
+        page.waitForSelector("text=Recipe deleted")
+
+        assertTrue(
+            page.getByText("Fill the tins and bake 25 minutes.").isVisible,
+            "the recipe that was open is still open",
+        )
+        assertTrue(page.url().endsWith("#/recipe/$PIES_ID"), "and still addressed: ${page.url()}")
+        assertEquals(3, page.locator("[role=option]").count(), "the deleted row is gone")
+        page.close()
+    }
+
+    /** Edit from a row's menu opens THAT row in the editor, address and all. */
+    @Test
+    fun editFromTheRowMenuOpensThatRowsEditor() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        openRowMenu(page, "Skillet Cornbread")
+        page.getByText("Edit", com.microsoft.playwright.Page.GetByTextOptions().setExact(true)).click()
+        page.waitForSelector("text=Edit recipe")
+
+        assertEquals("Skillet Cornbread", page.getByLabel("Name").inputValue())
+        assertTrue(page.url().endsWith("#/recipe/$CORNBREAD_ID/edit"), "the editor has an address: ${page.url()}")
+        page.close()
+    }
+
     /** Editing a recipe writes through to the API, not just to the pane. */
     @Test
     fun savingAnEditReachesTheServer() {
@@ -1200,7 +1494,7 @@ class ReactUiSmokeTest {
         val stored = runBlocking {
             RecipeRepository.getById(
                 UserRepository.findByUsername("tester")!!.id,
-                "01A05100-0000-7000-8000-00000000RR04",
+                CORNBREAD_ID,
             )
         }
         assertEquals("Skillet Cornbread with Honey", stored?.name, "the edit should have been saved")

@@ -84,7 +84,11 @@ fun WebImportDialog(
                     placeholder = { Text("https://example.com/recipe") },
                     singleLine = true,
                     enabled = !busy,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Uri,
+                        imeAction = ImeAction.Go,
+                        platformImeOptions = nativeTextInputImeOptions,
+                    ),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 if (busy) {

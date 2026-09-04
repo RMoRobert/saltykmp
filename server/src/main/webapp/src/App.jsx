@@ -17,8 +17,9 @@ import { saltyDarkTheme, saltyLightTheme } from "./theme";
 import { listStyleKey, matchesFilter, uuidv7, visibleRecipes, wireNow } from "./model";
 import {
   readStored,
+  recipeHash,
   useCompact,
-  useHashDialog,
+  useHashRoute,
   usePrefersDark,
   useUnloadGuard,
   useWakeLock,
@@ -177,6 +178,10 @@ export default function App() {
     setShoppingLists((await api.shoppingLists.list()) || []);
   }, []);
 
+  const reloadRecipes = useCallback(async () => {
+    setRecipes((await api.recipes.list()) || []);
+  }, []);
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -239,17 +244,45 @@ export default function App() {
   const [wakeLockPref, setWakeLockPref] = useState(() => readStored(WAKE_LOCK_KEY, "1") !== "0");
   useWakeLock(chefMode && wakeLockPref);
 
-  /* Get Info is about the recipe being read, and a recipe is not addressable, so this one is
-     plain state rather than a hash dialog: a reload lands on the empty state, and a hash would
-     restore a panel with nothing behind it. Rendered only while open, so a fresh open starts
-     from what is stored rather than from what the last one was left holding. */
-  const [infoOpen, setInfoOpen] = useState(false);
-  /* "Set as date…" from the Last made menu, on the same terms: about the open recipe, so not
-     addressable, and mounted only while open so it starts from the stored date every time. */
-  const [lastMadeOpen, setLastMadeOpen] = useState(false);
+  /*
+   * Get Info holds the RECIPE it is about rather than a boolean, because it is no longer only ever
+   * about the recipe being read: a row can be right-clicked in the list without being opened. It is
+   * not addressable -- a panel is about a recipe, and restoring one over a list nobody navigated to
+   * is a panel with nothing behind it -- and it is mounted only while set, so a fresh open starts
+   * from what is stored rather than from what the last one was left holding.
+   *
+   * `detail` is how much of that recipe is in hand: a list row is a summary, which carries every
+   * date the panel leads with but not the last-prepared sync stamp inside Sync details. See openInfo.
+   */
+  const [info, setInfo] = useState(null); // { recipe, detail: full | loading | unavailable }
+  const infoSerial = useRef(0);
+  /* "Set as date…" from the Last prepared menu, on the same terms: the recipe it is about, mounted
+     only while set so it starts from the stored date every time. A summary is enough for this one --
+     the date it seeds from and the name it prints are both on the row. */
+  const [lastMadeFor, setLastMadeFor] = useState(null);
 
-  const [dialog, openDialog, closeDialog] = useHashDialog(DIALOGS);
+  const { route, push: pushRoute, replace: replaceRoute, closeDialog: closeDialogRoute } =
+    useHashRoute(DIALOGS);
+  const dialog = route.dialog;
   useUnloadGuard(dirty);
+
+  const openDialog = useCallback(
+    (name) => {
+      if (dialog === name) return;
+      // Replace rather than push when one dialog leads to another, so Back closes the pair
+      // instead of walking backwards through them one at a time.
+      if (dialog) replaceRoute({ dialog: name });
+      else pushRoute({ dialog: name });
+    },
+    [dialog, pushRoute, replaceRoute],
+  );
+
+  /* What the dialog is sitting on top of: the recipe the panes still have behind it, which is where
+     closing one has to land whether it gets there by popping our entry or by replacing it. */
+  const closeDialog = useCallback(
+    () => closeDialogRoute({ recipeId: selectedId, editing: mode === "edit" }),
+    [closeDialogRoute, mode, selectedId],
+  );
 
   useEffect(() => writeStored(SORT_KEY, sortBy), [sortBy]);
   useEffect(() => writeStored(SORT_ASC_KEY, sortAsc), [sortAsc]);
@@ -268,7 +301,7 @@ export default function App() {
    * another recipe, another filter, or Back.
    */
   const guard = useCallback(
-    (proceed) => {
+    (proceed, onCancel) => {
       if (!(mode === "edit" && dirty)) {
         proceed();
         return;
@@ -281,6 +314,9 @@ export default function App() {
           setDirty(false);
           proceed();
         },
+        // Back and Forward have already moved the history by the time this asks, so staying put
+        // means putting the address back -- see the route effect.
+        onCancel,
       });
     },
     [ask, dirty, mode],
@@ -289,6 +325,10 @@ export default function App() {
   const applyFilter = useCallback(
     (kind, id, label) =>
       guard(() => {
+        // Whether the recipe on show survives the new filter, decided before the updaters below run
+        // so the address can be settled here rather than from inside one of them.
+        const shown = recipes.find((r) => r.id === selectedId);
+        if (!shown || !matchesFilter(shown, { kind, id })) replaceRoute({});
         setSection("recipes");
         setMode("read");
         setPane("list");
@@ -303,7 +343,7 @@ export default function App() {
         setCurrent((c) => {
           if (!c) return null;
           // A draft has nothing behind it in any list. Left here it became a recipe you could
-          // read, favourite and delete, and favouriting it CREATED it on the server.
+          // read, favorite and delete, and favouriting it CREATED it on the server.
           if (!selectedId) return null;
           return matchesFilter(c, { kind, id }) ? c : null;
         });
@@ -312,29 +352,146 @@ export default function App() {
           return c && !matchesFilter(c, { kind, id }) ? null : s;
         });
       }),
-    [claimDetail, guard, recipes, selectedId],
+    [claimDetail, guard, recipes, replaceRoute, selectedId],
   );
 
-  const openRecipe = useCallback(
-    (id) =>
-      guard(async () => {
-        const serial = claimDetail();
-        setSelectedId(id);
+  /**
+   * Fetches a recipe into the detail pane.
+   *
+   * Called by the route effect below and nowhere else: what opens a recipe is its address, and this
+   * is what that address costs.
+   */
+  const loadRecipe = useCallback(
+    async (id, editing) => {
+      const serial = claimDetail();
+      // A recipe's address can arrive while the shopping lists are on screen -- pasted, or Back from
+      // a list to the recipe that was open before it. The section follows the address, or the recipe
+      // loads into a pane still showing a shopping list.
+      setSection("recipes");
+      setSelectedId(id);
+      setMode("read");
+      setDirty(false);
+      setPane("detail");
+      try {
+        const loaded = await api.recipes.get(id);
+        if (serial !== detailSerial.current) return;
+        setCurrent(loaded);
+        // The editor is entered only once there is something to edit: mounted against a null recipe
+        // it falls back to the empty placeholder, so `#/recipe/<id>/edit` flashed "Select a recipe."
+        // in the pane it was about to fill.
+        if (editing) setMode("edit");
+      } catch (e) {
+        if (serial !== detailSerial.current) return;
+        notify(e.message || "Could not open that recipe", "error");
+        // A bookmark or a pasted link can name a recipe that has since been deleted, or one that was
+        // never this account's. Nothing is open, so nothing is selected and the address says so too.
+        setCurrent(null);
+        setSelectedId(null);
+        setPane("list"); // compact: an empty detail pane has no way back to the list
+        replaceRoute({});
+      }
+    },
+    [claimDetail, notify, replaceRoute],
+  );
+
+  /**
+   * A merge or delete in Edit classifiers changed recipes as well as the list: the summaries carry
+   * the classifier ids the filters read, so those reload with the classifiers. The recipe open
+   * behind the dialog is re-fetched too, if it was touched -- unless it is in the editor, where the
+   * draft is the reader's and cannot be replaced under them. That draft still names the old row, and
+   * saving it would write that id back; saying so is the most that can be done for it.
+   */
+  const onLibraryRecipesTouched = useCallback(
+    async ({ touchedRecipeIds }) => {
+      await Promise.all([reloadClassifiers(), reloadRecipes()]);
+      if (!current || !touchedRecipeIds.includes(current.id)) return;
+      if (mode === "edit") {
+        notify(`"${current.name}" is open in the editor with its old classifiers; reopen it to see the change.`, "warning");
+        return;
+      }
+      const serial = detailSerial.current;
+      try {
+        const full = await api.recipes.get(current.id);
+        if (serial === detailSerial.current) setCurrent(full);
+      } catch {
+        /* the list is already fresh; the pane catches up on the next open */
+      }
+    },
+    [current, mode, notify, reloadClassifiers, reloadRecipes],
+  );
+
+  /**
+   * The address and the panes, kept in step -- with the address as the one that decides.
+   *
+   * Every way of opening a recipe goes through the URL: a click on a row pushes it, Back and Forward
+   * move it, a bookmark or a pasted link arrives with it already set, and a reload starts from it.
+   * This effect is the only place that reads it and the only place that loads a recipe, so those
+   * four routes into the pane are the same code and cannot drift apart. It no-ops whenever the two
+   * already agree, which is most of the time -- a click sets the address, this runs once and finds
+   * either the work to do or nothing to do.
+   *
+   * The guard is here rather than only on the buttons for the same reason: Back is a way of
+   * replacing what the editor is holding, and it is not a click on anything. It has already moved
+   * the history by the time this runs, so refusing means putting the address back where it was --
+   * which leaves that history entry holding the editor's address rather than the one it arrived
+   * with. The address always describes the screen, which is the property worth keeping; the entry
+   * it is written on is not.
+   */
+  useEffect(() => {
+    // A dialog's address replaces the recipe's while it is open (see useHashRoute), so it says
+    // nothing about what is behind it.
+    if (route.dialog) return;
+
+    const restore = () => replaceRoute({ recipeId: selectedId, editing: mode === "edit" });
+
+    if (!route.recipeId) {
+      // An unsaved draft has no address of its own, so the empty route is where it lives: nothing to
+      // reconcile, and closing it would throw away what the reader is typing.
+      if (!selectedId) return;
+      guard(() => {
+        claimDetail();
+        setCurrent(null);
+        setSelectedId(null);
         setMode("read");
-        setDirty(false);
-        setPane("detail");
-        try {
-          const loaded = await api.recipes.get(id);
-          if (serial === detailSerial.current) setCurrent(loaded);
-        } catch (e) {
-          if (serial !== detailSerial.current) return;
-          notify(e.message || "Could not open that recipe", "error");
-          // Compact shows one pane at a time, and the detail pane has nothing to show: staying
-          // here would be an empty screen with no way back to the list.
-          setPane("list");
-        }
-      }),
-    [claimDetail, guard, notify],
+        setPane("list");
+      }, restore);
+      return;
+    }
+
+    if (route.recipeId !== selectedId) {
+      guard(() => loadRecipe(route.recipeId, route.editing), restore);
+      return;
+    }
+
+    // The same recipe, described differently: entering the editor from its own address, or leaving
+    // it because Back went to the address the recipe was being read at.
+    if (route.editing && mode !== "edit") {
+      if (current) setMode("edit");
+    } else if (!route.editing && mode === "edit") {
+      guard(() => setMode("read"), () => replaceRoute({ recipeId: selectedId, editing: true }));
+    }
+  }, [claimDetail, current, guard, loadRecipe, mode, replaceRoute, route, selectedId]);
+
+  /**
+   * Opening a recipe is a navigation: this sets the address, and the effect above does the rest.
+   *
+   * A new history entry rather than a replaced one, so Back returns to the recipe the reader came
+   * from. That does mean a session of browsing leaves a trail to walk back through -- which is what
+   * Back means everywhere else in a browser, and the alternative is a Back that leaves the app from
+   * the twentieth recipe as readily as from the first.
+   */
+  const showRecipe = useCallback(
+    (id, editing = false) => guard(() => pushRoute({ recipeId: id, editing })),
+    [guard, pushRoute],
+  );
+
+  /** Edit: a navigation for a row that is not open, and only a change of mode for the one that is. */
+  const editRecipe = useCallback(
+    (recipe) => {
+      if (recipe.id !== selectedId) showRecipe(recipe.id, true);
+      else replaceRoute({ recipeId: recipe.id, editing: true });
+    },
+    [replaceRoute, selectedId, showRecipe],
   );
 
   /* ----------------------------------------------------------------- edits -- */
@@ -343,12 +500,15 @@ export default function App() {
   const openDraft = useCallback(
     (draft) => {
       claimDetail(); // a recipe still loading must not land on top of the draft
+      // A draft exists only in this tab, so there is no address for it -- and replacing rather than
+      // pushing keeps Back from walking into a draft that was already abandoned once.
+      replaceRoute({});
       setCurrent(draft);
       setSelectedId(null); // nothing in the list to highlight until it is saved
       setMode("edit");
       setPane("detail");
     },
-    [claimDetail],
+    [claimDetail, replaceRoute],
   );
 
   const newRecipe = useCallback(
@@ -418,6 +578,9 @@ export default function App() {
         setSelectedId(saved.id);
         setMode("read");
         setDirty(false);
+        // Replaced, not pushed: the editor and the recipe it saved are one place, and a draft's
+        // first save is where that place gets an address at all.
+        replaceRoute({ recipeId: saved.id });
         if (imageError) notify(imageError.message || "Saved, but the photo did not", "error");
         else notify("Saved");
         return true;
@@ -426,7 +589,7 @@ export default function App() {
         return false;
       }
     },
-    [claimDetail, notify],
+    [claimDetail, notify, replaceRoute],
   );
 
   /**
@@ -474,8 +637,8 @@ export default function App() {
         title: ids.length === 1 ? "Delete recipe" : `Delete ${ids.length} recipes`,
         body:
           ids.length === 1
-            ? "It will be removed from your library on every device."
-            : `All ${ids.length} will be removed from your library on every device.`,
+            ? "Thiws recipe will be removed from your library (and any device syncing to this library)."
+            : `The selected ${ids.length} recipes will be removed from your library (and any device syncing to this library).`,
         confirmLabel: "Delete",
         onConfirm: async () => {
           // Sequential rather than parallel: a partial failure should leave the list showing what
@@ -498,37 +661,44 @@ export default function App() {
             setSelectedId(null);
             setMode("read");
             setPane("list"); // compact: an empty detail pane has no way back to the list
+            replaceRoute({});
           }
           if (failed.length) notify(`Deleted ${gone.length}; ${failed.length} could not be`, "error");
           else notify(gone.length === 1 ? "Recipe deleted" : `Deleted ${gone.length} recipes`);
         },
       }),
-    [ask, claimDetail, notify, selectedId],
+    [ask, claimDetail, notify, replaceRoute, selectedId],
   );
 
   const deleteRecipe = useCallback(
     (recipe) =>
       ask({
         title: "Delete recipe",
-        body: `“${recipe.name || "Untitled"}” will be removed from your library on every device.`,
+        body: `“${recipe.name || "Untitled"}” will be removed from your library (and any devices syncing to this library).`,
         confirmLabel: "Delete",
         onConfirm: async () => {
           await api.recipes.remove(recipe.id);
-          claimDetail();
           setRecipes((list) => list.filter((r) => r.id !== recipe.id));
-          setCurrent(null);
-          setSelectedId(null);
-          setMode("read");
-          setDirty(false);
-          setPane("list"); // compact: nothing to show here, and nothing to press either
+          // Only the recipe being read takes the pane down with it. This is reachable from a row's
+          // own menu now, and emptying the pane over a row that merely happened to be right-clicked
+          // closed the recipe the reader was looking at.
+          if (recipe.id === selectedId) {
+            claimDetail();
+            setCurrent(null);
+            setSelectedId(null);
+            setMode("read");
+            setDirty(false);
+            setPane("list"); // compact: nothing to show here, and nothing to press either
+            replaceRoute({});
+          }
           notify("Recipe deleted");
         },
       }),
-    [ask, claimDetail, notify],
+    [ask, claimDetail, notify, replaceRoute, selectedId],
   );
 
   /**
-   * A one-field write: favourite, want-to-make, the last-made date.
+   * A one-field write: favorite, want-to-make, the last-made date.
    *
    * Optimistic, because the control has to answer the click -- and rolled back when the write
    * fails, which it did not used to be: the heart stayed filled over a recipe the server had never
@@ -536,7 +706,7 @@ export default function App() {
    *
    * The row is RE-READ rather than sent from what this tab is holding. `current` is fetched when a
    * recipe is opened and never again, so a tab left open on a recipe for an hour and then
-   * favourited was uploading the hour-old body over whatever had been edited elsewhere since --
+   * favorited was uploading the hour-old body over whatever had been edited elsewhere since --
    * with a fresh `lastModifiedDate`, so every other client downloaded the stale copy as the newest
    * one. One extra GET is the price of not doing that.
    */
@@ -564,7 +734,7 @@ export default function App() {
     [notify],
   );
 
-  /** Favourite and want-to-make are one-field writes, so they patch rather than round-trip a form. */
+  /** Favorite and want-to-make are one-field writes, so they patch rather than round-trip a form. */
   const toggleFlag = useCallback(
     (recipe, field) =>
       patchRecipe(
@@ -591,6 +761,37 @@ export default function App() {
         "Could not set that date",
       ),
     [patchRecipe],
+  );
+
+  /**
+   * Get info on any row, whether or not it is the recipe being read.
+   *
+   * A list row is a summary, and a summary carries every date this panel leads with -- added,
+   * modified, last prepared, the photo's stamp. The one thing it does not carry is the last-prepared
+   * SYNC stamp, which lives inside Sync details, collapsed. So the panel opens on what the row
+   * already knows and fills that one line in when the fetch lands, rather than making the reader
+   * wait for a panel that is otherwise complete. The recipe being read is already the full row, so
+   * it costs nothing at all.
+   *
+   * `unavailable` rather than a silent fallback when the fetch fails: the field is absent either
+   * way, and "Never set" would be a claim about the recipe rather than about what is known of it.
+   */
+  const openInfo = useCallback(
+    async (recipe) => {
+      if (recipe.id === current?.id) {
+        setInfo({ recipe: current, detail: "full" });
+        return;
+      }
+      const serial = (infoSerial.current += 1);
+      setInfo({ recipe, detail: "loading" });
+      try {
+        const full = await api.recipes.get(recipe.id);
+        if (serial === infoSerial.current) setInfo({ recipe: full, detail: "full" });
+      } catch {
+        if (serial === infoSerial.current) setInfo({ recipe, detail: "unavailable" });
+      }
+    },
+    [current],
   );
 
   /* -------------------------------------------------------------- chef mode -- */
@@ -680,6 +881,7 @@ export default function App() {
         onCancel={() =>
           guard(() => {
             setMode("read");
+            replaceRoute(selectedId ? { recipeId: selectedId } : {});
             if (!selectedId) {
               setCurrent(null);
               setPane("list"); // compact: cancelling a new recipe leaves nothing to look at
@@ -696,11 +898,11 @@ export default function App() {
         courses={courses}
         chefMode={chefMode}
         onBack={compact ? () => setPane("list") : null}
-        onEdit={() => setMode("edit")}
+        onEdit={() => editRecipe(current)}
         onDelete={deleteRecipe}
-        onGetInfo={() => setInfoOpen(true)}
+        onGetInfo={() => openInfo(current)}
         onSetPrepared={(wire) => setPrepared(current, wire)}
-        onPickLastMade={() => setLastMadeOpen(true)}
+        onPickLastMade={() => setLastMadeFor(current)}
         onToggleFavorite={(r) => toggleFlag(r, "isFavorite")}
         onToggleWantToMake={(r) => toggleFlag(r, "wantToMake")}
         onEnterChefMode={enterChefMode}
@@ -730,7 +932,7 @@ export default function App() {
           setSortAsc(asc);
         }}
         selectedId={selectedId}
-        onSelect={openRecipe}
+        onSelect={showRecipe}
         selectMode={selectMode}
         onSelectMode={changeSelectMode}
         checkedIds={checkedIds}
@@ -740,6 +942,18 @@ export default function App() {
         onImport={() => openDialog("import")}
         onShowRail={showRail}
         listStyle={listStyle}
+        // One object rather than eight props: these are the row menu's actions, they are only ever
+        // passed together, and every one of them takes the row it was opened on.
+        rowActions={{
+          href: recipeHash,
+          onEdit: editRecipe,
+          onGetInfo: openInfo,
+          onSetPrepared: setPrepared,
+          onPickLastMade: setLastMadeFor,
+          onToggleFavorite: (r) => toggleFlag(r, "isFavorite"),
+          onToggleWantToMake: (r) => toggleFlag(r, "wantToMake"),
+          onDelete: deleteRecipe,
+        }}
       />
     ) : (
       <ShoppingListsIndex
@@ -779,6 +993,7 @@ export default function App() {
             tags={tags}
             onShoppingLists={() =>
               guard(() => {
+                replaceRoute({});
                 setSection("lists");
                 setSelectedListId(null);
                 setPane("list");
@@ -823,15 +1038,19 @@ export default function App() {
         onError={(e) => notify(e.message || "That did not work", "error")}
       />
 
-      {infoOpen && current ? (
-        <RecipeInfoDialog recipe={current} onClose={() => setInfoOpen(false)} />
+      {info ? (
+        <RecipeInfoDialog
+          recipe={info.recipe}
+          detail={info.detail}
+          onClose={() => setInfo(null)}
+        />
       ) : null}
 
-      {lastMadeOpen && current ? (
+      {lastMadeFor ? (
         <LastMadeDialog
-          recipe={current}
-          onClose={() => setLastMadeOpen(false)}
-          onSetPrepared={(wire) => setPrepared(current, wire)}
+          recipe={lastMadeFor}
+          onClose={() => setLastMadeFor(null)}
+          onSetPrepared={(wire) => setPrepared(lastMadeFor, wire)}
         />
       ) : null}
 
@@ -854,6 +1073,7 @@ export default function App() {
         tags={tags}
         recipes={recipes}
         onChanged={reloadClassifiers}
+        onRecipesTouched={onLibraryRecipesTouched}
         notify={notify}
         ask={ask}
       />

@@ -10,17 +10,6 @@ plugins {
     alias(libs.plugins.composeHotReload)
 }
 
-// FileKit transitively bumps the Skiko *classes* (0.9.37.4) above the Skiko *native runtime* that
-// Compose pins, causing an UnsatisfiedLinkError on desktop. Pin every Skiko module to one version so
-// the loaded native library matches the classes.
-configurations.all {
-    resolutionStrategy.eachDependency {
-        if (requested.group == "org.jetbrains.skiko") {
-            useVersion("0.9.37.4")
-        }
-    }
-}
-
 kotlin {
     androidTarget {
         compilerOptions {
@@ -54,11 +43,11 @@ kotlin {
             implementation(libs.compose.foundation)
             implementation(libs.compose.material3)
             // 1.7.3 is the last published Compose material-icons-extended; pure-Kotlin ImageVectors,
-            // compatible with Compose 1.10 at runtime.
+            // compatible with Compose 1.11 at runtime.
             implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3")
             implementation(libs.compose.ui)
             // Multiplatform BackHandler (system/gesture back) lives in its own artifact.
-            implementation("org.jetbrains.compose.ui:ui-backhandler:1.10.0")
+            implementation("org.jetbrains.compose.ui:ui-backhandler:1.11.1")
             implementation(libs.compose.components.resources)
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)

@@ -158,6 +158,7 @@ fun ShoppingListsScreen(
                                         false
                                     }
                                 },
+                            keyboardOptions = SaltyKeyboardOptions,
                         )
                     } else {
                         Text("Shopping Lists")
@@ -334,6 +335,7 @@ private fun ShoppingListNameDialog(
                 onValueChange = { name = it },
                 label = { Text("Name") },
                 singleLine = true,
+                keyboardOptions = SaltyKeyboardOptions,
             )
         },
         confirmButton = {
@@ -558,6 +560,7 @@ fun ShoppingListDetailScreen(
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
                 placeholder = { Text("# Produce\n* [ ] Apples\n* [x] Bananas") },
                 modifier = Modifier.fillMaxSize().padding(padding).padding(12.dp).imePadding(),
+                keyboardOptions = SaltyKeyboardOptions,
             )
         } else {
             val visible = if (hideCompleted) items.filter { it.isCompleted != true } else items.toList()
@@ -725,7 +728,7 @@ private fun ShoppingListItemRowContent(
 ) {
     // Return inserts the next row and moves focus there, so a run of items can be typed without
     // reaching for a button — which also matters because the keyboard covers the FAB while typing.
-    val imeOptions = KeyboardOptions(imeAction = ImeAction.Next)
+    val imeOptions = KeyboardOptions(imeAction = ImeAction.Next, platformImeOptions = nativeTextInputImeOptions)
     val imeActions = KeyboardActions(onNext = { onSubmit() })
     val isHeading = item.isHeading == true
     val isCompleted = item.isCompleted == true

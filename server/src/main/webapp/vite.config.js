@@ -12,6 +12,9 @@ import react from "@vitejs/plugin-react";
  * Filenames are fixed rather than content-hashed because the Mustache shell references them by
  * name. That trades long-term cacheability for a shell that never has to be regenerated; the
  * server sends no far-future Cache-Control for /static, so a reload picks changes up anyway.
+ *
+ * `rolldownOptions`, not `rollupOptions`: Vite 8 bundles with Rolldown instead of Rollup, and the
+ * old name is now a deprecated alias for it.
  */
 export default defineConfig({
   plugins: [react()],
@@ -19,7 +22,7 @@ export default defineConfig({
   build: {
     outDir: "../../../build/webapp",
     emptyOutDir: true,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
         entryFileNames: "salty.js",
         chunkFileNames: "salty-[name].js",

@@ -1,33 +1,74 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+/** The empty route -- /app with nothing after it. Spread into every route so the shape is fixed. */
+const NO_ROUTE = { dialog: null, recipeId: null, editing: false };
+
+const routeToHash = (route) => {
+  if (route.dialog) return `#/${route.dialog}`;
+  if (route.recipeId) {
+    return `#/recipe/${encodeURIComponent(route.recipeId)}${route.editing ? "/edit" : ""}`;
+  }
+  return "";
+};
+
 /**
- * Dialogs are addressable: /app#/preferences opens Preferences, and Back closes it.
+ * A recipe's address, for a link or a new tab -- `#/recipe/<id>`, relative to whatever /app path is
+ * serving the page. Exported so the one place that writes recipe URLs is the one that reads them.
+ */
+export const recipeHash = (id, editing = false) => routeToHash({ recipeId: id, editing });
+
+function hashToRoute(dialogNames) {
+  const hash = window.location.hash || "";
+  const dialog = /^#\/([a-z]+)$/.exec(hash);
+  if (dialog) {
+    return dialogNames.includes(dialog[1]) ? { ...NO_ROUTE, dialog: dialog[1] } : NO_ROUTE;
+  }
+  // Ids are UUIDs, so the encoding is a formality -- but a route that only works for the ids we
+  // happen to mint today is a route that breaks quietly the first time one of them isn't.
+  const recipe = /^#\/recipe\/([^/]+)(\/edit)?$/.exec(hash);
+  if (recipe) {
+    return { ...NO_ROUTE, recipeId: decodeURIComponent(recipe[1]), editing: Boolean(recipe[2]) };
+  }
+  return NO_ROUTE;
+}
+
+/**
+ * The hash IS the route: which recipe is open, whether it is being edited, and which dialog is up.
  *
- * Both events are needed. `popstate` covers the Back button after open() pushed a state; `hashchange`
+ *   #/recipe/<id>        a recipe, being read
+ *   #/recipe/<id>/edit   the same recipe, in the editor
+ *   #/preferences        a dialog -- one of the names the caller passes in
+ *
+ * A route is one or the other, never both: a dialog's address replaces the recipe's for as long as
+ * it is open, and closing it goes BACK to the recipe rather than forward to a third address. That is
+ * what makes one press of Back mean "close this", which is the only thing anyone expects it to mean.
+ *
+ * Anything not in the grammar above -- a bare /app, `#/`, a typo -- reads as the empty route, so a
+ * mangled address lands on the list rather than on an error.
+ *
+ * Both events are needed. `popstate` covers the Back button after push() pushed a state; `hashchange`
  * covers a URL typed or pasted into the address bar, which does not fire popstate.
  *
- * open() pushes rather than assigning location.hash. Assigning fires `hashchange`, which would run
- * the reader below and re-enter the same open -- pushing changes the URL silently and leaves the
- * listener handling only the direction that matters, which is going back.
+ * push() and replace() write through `history` rather than assigning `location.hash`. Assigning
+ * fires `hashchange`, which would run the reader below and re-enter the same navigation -- the
+ * history calls change the URL silently and leave the listener handling only the direction that
+ * matters, which is arriving from outside.
  *
  * The history calls sit outside the state updaters on purpose. An updater has to be pure: React
  * calls it twice under StrictMode in development, and a pushState inside one pushed two entries per
- * open, so Back closed nothing. Reading `dialog` from the render instead costs a re-created callback
- * per change, which is nothing.
+ * navigation, so Back moved nothing.
  */
-export function useHashDialog(names) {
-  const read = useCallback(() => {
-    const m = /^#\/([a-z]+)$/.exec(window.location.hash || "");
-    return m && names.includes(m[1]) ? m[1] : null;
-  }, [names]);
 
-  const [dialog, setDialog] = useState(read);
+export function useHashRoute(dialogNames) {
+  const read = useCallback(() => hashToRoute(dialogNames), [dialogNames]);
+
+  const [route, setRoute] = useState(read);
 
   useEffect(() => {
     const sync = () => {
       // Whatever moved the history moved it past our entry too.
       pushedByUs.current = false;
-      setDialog(read());
+      setRoute(read());
     };
     window.addEventListener("popstate", sync);
     window.addEventListener("hashchange", sync);
@@ -37,44 +78,59 @@ export function useHashDialog(names) {
     };
   }, [read]);
 
-  /** Whether the entry now on screen is one open() pushed, and so one close() should pop. */
+  /** Whether the entry now on screen is one push() pushed, and so one closeDialog() should pop. */
   const pushedByUs = useRef(false);
 
-  const open = useCallback(
-    (name) => {
-      if (dialog === name) return;
-      // Replace rather than push when one dialog leads to another, so Back closes the pair
-      // instead of walking backwards through them one at a time.
-      if (dialog) {
-        history.replaceState({ dialog: name }, "", `#/${name}`);
-      } else {
-        history.pushState({ dialog: name }, "", `#/${name}`);
-        pushedByUs.current = true;
+  const write = useCallback((next, pushing) => {
+    const route = { ...NO_ROUTE, ...next };
+    const hash = routeToHash(route);
+    // Not a bare "#", which would otherwise sit in the address bar and in anything copied out of it.
+    const url = hash || window.location.pathname + window.location.search;
+    if (pushing) {
+      history.pushState(route, "", url);
+      pushedByUs.current = true;
+    } else {
+      history.replaceState(route, "", url);
+    }
+    setRoute(route);
+    return route;
+  }, []);
+
+  /** A new place: Back returns to where the reader was. Opening a recipe, or a dialog over one. */
+  const push = useCallback((next) => write(next, true), [write]);
+
+  /**
+   * The same place, described differently -- entering the editor, saving a draft, losing the recipe
+   * a delete just took away. None of those is somewhere Back should return to.
+   */
+  const replace = useCallback((next) => write(next, false), [write]);
+
+  /**
+   * Closing a dialog, which is a pop rather than a push when we pushed to open it.
+   *
+   * Replacing instead left the pushed entry sitting in the history with the same address as the
+   * page under it, so the first press of Back after closing a dialog appeared to do nothing at all
+   * and it took two to leave.
+   *
+   * `under` is the route the dialog is sitting on top of -- the caller knows it, because it is what
+   * the panes are showing. It is set here rather than waited for so the dialog closes on the click:
+   * the pop is what actually restores it, a moment later, to the same value.
+   */
+  const closeDialog = useCallback(
+    (under) => {
+      if (pushedByUs.current) {
+        pushedByUs.current = false;
+        setRoute({ ...NO_ROUTE, ...under });
+        history.back();
+        return;
       }
-      setDialog(name);
+      // Nothing of ours to pop -- the dialog was opened by an address typed or pasted in.
+      write(under, false);
     },
-    [dialog],
+    [write],
   );
 
-  const close = useCallback(() => {
-    if (!dialog) return;
-    if (pushedByUs.current) {
-      // Go back rather than replace. Replacing left the pushed entry sitting in the history with
-      // the same address as the page under it, so the first press of Back after closing a dialog
-      // appeared to do nothing at all and it took two to leave.
-      pushedByUs.current = false;
-      setDialog(null);
-      history.back();
-      return;
-    }
-    // Nothing of ours to pop -- the dialog was opened by an address typed or pasted in. Strip the
-    // fragment rather than leaving a bare "#", which would otherwise sit in the address bar and in
-    // anything the reader copies out of it.
-    history.replaceState(null, "", window.location.pathname + window.location.search);
-    setDialog(null);
-  }, [dialog]);
-
-  return [dialog, open, close];
+  return { route, push, replace, closeDialog };
 }
 
 /**

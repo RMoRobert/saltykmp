@@ -1312,6 +1312,7 @@ private fun RecipeListPane(
                                         false
                                     }
                                 },
+                            keyboardOptions = SaltyKeyboardOptions,
                         )
                     } else {
                         Text(filter.title)
@@ -2655,8 +2656,12 @@ private fun RecipeEditScreen(
                             { Text("A name is required to save") }
                         } else null,
                         modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = SaltyKeyboardOptions,
                     )
-                    OutlinedTextField(intro, { intro = it }, label = { Text("Introduction") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(
+                        intro, { intro = it }, label = { Text("Introduction") },
+                        modifier = Modifier.fillMaxWidth(), keyboardOptions = SaltyKeyboardOptions,
+                    )
 
                     EditSectionHeader("Image")
                     if (preview != null) {
@@ -2714,10 +2719,12 @@ private fun RecipeEditScreen(
                         OutlinedTextField(
                             servings, { servings = it.filter(Char::isDigit) },
                             label = { Text("Servings") }, singleLine = true, modifier = Modifier.weight(1f),
+                            keyboardOptions = SaltyKeyboardOptions,
                         )
                         OutlinedTextField(
                             yieldText, { yieldText = it },
                             label = { Text("Yield") }, singleLine = true, modifier = Modifier.weight(1f),
+                            keyboardOptions = SaltyKeyboardOptions,
                         )
                     }
 
@@ -2728,8 +2735,14 @@ private fun RecipeEditScreen(
                         MultiSelectField("Tags", tags.map { (it.name ?: "(unnamed)") to it.id }, selectedTags)
                     }
 
-                    OutlinedTextField(source, { source = it }, label = { Text("Source") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(sourceDetails, { sourceDetails = it }, label = { Text("Source details") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(
+                        source, { source = it }, label = { Text("Source") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(), keyboardOptions = SaltyKeyboardOptions,
+                    )
+                    OutlinedTextField(
+                        sourceDetails, { sourceDetails = it }, label = { Text("Source details") },
+                        modifier = Modifier.fillMaxWidth(), keyboardOptions = SaltyKeyboardOptions,
+                    )
 
                     IngredientEditList(ingredients)
                     DirectionEditList(directions)
@@ -2923,6 +2936,7 @@ private fun SectionRow(
             placeholder = { Text(placeholder) },
             textStyle = if (isHeading) LocalTextStyle.current.copy(fontWeight = FontWeight.SemiBold) else LocalTextStyle.current,
             modifier = Modifier.weight(1f),
+            keyboardOptions = SaltyKeyboardOptions,
         )
         // Salty's "main ingredient" marker: a medal, filled once set and outlined while not, so the state
         // reads without comparing two rows. Not a star — stars are the 1-5 rating in this app. A heading
@@ -2980,6 +2994,7 @@ private fun <T> PickerField(label: String, options: List<Pair<String, T?>>, sele
             modifier = Modifier
                 .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
                 .fillMaxWidth(),
+            keyboardOptions = SaltyKeyboardOptions,
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach { (text, value) ->
@@ -3023,6 +3038,7 @@ private fun MultiSelectField(label: String, options: List<Pair<String, String>>,
             modifier = Modifier
                 .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
                 .fillMaxWidth(),
+            keyboardOptions = SaltyKeyboardOptions,
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach { (text, value) ->
@@ -3090,6 +3106,7 @@ private fun BulkTextEditDialog(
                     onValueChange = { text = it },
                     textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 200.dp, max = 360.dp),
+                    keyboardOptions = SaltyKeyboardOptions,
                 )
                 TextButton(
                     onClick = { text = RecipeListText.cleanUp(text, stripNumbering) },
@@ -3143,6 +3160,7 @@ private fun EditablePairList(
                     label = { Text(labelA) },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
+                    keyboardOptions = SaltyKeyboardOptions,
                 )
                 IconButton(onClick = { items.removeAt(i) }) { Icon(Icons.Outlined.Close, contentDescription = "Remove") }
             }
@@ -3151,6 +3169,7 @@ private fun EditablePairList(
                 onValueChange = { items[i] = item.copy(third = it) },
                 label = { Text(labelB) },
                 modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = SaltyKeyboardOptions,
             )
         }
     }
@@ -3216,6 +3235,7 @@ private fun NutritionSection(values: SnapshotStateMap<String, String>) {
                         label = { Text(label) },
                         singleLine = true,
                         modifier = Modifier.weight(1f),
+                        keyboardOptions = SaltyKeyboardOptions,
                     )
                 }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
@@ -3431,6 +3451,7 @@ private fun ClassifierEditScreen(module: AppModule, onBack: () -> Unit) {
                                                 false
                                             }
                                         },
+                                    keyboardOptions = SaltyKeyboardOptions,
                                 )
                             } else {
                                 Text("Edit Classifiers")
@@ -3696,6 +3717,7 @@ private fun ClassifierNameDialog(
                 onValueChange = { text = it },
                 singleLine = true,
                 label = { Text("Name") },
+                keyboardOptions = SaltyKeyboardOptions,
             )
         },
         confirmButton = {
@@ -3746,6 +3768,7 @@ private fun ConnectDevicePrompt(username: String, onConnect: (String) -> Unit, o
                     label = { Text("Password") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = SaltyKeyboardOptions,
                 )
             }
         },
@@ -4039,6 +4062,7 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                                 singleLine = true,
                                 enabled = serverUse,
                                 modifier = Modifier.fillMaxWidth(),
+                                keyboardOptions = SaltyKeyboardOptions,
                             )
                             if (url.isNotEmpty() && !url.lowercase().startsWith("https")) {
                                 Text(
@@ -4057,6 +4081,7 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                                 // account, so changing the name here would only misdescribe it.
                                 enabled = serverUse && !canSync,
                                 modifier = Modifier.fillMaxWidth(),
+                                keyboardOptions = SaltyKeyboardOptions,
                             )
 
                             // One action, in the row a password field would otherwise occupy. Which one it is

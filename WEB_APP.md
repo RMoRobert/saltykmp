@@ -66,12 +66,34 @@ name, so it never has to be regenerated, and the server sends no far-future `Cac
 | `/login` | Sign in. Hand-written CSS using Fluent 2's own values, native `<input>`/`<button>`, no JavaScript — the one page a signed-out visitor can reach depends on nothing loading. |
 | `/` | Redirect to `/app` (behind auth, so an anonymous visitor meets `/login` directly). |
 | `/app` | The app. Recipes, shopping lists, classifiers, settings, users. |
+| `/app#/recipe/<id>` | A recipe, open for reading. Bookmarkable, linkable, and what a row's "Open in new tab" points at. |
+| `/app#/recipe/<id>/edit` | The same recipe, in the editor. |
 | `/app#/…` | The open dialog: `#/library`, `#/import`, `#/preferences`, `#/users`. Reload-safe and Back-closes — and closing it any other way pops the entry Back would have, so the button never has to be pressed twice to leave. |
 | `/editor` | 301 to `/app`. It was this page's address while it was an experiment. |
 | `/classic/…` | The old Pico-styled, mostly view-only pages. **Legacy** — see below. |
 
-Dialogs are addressable and a recipe is not, so a reload lands on the empty state. `react-router`
-is what would change that, and it would be a real improvement rather than parity.
+`useHashRoute` in `hooks.js` parses the hash and is the only thing that writes it; the effect in
+`App.jsx` that reads it is the only thing that loads a recipe. That split is the point: a click on a
+row, Back, Forward, a pasted link and a reload all arrive as the same route change and run the same
+code, so they cannot drift apart. Four rules make the rest of it predictable.
+
+- **Opening a recipe pushes; everything else replaces.** Back returns to the recipe you came from.
+  Entering the editor, saving a draft, and losing the recipe a delete just took away are the same
+  place described differently, so none of them is somewhere Back should stop.
+- **A route is a recipe or a dialog, never both.** A dialog's address replaces the recipe's while it
+  is open, and closing it goes *back* to the recipe rather than forward to a third address — which
+  is what makes one press of Back mean "close this". The cost is that a reload with a dialog open
+  lands on the dialog over an empty list.
+- **Back out of an unsaved editor asks, like every other way of leaving it.** The history has already
+  moved by the time it can ask, so staying puts the address back — which leaves that entry holding
+  the editor's address rather than the one it arrived with. The address always describing the screen
+  is the property worth keeping; which entry it is written on is not.
+- **A draft has no address.** It exists only in the tab typing it, so the empty route is where it
+  lives, and Back out of one is guarded like any other way of losing it.
+
+Not addressable: the filter (a bookmarked recipe lands under All recipes), the shopping lists, which
+pane is on screen when compact, and chef mode. `react-router` and real paths under `/app/…` are what
+would make these URLs prettier; that wants a `/app/{...}` catch-all serving the same shell.
 
 ## The rail
 
@@ -560,7 +582,13 @@ the shared merge on its behalf.
   backslash in a username would start a bogus `\u` escape and take the whole app down.
 - **`server/build.gradle.kts`** gains `npmInstall` and `buildWebapp` (plain `Exec`, because the
   node-gradle plugin's configuration-cache support is unresolved and this build uses it), and
-  `processResources` copies `build/webapp` to `static/app`.
+  `processResources` copies `build/webapp` to `static/app`. Both run npm by **absolute path**,
+  resolved from PATH and then from the places an install actually puts it: a Gradle daemon started
+  by IntelliJ inherits the GUI app's bare PATH and fails with `Cannot run program "npm"`, and being
+  a long-lived daemon it outlives a clean and a re-sync. Its directory also goes on the front of the
+  child's PATH, because npm is a shell script that execs `node` and dies 127 without it.
+  `-PnpmExecutable=…` or `SALTY_NPM` overrides the search — the answer for a version manager that
+  resolves node per shell.
 
 ## What it does
 
@@ -574,12 +602,55 @@ render). Rename, delete, and the **three-way conflict merge**: a 409 sends `{bas
 `/api/shoppingLists/{id}/resolve`, which runs the same shared `ShoppingListMerge` the native
 clients run, so a check-off on one device and an edit on another both survive.
 
+Classifiers: add, rename, delete — and **merge** or **delete several at once**. Select mode in Edit
+classifiers (a mode, as in the Compose app, not a permanent column of checkboxes) checks several
+courses, categories or tags and either deletes them, after a confirmation that counts the recipes
+they are on, or folds them into one, with the survivor chosen in the confirmation and the message
+written in its name. Both confirmations use the Compose app's wording. Every delete from the web,
+one row or many, goes through `POST /api/{courses|categories|tags}/delete` with `{ids}` rather than
+the per-id DELETE the native clients' sync uses: that one applies a deletion a client has already
+made and restamped its own recipes for, whereas this one clears the recipes' side on the server —
+junction rows, or the course column — and bumps `lastModifiedDate` on each recipe that lost the
+classification, as the clients' `LibraryClassifierEditor` does. A client usually cascades the same
+loss itself when the row vanishes from the list, but not when the server lists no rows of that kind
+at all (its guard against an empty list reading as "delete everything"), so without the restamp
+deleting the last category would never reach that device. The merge runs on the server too:
+`POST /api/{courses|categories|tags}/merge` with
+`{survivorId, duplicateIds}` re-points every recipe that used a duplicate, deletes the duplicates,
+and bumps `lastModifiedDate` on each recipe it re-pointed. That stamp is the whole reason it is safe
+to sync back: category and tag membership travel on the recipe payload and a course as its
+`courseId`, while the classifier rows are reconciled by id — so on a native client's next sync the
+duplicate vanishes from the list and is deleted locally, and each re-pointed recipe is newer than
+the copy the client holds and comes down with the survivor in place. The survivor is not restamped,
+so nothing else re-transfers. It is the same fold the native clients run on-device
+(`LibraryDuplicateMerger`), for a client that has no database of its own; a duplicate already gone
+by the time the request lands is skipped rather than failed, and the survivor is the one
+irreversible choice, so it is the dialog's only control.
+
 Recipes: list, search, **sort**, open, create, delete — singly or **several at once by checkbox**
 — and **import from a web page**. The editor covers the photo, classifiers (with a tag creatable
 from inside the editor), rating, difficulty, ingredient and direction rows with headings,
 main-ingredient marks and **drag-to-reorder**, times, notes, variations and nutrition. An emptied
 nutrition record is removed rather than stored as an object of nulls. Toasts for feedback,
 unsaved-changes guards on navigate and unload.
+
+**The row's own menu** is a right-click on a recipe in the list, and the reason it exists is that
+everything on it acts on that recipe *without opening it* — which is what the Mac app's context menu
+does and what the detail pane's `⋯` cannot. Open in new tab, Edit, the Last prepared submenu,
+favourite, want to make, Get info, Delete. One controlled `Menu` for the whole list rather than a
+`MenuTrigger` per row, positioned against a virtual element standing where the pointer was: the
+popover is the same popover wherever it opens, and a library of a few hundred recipes would
+otherwise mount a few hundred of them. Shift+F10 and the Menu key raise the same event with no
+pointer behind it, so a keyboard invocation is positioned against the row instead of at 0,0.
+
+Every item reads the **list row**, which is a summary — and a summary carries the last-prepared date
+the submenu prints and the two flags it toggles, so the menu costs no fetch. The two writes that
+need a whole recipe re-read the server's copy anyway (see `patchRecipe`), which is safer than sending
+a body this column never had. The one thing a summary lacks is the last-prepared *sync* stamp inside
+Get info's collapsed Sync details, so that panel opens on the row and fills in that single line when
+its fetch lands — "Loading…" until then, "Unknown" if it never arrives, rather than the "Never set"
+that would be a claim about the recipe rather than about what is known of it. No menu in select
+mode: there a row means "in the set", and every item here is about one recipe.
 
 **Get info** is the recipe's `⋯` opening a panel of its three dates — added, modified and last made
 — named after the Swift app's command of the same name and spelled, as that platform spells it,
@@ -660,9 +731,9 @@ overwrite what the upload just set.
 
 - **No conflict handling for recipes.** Recipe saves remain last-writer-wins on `lastModifiedDate`,
   by choice. Shopping lists do resolve conflicts (above).
-- **No row context menu.** The CMP app's long press offers Edit, Export…, Last Made… and Delete on
-  a row without opening it. Here each of those wants the recipe open first, Get info and Last
-  prepared included.
+- **No export.** The row menu has the place for it and the formats are already shared, JVM-ready
+  code — `RecipeExport.render` writes all three, and `RecipeExport.filenameStem` names the file. What
+  is missing is one endpoint to render a recipe and hand it back as a download.
 - **No reordering for notes, variations or preparation times.** Ingredients and directions can be
   dragged or moved with the buttons; the three secondary lists append and delete only.
 - **No keyboard equivalent of the drag itself.** The up/down buttons are the keyboard route.
@@ -705,13 +776,31 @@ devices; deleting a user takes their recipes.
 survive; additions from both sides are unioned; unmergeable freeform text is preserved as a saved
 conflict copy; the no-base two-way degrade; 404; and CSRF.
 
+`SaltyServerTest` (the classifier merge) — categories, courses and tags each fold into the survivor;
+a recipe holding the survivor and a duplicate ends with the survivor once; every re-pointed recipe's
+stamp moves and shows in the sync manifest, while the survivor's and every untouched recipe's stay
+exactly as they were; no junction row survives naming a deleted row; another account's rows are
+neither survivor (404) nor duplicate (skipped, and that account untouched); a malformed id is a
+400; and the browser's cookie write needs the CSRF header. The bulk delete: categories, courses and
+tags are cleared from their recipes and only those recipes are restamped, a recipe that lost two
+rows is listed once, the last course can go, no junction row survives, another account's rows are
+skipped untouched, and a malformed id is a 400.
+
 `ReactUiSmokeTest` — Playwright drives the app at `/app` in a real browser, signing in through the
 real form. The bundle mounts and lists recipes fetched with the session cookie; opening a recipe
 renders the read view with sections, numbered steps that skip headings, and times; scaling rewrites
 quantities and leaves un-quantified lines alone; the editor opens on the recipe being read and its
 save reaches the database; chef mode takes the other panes away and Escape brings them back;
+Select mode in Edit classifiers merges two courses with the survivor the reader chose rather than
+the pre-picked one, and the database shows every recipe re-pointed and only the re-pointed ones
+restamped; it also deletes both courses at once after a confirmation that counts their four
+recipes, leaving no recipe naming a course and the ones that had one restamped;
 leaving an unsaved edit asks first, and keeping it leaves the typed value intact; a dialog puts
-itself in the URL so Back closes it; About sits collapsed at the bottom of Settings; the compact
+itself in the URL so Back closes it; a recipe does too, so Back returns to the one opened before it,
+a pasted `#/recipe/<id>` opens that recipe in a tab that has never seen the list, `/edit` lands in
+the editor, and an address for a recipe that is gone gives up the address along with the pane; the
+row menu favourites and sets a last-prepared date on a row *without opening it*, deletes the row it
+was opened on rather than the recipe being read, and its Edit opens that row's editor; About sits collapsed at the bottom of Settings; the compact
 layout shows one pane at a time; the sort menu drives a fixture whose four orderings are
 deliberately all *different*, so a picker wired to the wrong field cannot pass by coincidence;
 select mode, bulk delete, the favourite mark, the library manager, both shopping-list shapes, and

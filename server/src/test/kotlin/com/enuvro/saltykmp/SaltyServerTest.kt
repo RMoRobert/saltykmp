@@ -4,11 +4,16 @@ import com.enuvro.saltykmp.api.AuthRequest
 import com.enuvro.saltykmp.api.AuthResponse
 import com.enuvro.saltykmp.api.DeviceRegisterRequest
 import com.enuvro.saltykmp.api.DeviceSyncInfo
+import com.enuvro.saltykmp.api.LibraryDeleteRequest
+import com.enuvro.saltykmp.api.LibraryDeleteResponse
+import com.enuvro.saltykmp.api.LibraryMergeRequest
+import com.enuvro.saltykmp.api.LibraryMergeResponse
 import com.enuvro.saltykmp.api.RecipeManifestEntry
 import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerRecipe
 import com.enuvro.saltykmp.api.ServerShoppingList
+import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.db.LibraryRepository
 import com.enuvro.saltykmp.db.ShoppingListRepository
 import com.enuvro.saltykmp.db.ShoppingLists
@@ -58,6 +63,7 @@ import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.jdbc.deleteAll
+import org.jetbrains.exposed.v1.jdbc.selectAll
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
@@ -126,6 +132,294 @@ class SaltyServerTest {
     private fun recipe(id: String, name: String, lastModified: String) = ServerRecipe(
         id = id, name = name, lastModifiedDate = lastModified,
     )
+
+    // ---- Merging classifiers ----
+    //
+    // The merge endpoint is the web app's stand-in for the fold the native clients run locally. The
+    // contract that makes it safe to sync is: every recipe that referenced a duplicate is re-pointed
+    // at the survivor AND has its lastModifiedDate moved to now (so a client sees a newer row and
+    // downloads it), while the survivor and every untouched recipe keep their stamps exactly (so
+    // nothing else is re-transferred, and no client's newer edit is clobbered for no reason).
+
+    private fun testerId() = runBlocking { UserRepository.findByUsername("tester")!!.id }
+
+    @Test
+    fun mergingCategoriesRepointsRecipesAndMovesOnlyTheirStamps() = testApplication {
+        application { installSalty(imageStore) }
+        val userId = testerId()
+        runBlocking {
+            LibraryRepository.upsertCategory(userId, ServerCategory("cat-keep", "Desserts", "2026-01-01T00:00:00.000Z"))
+            LibraryRepository.upsertCategory(userId, ServerCategory("cat-dup1", "desserts", "2026-01-02T00:00:00.000Z"))
+            LibraryRepository.upsertCategory(userId, ServerCategory("cat-dup2", "Deserts", "2026-01-03T00:00:00.000Z"))
+            LibraryRepository.upsertCategory(userId, ServerCategory("cat-other", "Breads", "2026-01-04T00:00:00.000Z"))
+            RecipeRepository.upsert(userId, recipe("r-dup", "Pie", "2026-02-01T00:00:00.000Z").copy(categoryIds = listOf("cat-dup1")))
+            // Holds the survivor AND a duplicate: must end up with the survivor once, not twice.
+            RecipeRepository.upsert(userId, recipe("r-both", "Tart", "2026-02-01T00:00:00.000Z").copy(categoryIds = listOf("cat-keep", "cat-dup2")))
+            RecipeRepository.upsert(userId, recipe("r-keep", "Cake", "2026-02-01T00:00:00.000Z").copy(categoryIds = listOf("cat-keep")))
+            RecipeRepository.upsert(userId, recipe("r-none", "Bread", "2026-02-01T00:00:00.000Z").copy(categoryIds = listOf("cat-other")))
+        }
+        val client = jsonClient()
+        val token = login(client)
+        val resp = client.post("/api/categories/merge") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            // A duplicate that is already gone is skipped, and the survivor naming itself is ignored.
+            setBody(LibraryMergeRequest("cat-keep", listOf("cat-dup1", "cat-dup2", "cat-gone", "cat-keep")))
+        }
+        assertEquals(HttpStatusCode.OK, resp.status, resp.bodyAsText())
+        val result = resp.body<LibraryMergeResponse>()
+        assertEquals("cat-keep", result.survivorId)
+        assertEquals(listOf("cat-dup1", "cat-dup2"), result.removedIds)
+        assertEquals(setOf("r-dup", "r-both"), result.touchedRecipeIds.toSet())
+
+        val categories = runBlocking { LibraryRepository.listCategories(userId) }
+        assertEquals(setOf("cat-keep", "cat-other"), categories.map { it.id }.toSet(), "the duplicates are gone, nothing else is")
+        assertEquals("2026-01-01T00:00:00.000Z", categories.first { it.id == "cat-keep" }.lastModifiedDate, "the survivor is not restamped")
+
+        val byId = listOf("r-dup", "r-both", "r-keep", "r-none").associateWith { runBlocking { RecipeRepository.getById(userId, it)!! } }
+        assertEquals(listOf("cat-keep"), byId["r-dup"]!!.categoryIds)
+        assertEquals(listOf("cat-keep"), byId["r-both"]!!.categoryIds, "one survivor row, not two")
+        assertEquals(listOf("cat-keep"), byId["r-keep"]!!.categoryIds)
+        assertEquals(listOf("cat-other"), byId["r-none"]!!.categoryIds)
+        val before = "2026-02-01T00:00:00.000Z"
+        assertTrue(byId["r-dup"]!!.lastModifiedDate!! > before, "a re-pointed recipe's stamp moves, so clients download it")
+        assertTrue(byId["r-both"]!!.lastModifiedDate!! > before)
+        assertEquals(before, byId["r-keep"]!!.lastModifiedDate, "a recipe that only ever held the survivor is untouched")
+        assertEquals(before, byId["r-none"]!!.lastModifiedDate)
+
+        // The manifest is what a syncing client actually reads, so the moved stamps must show there.
+        val manifest = client.get("/api/recipes/sync/manifest") { bearerAuth(token) }.body<List<RecipeManifestEntry>>()
+            .associateBy { it.id }
+        assertTrue(manifest["r-dup"]!!.lastModifiedDate!! > before)
+        assertEquals(before, manifest["r-keep"]!!.lastModifiedDate)
+
+        // No junction row may still name a deleted category.
+        val dangling = runBlocking {
+            DatabaseFactory.dbQuery {
+                RecipeCategories.selectAll().count { it[RecipeCategories.categoryId] in setOf("cat-dup1", "cat-dup2") }
+            }
+        }
+        assertEquals(0, dangling)
+    }
+
+    @Test
+    fun mergingCoursesRepointsTheColumnAndTagsTheJunction() = testApplication {
+        application { installSalty(imageStore) }
+        val userId = testerId()
+        runBlocking {
+            LibraryRepository.upsertCourse(userId, ServerCourse("c-keep", "Main", "2026-01-01T00:00:00.000Z"))
+            LibraryRepository.upsertCourse(userId, ServerCourse("c-dup", "Mains", "2026-01-02T00:00:00.000Z"))
+            LibraryRepository.upsertTag(userId, ServerTag("t-keep", "Quick", "2026-01-01T00:00:00.000Z"))
+            LibraryRepository.upsertTag(userId, ServerTag("t-dup", "quick", "2026-01-02T00:00:00.000Z"))
+            RecipeRepository.upsert(userId, recipe("r-a", "Stew", "2026-02-01T00:00:00.000Z").copy(courseId = "c-dup", tagIds = listOf("t-dup")))
+            RecipeRepository.upsert(userId, recipe("r-b", "Roast", "2026-02-01T00:00:00.000Z").copy(courseId = "c-keep", tagIds = listOf("t-keep", "t-dup")))
+            RecipeRepository.upsert(userId, recipe("r-c", "Salad", "2026-02-01T00:00:00.000Z").copy(courseId = null, tagIds = listOf("t-keep")))
+        }
+        val client = jsonClient()
+        val token = login(client)
+
+        val courses = client.post("/api/courses/merge") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            setBody(LibraryMergeRequest("c-keep", listOf("c-dup")))
+        }
+        assertEquals(HttpStatusCode.OK, courses.status, courses.bodyAsText())
+        assertEquals(listOf("r-a"), courses.body<LibraryMergeResponse>().touchedRecipeIds)
+        assertEquals(listOf("c-keep"), runBlocking { LibraryRepository.listCourses(userId) }.map { it.id })
+
+        val tags = client.post("/api/tags/merge") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            setBody(LibraryMergeRequest("t-keep", listOf("t-dup")))
+        }
+        assertEquals(HttpStatusCode.OK, tags.status, tags.bodyAsText())
+        assertEquals(setOf("r-a", "r-b"), tags.body<LibraryMergeResponse>().touchedRecipeIds.toSet())
+        assertEquals(listOf("t-keep"), runBlocking { LibraryRepository.listTags(userId) }.map { it.id })
+
+        val a = runBlocking { RecipeRepository.getById(userId, "r-a")!! }
+        val b = runBlocking { RecipeRepository.getById(userId, "r-b")!! }
+        val c = runBlocking { RecipeRepository.getById(userId, "r-c")!! }
+        assertEquals("c-keep", a.courseId)
+        assertEquals(listOf("t-keep"), a.tagIds)
+        assertEquals("c-keep", b.courseId)
+        assertEquals(listOf("t-keep"), b.tagIds, "one survivor row, not two")
+        assertNull(c.courseId)
+        assertEquals(listOf("t-keep"), c.tagIds)
+        val before = "2026-02-01T00:00:00.000Z"
+        assertTrue(a.lastModifiedDate!! > before)
+        assertTrue(b.lastModifiedDate!! > before, "losing a duplicate tag is a change the other devices need")
+        assertEquals(before, c.lastModifiedDate, "a recipe no merge touched keeps its stamp")
+    }
+
+    /** Another account's rows are invisible to a merge: neither a survivor nor a duplicate. */
+    @Test
+    fun mergeStaysInsideTheCallersLibrary() = testApplication {
+        application { installSalty(imageStore) }
+        val userId = testerId()
+        val bobId = runBlocking { UserRepository.create("bob", "pw").id }
+        runBlocking {
+            LibraryRepository.upsertTag(userId, ServerTag("t-mine", "Quick", "2026-01-01T00:00:00.000Z"))
+            LibraryRepository.upsertTag(userId, ServerTag("t-mine2", "quick", "2026-01-01T00:00:00.000Z"))
+            LibraryRepository.upsertTag(bobId, ServerTag("t-bob", "quick", "2026-01-01T00:00:00.000Z"))
+            RecipeRepository.upsert(bobId, recipe("r-bob", "Bob's", "2026-02-01T00:00:00.000Z").copy(tagIds = listOf("t-bob")))
+        }
+        val client = jsonClient()
+        val token = login(client)
+
+        // Bob's tag named as a duplicate: skipped, and Bob's library is exactly as it was.
+        val resp = client.post("/api/tags/merge") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            setBody(LibraryMergeRequest("t-mine", listOf("t-mine2", "t-bob")))
+        }
+        assertEquals(HttpStatusCode.OK, resp.status)
+        assertEquals(listOf("t-mine2"), resp.body<LibraryMergeResponse>().removedIds)
+        assertEquals(listOf("t-bob"), runBlocking { LibraryRepository.listTags(bobId) }.map { it.id })
+        val bobs = runBlocking { RecipeRepository.getById(bobId, "r-bob")!! }
+        assertEquals(listOf("t-bob"), bobs.tagIds)
+        assertEquals("2026-02-01T00:00:00.000Z", bobs.lastModifiedDate)
+
+        // Bob's tag as the survivor: there is nothing of the caller's to fold into.
+        val foreign = client.post("/api/tags/merge") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            setBody(LibraryMergeRequest("t-bob", listOf("t-mine")))
+        }
+        assertEquals(HttpStatusCode.NotFound, foreign.status)
+        assertEquals(listOf("t-mine"), runBlocking { LibraryRepository.listTags(userId) }.map { it.id })
+
+        // An id that could not name a row is refused before anything is read.
+        val bad = client.post("/api/tags/merge") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            setBody(LibraryMergeRequest("t-mine", listOf("../etc")))
+        }
+        assertEquals(HttpStatusCode.BadRequest, bad.status)
+    }
+
+    /** The browser's merge is a session-cookie write, so it needs the CSRF header like every other. */
+    @Test
+    fun mergeFromTheBrowserNeedsCsrf() = testApplication {
+        application { installSalty(imageStore) }
+        val userId = testerId()
+        runBlocking {
+            LibraryRepository.upsertCourse(userId, ServerCourse("c-keep", "Main"))
+            LibraryRepository.upsertCourse(userId, ServerCourse("c-dup", "Mains"))
+        }
+        val web = jsonCookieClient()
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+
+        val without = web.post("/api/courses/merge") {
+            contentType(ContentType.Application.Json)
+            setBody(LibraryMergeRequest("c-keep", listOf("c-dup")))
+        }
+        assertEquals(HttpStatusCode.Forbidden, without.status)
+        assertEquals(2, runBlocking { LibraryRepository.countCourses(userId) }, "a refused merge changes nothing")
+
+        val with = web.post("/api/courses/merge") {
+            contentType(ContentType.Application.Json); header(CSRF_HEADER, appCsrf(web))
+            setBody(LibraryMergeRequest("c-keep", listOf("c-dup")))
+        }
+        assertEquals(HttpStatusCode.OK, with.status, with.bodyAsText())
+        assertEquals(listOf("c-keep"), runBlocking { LibraryRepository.listCourses(userId) }.map { it.id })
+    }
+
+    // ---- Deleting several classifiers ----
+    //
+    // Same sync contract as the merge: the recipes' side is done here, and only the recipes that
+    // lost something are restamped.
+
+    @Test
+    fun bulkDeletingClassifiersClearsRecipesAndMovesOnlyTheirStamps() = testApplication {
+        application { installSalty(imageStore) }
+        val userId = testerId()
+        val before = "2026-02-01T00:00:00.000Z"
+        runBlocking {
+            LibraryRepository.upsertCategory(userId, ServerCategory("cat-a", "Desserts"))
+            LibraryRepository.upsertCategory(userId, ServerCategory("cat-b", "Cakes"))
+            LibraryRepository.upsertCategory(userId, ServerCategory("cat-c", "Breads"))
+            LibraryRepository.upsertCourse(userId, ServerCourse("c-a", "Main"))
+            LibraryRepository.upsertCourse(userId, ServerCourse("c-b", "Side"))
+            LibraryRepository.upsertTag(userId, ServerTag("t-a", "Quick"))
+            RecipeRepository.upsert(userId, recipe("r1", "Pie", before).copy(courseId = "c-a", categoryIds = listOf("cat-a")))
+            RecipeRepository.upsert(userId, recipe("r2", "Tart", before).copy(categoryIds = listOf("cat-a", "cat-b", "cat-c")))
+            RecipeRepository.upsert(userId, recipe("r3", "Loaf", before).copy(categoryIds = listOf("cat-c"), tagIds = listOf("t-a")))
+        }
+        val client = jsonClient()
+        val token = login(client)
+
+        val cats = client.post("/api/categories/delete") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            // One already gone: skipped, not failed.
+            setBody(LibraryDeleteRequest(listOf("cat-a", "cat-b", "cat-gone")))
+        }
+        assertEquals(HttpStatusCode.OK, cats.status, cats.bodyAsText())
+        val catResult = cats.body<LibraryDeleteResponse>()
+        assertEquals(listOf("cat-a", "cat-b"), catResult.removedIds)
+        assertEquals(setOf("r1", "r2"), catResult.touchedRecipeIds.toSet(), "a recipe that lost two rows is listed once")
+        assertEquals(listOf("cat-c"), runBlocking { LibraryRepository.listCategories(userId) }.map { it.id })
+        val r1 = runBlocking { RecipeRepository.getById(userId, "r1")!! }
+        val r2 = runBlocking { RecipeRepository.getById(userId, "r2")!! }
+        var r3 = runBlocking { RecipeRepository.getById(userId, "r3")!! }
+        assertEquals(emptyList(), r1.categoryIds)
+        assertEquals(listOf("cat-c"), r2.categoryIds, "the category not deleted stays on the recipe")
+        assertEquals(listOf("cat-c"), r3.categoryIds)
+        assertTrue(r1.lastModifiedDate!! > before, "a recipe that lost a category is restamped, so clients download it")
+        assertTrue(r2.lastModifiedDate!! > before)
+        assertEquals(before, r3.lastModifiedDate, "a recipe that lost nothing keeps its stamp")
+        val dangling = runBlocking {
+            DatabaseFactory.dbQuery { RecipeCategories.selectAll().count { it[RecipeCategories.categoryId] in setOf("cat-a", "cat-b") } }
+        }
+        assertEquals(0, dangling, "no junction row survives naming a deleted category")
+
+        // Courses: the column is cleared, and the last course can go (no guard against an empty list here).
+        val courses = client.post("/api/courses/delete") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            setBody(LibraryDeleteRequest(listOf("c-a", "c-b")))
+        }
+        assertEquals(HttpStatusCode.OK, courses.status, courses.bodyAsText())
+        assertEquals(listOf("r1"), courses.body<LibraryDeleteResponse>().touchedRecipeIds, "only the recipe that had a course is touched")
+        assertEquals(0, runBlocking { LibraryRepository.countCourses(userId) })
+        assertNull(runBlocking { RecipeRepository.getById(userId, "r1")!! }.courseId)
+
+        // Tags: the junction is cleared and the recipe restamped, exactly as for categories.
+        val tags = client.post("/api/tags/delete") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            setBody(LibraryDeleteRequest(listOf("t-a")))
+        }
+        assertEquals(HttpStatusCode.OK, tags.status, tags.bodyAsText())
+        assertEquals(listOf("r3"), tags.body<LibraryDeleteResponse>().touchedRecipeIds)
+        r3 = runBlocking { RecipeRepository.getById(userId, "r3")!! }
+        assertEquals(emptyList(), r3.tagIds)
+        assertTrue(r3.lastModifiedDate!! > before)
+        assertEquals(0, runBlocking { LibraryRepository.countTags(userId) })
+    }
+
+    /** Another account's rows cannot be deleted by naming them, and a malformed id is refused outright. */
+    @Test
+    fun bulkDeleteStaysInsideTheCallersLibrary() = testApplication {
+        application { installSalty(imageStore) }
+        val userId = testerId()
+        val bobId = runBlocking { UserRepository.create("bob", "pw").id }
+        runBlocking {
+            LibraryRepository.upsertTag(userId, ServerTag("t-mine", "Quick"))
+            LibraryRepository.upsertTag(bobId, ServerTag("t-bob", "Quick"))
+            RecipeRepository.upsert(bobId, recipe("r-bob", "Bob's", "2026-02-01T00:00:00.000Z").copy(tagIds = listOf("t-bob")))
+        }
+        val client = jsonClient()
+        val token = login(client)
+
+        val resp = client.post("/api/tags/delete") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            setBody(LibraryDeleteRequest(listOf("t-mine", "t-bob")))
+        }
+        assertEquals(HttpStatusCode.OK, resp.status)
+        assertEquals(listOf("t-mine"), resp.body<LibraryDeleteResponse>().removedIds)
+        assertEquals(listOf("t-bob"), runBlocking { LibraryRepository.listTags(bobId) }.map { it.id })
+        val bobs = runBlocking { RecipeRepository.getById(bobId, "r-bob")!! }
+        assertEquals(listOf("t-bob"), bobs.tagIds)
+        assertEquals("2026-02-01T00:00:00.000Z", bobs.lastModifiedDate)
+
+        val bad = client.post("/api/tags/delete") {
+            bearerAuth(token); contentType(ContentType.Application.Json)
+            setBody(LibraryDeleteRequest(listOf("../etc")))
+        }
+        assertEquals(HttpStatusCode.BadRequest, bad.status)
+    }
 
     // ---- Web UI ----
 

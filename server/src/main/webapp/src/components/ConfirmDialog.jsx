@@ -28,6 +28,11 @@ import PasswordInput from "./PasswordInput";
  * `prompt` turns it into the prompt() case -- a labelled field whose value is handed to onConfirm.
  * `secret` makes that field a password field, masked with a reveal toggle.
  *
+ * `onCancel` is for the callers that have something to put back rather than merely nothing to do --
+ * the one that matters is Back out of an unsaved editor, where the history has already moved and the
+ * address has to be returned to the editor's if the reader decides to stay. It runs for every way of
+ * refusing: the button, Escape, and a click outside.
+ *
  * Errors are handled here, once. `onConfirm` may throw or reject; the dialog then stays open with
  * the field intact and hands the error to `onError`, so a failed request can be retried rather than
  * vanishing into an unhandled rejection. Callers therefore need no try/catch of their own.
@@ -41,9 +46,14 @@ export default function ConfirmDialog({ request, onClose, onError }) {
 
   if (!request) return null;
 
-  const { title, body, confirmLabel, prompt, placeholder, secret, onConfirm } = request;
+  const { title, body, confirmLabel, prompt, placeholder, secret, onConfirm, onCancel } = request;
   const blocked = prompt && !value.trim();
   const PromptInput = secret ? PasswordInput : Input;
+
+  const dismiss = () => {
+    onCancel?.();
+    onClose();
+  };
 
   const confirm = async () => {
     setBusy(true);
@@ -58,7 +68,7 @@ export default function ConfirmDialog({ request, onClose, onError }) {
   };
 
   return (
-    <Dialog open onOpenChange={(_, d) => !d.open && onClose()}>
+    <Dialog open onOpenChange={(_, d) => !d.open && dismiss()}>
       <DialogSurface>
         <DialogBody>
           <DialogTitle>{title}</DialogTitle>
@@ -82,7 +92,7 @@ export default function ConfirmDialog({ request, onClose, onError }) {
             ) : null}
           </DialogContent>
           <DialogActions>
-            <Button appearance="secondary" onClick={onClose} disabled={busy}>
+            <Button appearance="secondary" onClick={dismiss} disabled={busy}>
               Cancel
             </Button>
             {/* Fluent has no destructive appearance and this app does not invent one: the

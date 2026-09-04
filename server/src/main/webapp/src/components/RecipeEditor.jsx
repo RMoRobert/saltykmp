@@ -54,6 +54,10 @@ const useStyles = makeStyles({
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(13rem, 1fr))",
     gap: tokens.spacingHorizontalM,
+    /* Fluent's Dropdown carries a 250px min-width of its own, wider than a 13rem track, so at
+       tablet widths — three columns on an iPad mini — each dropdown spilled over the field beside
+       it. Let them shrink to their track like every other control here. */
+    "& .fui-Dropdown": { minWidth: 0 },
   },
   switches: { display: "flex", gap: tokens.spacingHorizontalXXL, flexWrap: "wrap" },
   section: { marginTop: tokens.spacingVerticalL },
@@ -410,7 +414,6 @@ export default function RecipeEditor({
             <Input
               value={draft.name ?? ""}
               onChange={(_, d) => set({ name: d.value })}
-              placeholder="What is it called?"
             />
           </Field>
 
@@ -493,7 +496,7 @@ export default function RecipeEditor({
             <Field label="Yield">
               <Input
                 value={draft.yield ?? ""}
-                placeholder="e.g. Makes 16"
+                placeholder="e.g., Makes 16"
                 onChange={(_, d) => set({ yield: d.value })}
               />
             </Field>
