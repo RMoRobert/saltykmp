@@ -2289,7 +2289,8 @@ private fun RecipeDetailScreen(
                             DetailSection("Ingredients") {
                                 list.forEach {
                                     if (it.isHeading) Text(it.text, fontWeight = FontWeight.Medium)
-                                    else Text("• ${it.text}")
+                                    // The quantity carries the line's emphasis; see ingredientLine().
+                                    else Text(ingredientLine(it.text, prefix = "• "))
                                 }
                             }
                         }

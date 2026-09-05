@@ -5,4 +5,4 @@ PRODUCT_BUNDLE_IDENTIFIER=com.enuvro.saltykmp.saltykmp$(TEAM_ID)
 
 CURRENT_PROJECT_VERSION=1
 // Keep in sync with appVersion in the root gradle.properties (single version across all targets).
-MARKETING_VERSION=3.3.100
+MARKETING_VERSION=3.3.131

@@ -712,6 +712,25 @@ same account on a laptop wants the opposite. It is on by default and one switch 
 Screen Wake Lock is secure-context only, so a Salty reached over plain `http` on the LAN does not
 have it at all — Settings says so rather than offering a control that silently does nothing.
 
+**An ingredient line's quantity is bold**, and the quantity is the number *with its unit*: the
+"1 c" of "1 c flour", the "1/2 tsp" of "1/2 tsp salt". That is what a cook checks against the bowl,
+and it is the Swift app's own treatment of the same row (`.fontWeight(.semibold)` over
+`Ingredient.parseQuantity()`), down to the unit list that decides where the quantity ends. A count
+with no unit bolds the number alone — "onions" is not a unit, so **2** onions — and a line that
+opens with no number has nothing to bold.
+
+Finding that split is the same job as scaling, so `model.js` does it once: `splitQuantity` is the
+port of `parseQuantity`, `displayParts(row, factor)` the port of `IngredientScaler.displayParts`,
+and the read view asks only for the second. The alternative — a bolder that finds the unit and a
+scaler that stops at the number — is two parsers that disagree about where a quantity ends the
+moment either one changes, and the disagreement shows up as a half-bolded line. A scaled quantity
+keeps the weight and *adds* brand colour, which is the older rule intact: emphasis says "this is the
+amount", colour says "this is not what the author typed".
+
+Sharing the parser fixed a range along the way. `1-2 tsp` used to scale its first number and leave
+the second ("2-2 tsp" at 2×); the shared split sees the range as one quantity, as the Swift scaler
+always has, and doubles both ends.
+
 The line under a recipe's name — course, yield, servings, difficulty — is **built as a list and
 joined once**, so a recipe with no yield does not read "Main ·  · Serves 6", and an empty line goes
 away rather than leaving a gap. Categories and tags are not drawn over the recipe: they are how you
@@ -789,7 +808,9 @@ skipped untouched, and a malformed id is a 400.
 `ReactUiSmokeTest` — Playwright drives the app at `/app` in a real browser, signing in through the
 real form. The bundle mounts and lists recipes fetched with the session cookie; opening a recipe
 renders the read view with sections, numbered steps that skip headings, and times; scaling rewrites
-quantities and leaves un-quantified lines alone; the editor opens on the recipe being read and its
+quantities and leaves un-quantified lines alone; an ingredient's quantity is semibold and carries its
+unit ("3 tablespoons", not a bare "3"), a count with no unit keeps the rest of its line intact, and a
+scaled quantity keeps the unit with the number; the editor opens on the recipe being read and its
 save reaches the database; chef mode takes the other panes away and Escape brings them back;
 Select mode in Edit classifiers merges two courses with the survivor the reader chose rather than
 the pre-picked one, and the database shows every recipe re-pointed and only the re-pointed ones

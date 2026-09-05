@@ -314,6 +314,53 @@ class ReactUiSmokeTest {
     }
 
     /**
+     * An ingredient line leads with its quantity and the quantity is bold, which is what makes a
+     * list of them scannable against what is on the counter. What counts as the quantity is the
+     * number *and its unit* -- "3 tablespoons", not a bare "3" with the unit left in the plain
+     * text beside it -- so this asserts the weight on the whole phrase. A count with no unit ("2
+     * onions") has only the number to bold, and a line opening with no number at all has nothing.
+     *
+     * The same split feeds scaling, so the scaled line is checked for the unit riding along with
+     * the number it belongs to.
+     */
+    @Test
+    fun ingredientQuantitiesAreBoldAndCarryTheirUnit() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+
+        val tablespoons = page.getByText("3 tablespoons", Page.GetByTextOptions().setExact(true))
+        assertTrue(tablespoons.first().isVisible, "the unit is part of the quantity, not the text")
+        assertEquals(
+            "600",
+            tablespoons.first().evaluate("el => getComputedStyle(el).fontWeight"),
+            "the quantity is semibold; the rest of the line is not",
+        )
+        assertTrue(
+            page.getByText("1/2 cup", Page.GetByTextOptions().setExact(true)).first().isVisible,
+            "a fraction and its unit are one quantity",
+        )
+        // Nothing is eaten or duplicated by the split: "onions" is not a unit, so only the 2 is
+        // bold, and the line still reads exactly as it was written.
+        assertTrue(
+            page.getByText("2 onions, peeled and diced", Page.GetByTextOptions().setExact(true))
+                .first().isVisible,
+            "a count with no unit keeps the rest of its line intact",
+        )
+
+        page.getByLabel("Scale up").click()
+        assertTrue(
+            page.getByText("4 1/2 tablespoons", Page.GetByTextOptions().setExact(true))
+                .first().isVisible,
+            "scaling rewrites the number and keeps the unit with it",
+        )
+        assertEquals(emptyList<String>(), errors, "the ingredients list should log no console errors")
+        page.close()
+    }
+
+    /**
      * Chef mode is the read view with the panes around it taken away, so what proves it is that the
      * recipe survives the transition: same document, no re-fetch, and a way back out.
      */

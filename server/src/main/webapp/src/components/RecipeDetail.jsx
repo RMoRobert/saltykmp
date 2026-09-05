@@ -39,7 +39,7 @@ import {
 } from "@fluentui/react-icons";
 
 import { imageUrl } from "../api";
-import { SCALES, difficultyLabel, formatDay, scaleLine, sourceLink, stepNumbers, wireNow } from "../model";
+import { SCALES, difficultyLabel, displayParts, formatDay, sourceLink, stepNumbers, wireNow } from "../model";
 
 const useStyles = makeStyles({
   bar: {
@@ -88,8 +88,12 @@ const useStyles = makeStyles({
     marginTop: tokens.spacingVerticalM,
     color: tokens.colorNeutralForeground2,
   },
-  /* The scaled quantity is the only thing on the line that is not what the author typed. */
-  scaled: { color: tokens.colorBrandForeground1, fontWeight: tokens.fontWeightSemibold },
+  /* The quantity leads the line and is what a cook checks against the bowl, so it carries the
+     line's emphasis -- the same weight the Swift app's ingredient rows give it. */
+  quantity: { fontWeight: tokens.fontWeightSemibold },
+  /* Scaling is the only thing on the line that is not what the author typed, so a scaled quantity
+     takes colour on top of that weight. */
+  scaled: { color: tokens.colorBrandForeground1 },
   stepNo: { color: tokens.colorNeutralForeground3, minWidth: "1.6rem" },
   pairs: {
     display: "grid",
@@ -352,19 +356,28 @@ export default function RecipeDetail({
                       </li>
                     );
                   }
-                  const { amount, rest } = scaleLine(row.text, factor);
+                  const { quantity, remainder } = displayParts(row, factor);
                   // `row.isMain` is deliberately not rendered. The editor still sets it and it
                   // still travels with the recipe -- it is reserved for search and the like, and
-                  // bolding the main ingredients was competing with the scaled quantity for the
-                  // only emphasis an ingredient line has.
+                  // bolding the main ingredients was competing with the quantity for the only
+                  // emphasis an ingredient line has.
                   return (
                     <li key={row.id} className={itemCls}>
                       <span className={styles.bullet} aria-hidden="true">
                         ·
                       </span>
                       <span>
-                        {amount ? <span className={styles.scaled}>{amount}</span> : null}
-                        {amount ? rest : row.text}
+                        {quantity ? (
+                          <span
+                            className={mergeClasses(
+                              styles.quantity,
+                              factor !== 1 && styles.scaled,
+                            )}
+                          >
+                            {quantity}
+                          </span>
+                        ) : null}
+                        {quantity ? (remainder ? ` ${remainder}` : "") : row.text}
                       </span>
                     </li>
                   );

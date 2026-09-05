@@ -72,36 +72,149 @@ function formatAmount(v) {
   return whole > 0 ? `${whole} ${best}` : best;
 }
 
-function parseLeadingAmount(text) {
-  const m = String(text).match(/^\s*(\d+\s+\d+\/\d+|\d+\/\d+|\d*\.\d+|\d+)/);
-  if (!m) return null;
-  const tok = m[1].trim();
-  let val;
-  if (tok.includes(" ")) {
-    const [w, f] = tok.split(/\s+/);
-    const [a, b] = f.split("/");
-    val = parseFloat(w) + Number(a) / Number(b);
-  } else if (tok.includes("/")) {
-    const [a, b] = tok.split("/");
-    val = Number(a) / Number(b);
+/**
+ * The number token every rule below agrees on: "2", "1.5", "1 1/2", "1/2", "1 / 2".
+ *
+ * It is the Swift app's own pattern (`IngredientScaler.numberTokenPattern`) with one addition --
+ * a leading-dot decimal, ".5 cup", which this app has always scaled and should not stop scaling.
+ */
+const NUMBER = String.raw`(?:\d+(?:\.\d+)?|\.\d+)(?:\s+\d+\s*\/\s*\d+)?(?:\s*\/\s*\d+)?`;
+const RANGE_RE = new RegExp(String.raw`^(${NUMBER})\s*-\s*(${NUMBER})`);
+const LEADING_RE = new RegExp(String.raw`^(${NUMBER})`);
+const WORD_RE = /^[\w.-]+/;
+
+/**
+ * Units the split will take into the quantity, so "1 c" reads as one thing and "1 onion" does not.
+ * The set is the Swift app's own list, verbatim, because the two apps have to agree about where a
+ * quantity ends -- that is what decides how much of the line is bold.
+ */
+const UNITS = new Set([
+  "cup", "cups", "c", "c.",
+  "tablespoon", "tablespoons", "tbl", "tbl.", "tbsp", "tbsp.", "tbs", "tbs.",
+  "teaspoon", "teaspoons", "t", "t.", "tsp", "tsp.",
+  "gram", "grams", "g", "g.",
+  "kilogram", "kilograms", "kg", "kg.",
+  "ounce", "ounces", "oz", "oz.",
+  "pound", "pounds", "lb", "lb.", "lbs", "lbs.",
+  "milliliter", "milliliters", "ml", "ml.",
+  "liter", "liters", "l", "l.",
+  "package", "packages", "pkg", "pkg.",
+  "can", "cans",
+  "bottle", "bottles",
+  "piece", "pieces", "pc", "pc.",
+  "dash", "dashes",
+  "pinch", "pinches",
+  "drop", "drops",
+]);
+
+/** Units that are more than one word, longest first so "fluid ounces" is not read as "fluid ounce". */
+const MULTI_WORD_UNITS = ["fluid ounces", "fluid ounce", "fl. oz.", "fl oz", "floz"];
+
+/** The value of one number token, with "1 1/2" as 1.5 and "3/4" as 0.75. */
+function amountOf(token) {
+  const t = String(token).trim().replace(/\s*\/\s*/g, "/");
+  if (!t) return null;
+  let v;
+  if (t.includes(" ")) {
+    const [whole, frac] = t.split(/\s+/);
+    const [a, b] = frac.split("/");
+    v = parseFloat(whole) + Number(a) / Number(b);
+  } else if (t.includes("/")) {
+    const [a, b] = t.split("/");
+    v = Number(a) / Number(b);
   } else {
-    val = parseFloat(tok);
+    v = parseFloat(t);
   }
-  return { value: val, rest: String(text).slice(m[0].length) };
+  return isFinite(v) ? v : null;
 }
 
 /**
- * An ingredient line at a scale factor, split so the caller can style the changed part.
- * Returns { amount, rest } with amount null when there is no leading quantity to scale --
- * "salt to taste" doubles to "salt to taste".
+ * The quantity at the head of an ingredient line, and what is left of the line after it: "1 c" out
+ * of "1 c flour", "1/2 tsp" out of "1/2 tsp salt", "2" out of "2 onions, diced" (a count with no
+ * unit), and nothing at all out of "pinch of salt".
+ *
+ * A port of the Swift app's `Ingredient.parseQuantity()`, which is what its ingredient rows bold and
+ * what its scaler rewrites. Both jobs are the same split, so they share one here too -- the
+ * alternative is two parsers that disagree about where the quantity ends the moment either changes.
  */
-export function scaleLine(text, factor) {
-  if (factor === 1) return { amount: null, rest: text || "" };
-  const p = parseLeadingAmount(text || "");
-  if (!p) return { amount: null, rest: text || "" };
-  const out = formatAmount(p.value * factor);
-  if (out === null) return { amount: null, rest: text || "" };
-  return { amount: out, rest: p.rest };
+export function splitQuantity(text) {
+  const trimmed = String(text ?? "").trim();
+  const range = RANGE_RE.exec(trimmed);
+  const m = range || LEADING_RE.exec(trimmed);
+  if (!m) return { quantity: "", remainder: trimmed };
+
+  // A range is normalised to one hyphen ("2 - 3" and "2-3" are the same quantity).
+  const number = range ? `${range[1]}-${range[2]}` : m[1];
+  const after = trimmed.slice(m[0].length).trim();
+  if (!after) return { quantity: number, remainder: "" };
+
+  const lower = after.toLowerCase();
+  for (const unit of MULTI_WORD_UNITS) {
+    if (lower.startsWith(unit)) {
+      // Sliced out of the original rather than the lowercased copy, so "Fl Oz" survives as typed.
+      return {
+        quantity: `${number} ${after.slice(0, unit.length)}`,
+        remainder: after.slice(unit.length).trim(),
+      };
+    }
+  }
+
+  const word = WORD_RE.exec(after);
+  if (!word) return { quantity: number, remainder: after };
+  const lowered = word[0].toLowerCase();
+  if (UNITS.has(lowered) || UNITS.has(lowered.replaceAll(".", ""))) {
+    return { quantity: `${number} ${word[0]}`, remainder: after.slice(word[0].length).trim() };
+  }
+  return { quantity: number, remainder: after };
+}
+
+/**
+ * A quantity with its number scaled and everything else -- the unit, the spacing -- left as typed.
+ * Null when there is no number to scale, which is how the caller knows to leave the line alone.
+ */
+export function scaleQuantityString(quantity, factor) {
+  const t = String(quantity ?? "").trim();
+  if (!t) return null;
+
+  const range = RANGE_RE.exec(t);
+  if (range) {
+    const low = amountOf(range[1]);
+    const high = amountOf(range[2]);
+    if (low === null || high === null) return null;
+    const scaledLow = formatAmount(low * factor);
+    const scaledHigh = formatAmount(high * factor);
+    if (scaledLow === null || scaledHigh === null) return null;
+    return `${scaledLow}-${scaledHigh}${t.slice(range[0].length)}`;
+  }
+
+  const m = LEADING_RE.exec(t);
+  if (!m) return null;
+  const value = amountOf(m[1]);
+  if (value === null) return null;
+  const scaled = formatAmount(value * factor);
+  if (scaled === null) return null;
+  return scaled + t.slice(m[0].length);
+}
+
+/**
+ * How an ingredient row is drawn: `quantity` is the part the list emphasises, `remainder` the rest.
+ * An empty quantity means the whole line is `remainder` -- either there was no quantity to find, or
+ * there was one the scaler could not rewrite, and half a scaled line would be a lie.
+ *
+ * The Swift app's `IngredientScaler.displayParts(for:scaleFactor:)`, including its rule that a
+ * heading is never split: it is a section name, not an ingredient.
+ */
+export function displayParts(row, factor) {
+  const text = row?.text || "";
+  if (row?.isHeading) return { quantity: "", remainder: text };
+
+  const parts = splitQuantity(text);
+  if (factor === 1) return parts;
+  if (!parts.quantity) return { quantity: "", remainder: text };
+
+  const scaled = scaleQuantityString(parts.quantity, factor);
+  if (scaled === null) return { quantity: "", remainder: text };
+  return { quantity: scaled, remainder: parts.remainder };
 }
 
 /* ------------------------------------------------------------------ ordering -- */

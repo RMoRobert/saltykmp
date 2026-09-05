@@ -544,7 +544,10 @@ private fun ChefIngredients(
                         scale = scale,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(ingredient.text, style = MaterialTheme.typography.titleLarge.scaled(scale))
+                        Text(
+                            ingredientLine(ingredient.text),
+                            style = MaterialTheme.typography.titleLarge.scaled(scale),
+                        )
                     }
                 }
             }

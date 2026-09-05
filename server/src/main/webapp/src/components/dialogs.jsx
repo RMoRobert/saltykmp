@@ -980,7 +980,7 @@ export function ImportDialog({ open, onClose, onImported, notify }) {
           <DialogContent>
             <Field
               label="Recipe page address"
-              hint="Sites that publish JSON-LD import cleanly; others come back empty."
+              hint="Most sites that publish JSON-LD recipe data will import; unsupported sites will not fetch any data."
             >
               <Input
                 value={url}
