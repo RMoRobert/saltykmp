@@ -48,6 +48,8 @@ actual fun currentLibraryDir(): String =
 // a folder (iCloud Drive/OneDrive/Nextcloud via the document picker) that we copy to/from. FileKit handles
 // the iOS security-scoped bookmark + folder picker.
 actual val linkedFolderSyncSupported: Boolean = true
+actual val linkedFolderProviderExamples: String = "iCloud Drive, OneDrive, or Nextcloud"
+actual val linkedFolderProviderCaveat: String? = null
 
 // Matches where SQLiter's NativeSqliteDriver actually puts the DB by default — File(<AppSupport>/databases,
 // name) — so we reference the EXISTING file (no driver change, no data move). Images live in Documents

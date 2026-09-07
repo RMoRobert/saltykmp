@@ -101,6 +101,20 @@ expect fun prepareLibraryLocation(path: String): LibraryLocationOutcome
  */
 expect val linkedFolderSyncSupported: Boolean
 
+/**
+ * Example cloud providers whose folders the platform's picker can actually link, for the Settings caption
+ * (e.g. "Nextcloud or Google Drive"). Which providers show up is decided by the provider apps, not by us:
+ * on Android a cloud app must expose folder trees through the Storage Access Framework, and OneDrive's
+ * Android app only exposes single files. Empty where [linkedFolderSyncSupported] is false.
+ */
+expect val linkedFolderProviderExamples: String
+
+/**
+ * Optional extra caption naming a provider that can NOT be linked on this platform and the workaround
+ * (Android: OneDrive via a third-party sync app). Null where there is nothing to warn about.
+ */
+expect val linkedFolderProviderCaveat: String?
+
 /** Absolute path of the live SQLite DB file (its `-wal`/`-shm` sidecars sit next to it), or null if unknown. */
 expect fun localLibraryDbPath(): String?
 

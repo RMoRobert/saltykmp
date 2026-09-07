@@ -38,6 +38,15 @@ actual fun currentLibraryDir(): String = androidAppContext.filesDir.absolutePath
 // only workable model on Android (see TODO.md / LibraryFolderLink).
 actual val linkedFolderSyncSupported: Boolean = true
 
+// The system folder picker (ACTION_OPEN_DOCUMENT_TREE) only lists providers that
+// support document trees. Nextcloud and Google Drive do; OneDrive's app offers single
+// files only, and keeps its offline copies in private app storage, and no permission can reach that.
+actual val linkedFolderProviderExamples: String = "Nextcloud or Google Drive"
+actual val linkedFolderProviderCaveat: String? =
+    "OneDrive's Android app doesn't offer its folders to other apps, so it can't be linked directly. " +
+        "As a workaround, use an app such as Autosync for OneDrive or FolderSync to mirror a OneDrive " +
+        "folder to a folder on this device, then link that local folder here."
+
 actual fun localLibraryDbPath(): String? = androidAppContext.getDatabasePath(SALTY_DB_FILE).absolutePath
 
 actual fun localLibraryImagesDir(): String? = File(androidAppContext.filesDir, SALTY_IMAGES_DIR).absolutePath

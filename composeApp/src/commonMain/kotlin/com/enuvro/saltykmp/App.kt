@@ -221,6 +221,8 @@ import com.enuvro.saltykmp.di.customLibraryLocationSupported
 import com.enuvro.saltykmp.di.LibraryLocationOutcome
 import com.enuvro.saltykmp.di.prepareLibraryLocation
 import com.enuvro.saltykmp.export.RecipeExportFormat
+import com.enuvro.saltykmp.di.linkedFolderProviderCaveat
+import com.enuvro.saltykmp.di.linkedFolderProviderExamples
 import com.enuvro.saltykmp.di.linkedFolderSyncSupported
 import com.enuvro.saltykmp.search.RecipeSearch
 import com.enuvro.saltykmp.text.RecipeListText
@@ -3991,12 +3993,15 @@ private fun SettingsScreen(module: AppModule, onBack: () -> Unit) {
                                 SettingsSectionHeader("Linked Folder")
                                 SettingsCaption(
                                     "Salty Server is the recommended way to keep several devices in sync. As an alternative for backup " +
-                                        "or one-device-at-a-time use, you can link a folder (e.g. in Nextcloud, OneDrive, or iCloud Drive) " +
+                                        "or one-device-at-a-time use, you can link a folder (e.g. in $linkedFolderProviderExamples) " +
                                         "that holds a copy of your library in the same \"$SALTY_LIBRARY_DIR\" format Salty for Mac opens " +
                                         "directly. The app copies your library to the folder when you leave the app and shortly after " +
                                         "edits, and loads a newer copy from the folder when it starts — it does not work live from the " +
                                         "folder, so finish on one device before opening the library on another.",
                                 )
+                                // Which providers can be linked is up to the provider apps (see the platform actuals), so the
+                                // caveat and its workaround live there rather than in this shared text.
+                                linkedFolderProviderCaveat?.let { SettingsCaption(it) }
                                 if (linkedLabel.isNotBlank()) {
                                     Text("Linked folder: $linkedLabel", style = MaterialTheme.typography.bodySmall)
                                 }

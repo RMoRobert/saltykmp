@@ -37,6 +37,8 @@ actual fun currentLibraryDir(): String = saltyLibraryDir().absolutePath
 
 // Desktop uses a live custom location (above), so the copy-based linked-folder model isn't offered here.
 actual val linkedFolderSyncSupported: Boolean = false
+actual val linkedFolderProviderExamples: String = ""
+actual val linkedFolderProviderCaveat: String? = null
 actual fun localLibraryDbPath(): String? = File(saltyLibraryDir(), SALTY_DB_FILE).absolutePath
 actual fun localLibraryImagesDir(): String? = File(saltyLibraryDir(), SALTY_IMAGES_DIR).absolutePath
 
