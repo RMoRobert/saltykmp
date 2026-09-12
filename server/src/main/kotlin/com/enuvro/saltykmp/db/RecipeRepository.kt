@@ -196,11 +196,11 @@ object RecipeRepository {
                 )
             val mergedImageFilename = if (takeIncomingImage) recipe.imageFilename else existing?.get(Recipes.imageFilename)
             val mergedImageDate = if (takeIncomingImage) incomingImageDate else existingImageDate
-            // Same independent-field merge for the "last made on" date, resolved by lastModifiedPreparedDate
-            // rather than the body clock. This is what makes a body edit racing a "mark as made" safe: the
+            // Same independent-field merge for the "last prepared" date, resolved by lastModifiedPreparedDate
+            // rather than the body clock. This is what makes a body edit racing a "mark as prepared" safe: the
             // editing device uploads the whole row carrying whatever lastPrepared it knew, and if that
             // predates a mark-made another device already pushed, the stored one survives. A client that
-            // doesn't send the stamp (older build, or a row never marked made) can never win here.
+            // doesn't send the stamp (older build, or a row never marked prepared) can never win here.
             val incomingPreparedDate = WireDate.parse(recipe.lastModifiedPreparedDate)
             val existingPreparedDate = existing?.get(Recipes.lastModifiedPreparedDate)
             val takeIncomingPrepared = existing == null ||

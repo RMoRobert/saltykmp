@@ -9,7 +9,7 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * Helpers for the "last made on" date. They live in `shared` because that's where kotlinx-datetime is on
+ * Helpers for the "last prepared" date. They live in `shared` because that's where kotlinx-datetime is on
  * the classpath, and because the local-noon convention below has to match the Swift app's
  * `RecipeNavigationSplitViewModel.localNoon(on:)` exactly — the two write the same column in the same DB.
  *
@@ -57,7 +57,7 @@ object PreparedDates {
     @OptIn(ExperimentalTime::class)
     fun nowEpochMillis(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds()
 
-    /** Short display form ("Aug 14, 2026") in the viewer's local time, or null when never made. */
+    /** Short display form ("Aug 14, 2026") in the viewer's local time, or null when never prepared. */
     fun formatForDisplay(wire: String?, zone: TimeZone = TimeZone.currentSystemDefault()): String? =
         localDateOf(wire, zone)?.let { (year, month, day) ->
             "${MONTH_ABBREVIATIONS[month - 1]} $day, $year"

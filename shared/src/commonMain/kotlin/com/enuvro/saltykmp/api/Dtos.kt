@@ -28,7 +28,7 @@ data class ServerRecipe(
     val createdDate: String? = null,
     val lastModifiedDate: String? = null,
     val lastPrepared: String? = null,
-    // Independent of lastModifiedDate: bumped ONLY when lastPrepared changes, so marking a recipe made
+    // Independent of lastModifiedDate: bumped ONLY when lastPrepared changes, so marking a recipe prepared
     // doesn't register as a body edit (which would reorder every client's "Date Modified" sort). The
     // server merges lastPrepared by this stamp on every upsert, so the pair must travel together.
     val lastModifiedPreparedDate: String? = null,
@@ -148,14 +148,14 @@ data class LibraryDeleteResponse(
 
 /** Lightweight sync-index entry (GET /api/recipes/sync/manifest). Carries the image filename + image
  * timestamp so clients reconcile image transfer independently of the recipe body, without extra probes —
- * and likewise the prepared-date stamp, so "last made on" reconciles on its own clock. */
+ * and likewise the prepared-date stamp, so "last prepared" reconciles on its own clock. */
 @Serializable
 data class RecipeManifestEntry(
     val id: String,
     val lastModifiedDate: String? = null,
     val imageFilename: String? = null,
     val lastModifiedImageDate: String? = null,
-    // The "last made on" value AND its stamp, so the prepared-date pass can settle a recipe from the
+    // The "last prepared" value AND its stamp, so the prepared-date pass can settle a recipe from the
     // manifest alone — the same reason imageFilename rides along with lastModifiedImageDate.
     val lastPrepared: String? = null,
     val lastModifiedPreparedDate: String? = null,

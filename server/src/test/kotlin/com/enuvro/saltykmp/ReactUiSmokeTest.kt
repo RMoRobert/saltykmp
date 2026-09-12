@@ -708,11 +708,11 @@ class ReactUiSmokeTest {
      * Get info reports it and no longer sets it, so this walks both halves. Two assertions carry the
      * rule rather than the feature. The stored value is checked for LOCAL NOON, the convention
      * `PreparedDates` and the Swift app write into this column so a picked day renders as that day
-     * in every zone. And `lastModifiedDate` is checked to be *unchanged*: marking a recipe made is
+     * in every zone. And `lastModifiedDate` is checked to be *unchanged*: marking a recipe prepared is
      * not a body edit, and bumping it would reorder every client's "Date Modified" sort.
      */
     @Test
-    fun getInfoShowsTheDatesAndTheMenuSetsLastMade() {
+    fun getInfoShowsTheDatesAndTheMenuSetsLastPrepared() {
         val b = requireBrowser()
         val (page, errors) = appPage(b)
         val modifiedBefore = storedPies()?.lastModifiedDate
@@ -753,7 +753,7 @@ class ReactUiSmokeTest {
         )
         page.getByText("Set as date…").click()
 
-        // The field caps itself at today: a recipe cannot have been made in the future, which is
+        // The field caps itself at today: a recipe cannot have been prepared in the future, which is
         // the same rule the CMP picker states with its selectable-dates object.
         val field = page.getByLabel("Date prepared")
         assertEquals(java.time.LocalDate.now().toString(), field.getAttribute("max"))
@@ -772,7 +772,7 @@ class ReactUiSmokeTest {
         assertEquals(java.time.LocalDate.of(2026, 8, 14), local.toLocalDate(), "the day that was picked")
         assertEquals(12, local.hour, "stored at LOCAL noon, as PreparedDates does")
         assertTrue(stored?.lastModifiedPreparedDate != null, "the date travels with its own stamp")
-        assertEquals(modifiedBefore, stored?.lastModifiedDate, "marking a recipe made is not an edit")
+        assertEquals(modifiedBefore, stored?.lastModifiedDate, "marking a recipe prepared is not an edit")
 
         // Get info is where the answer is read back.
         page.getByLabel("More actions").click()

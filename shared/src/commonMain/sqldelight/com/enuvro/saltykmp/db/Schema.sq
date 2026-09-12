@@ -66,9 +66,9 @@ CREATE TABLE "recipe" (
     -- Bumped only on image change, independent of lastModifiedDate. Appended at the end so the Swift
     -- app's SELECT * keeps working. Added to existing DBs via the shared migration ledger (Database.kt).
     "lastModifiedImageDate" TEXT,
-    -- Bumped only when `lastPrepared` changes ("marked as made"), independent of lastModifiedDate. Same
+    -- Bumped only when `lastPrepared` changes ("marked as prepared"), independent of lastModifiedDate. Same
     -- decoupling trick as lastModifiedImageDate, for the opposite reason: images are too EXPENSIVE to
-    -- re-transfer on a body edit, whereas marking a recipe made must NOT look like a body edit — bumping
+    -- re-transfer on a body edit, whereas marking a recipe prepared must NOT look like a body edit — bumping
     -- lastModifiedDate would shove the recipe to the top of the "Date Modified" sort every time you cook
     -- it. So the body clock stays untouched and sync reconciles this field on its own (SyncService's
     -- prepared-date pass, mirroring the image pass). NULL = lastPrepared has never been set through a

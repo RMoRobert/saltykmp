@@ -45,7 +45,7 @@ export default function LastMadeDialog({ recipe, onClose, onSetPrepared }) {
 
   if (!recipe) return null;
 
-  // A recipe cannot have been made in the future. `max` says so to the picker, but a date field can
+  // A recipe cannot have been prepared in the future. `max` says so to the picker, but a date field can
   // still be typed into, so the refusal has to be here as well -- and what was typed is kept,
   // because silently rewriting someone's date is worse than telling them.
   const future = value > today;

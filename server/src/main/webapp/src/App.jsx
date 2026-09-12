@@ -698,7 +698,7 @@ export default function App() {
   );
 
   /**
-   * A one-field write: favorite, want-to-make, the last-made date.
+   * A one-field write: favorite, want-to-make, the last-prepared date.
    *
    * Optimistic, because the control has to answer the click -- and rolled back when the write
    * fails, which it did not used to be: the heart stayed filled over a recipe the server had never
@@ -746,9 +746,9 @@ export default function App() {
   );
 
   /**
-   * The "last made on" date, written on its own clock.
+   * The "last prepared" date, written on its own clock.
    *
-   * `lastModifiedDate` is deliberately left alone: marking a recipe made is not a body edit, and
+   * `lastModifiedDate` is deliberately left alone: marking a recipe prepared is not a body edit, and
    * bumping it would reorder every client's "Date Modified" sort. The server merges this field by
    * `lastModifiedPreparedDate` instead, so the value and its stamp have to travel together --
    * which is also what makes this safe against another device's edit landing at the same moment.

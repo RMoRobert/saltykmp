@@ -115,6 +115,14 @@ expect val linkedFolderProviderExamples: String
  */
 expect val linkedFolderProviderCaveat: String?
 
+/**
+ * What Import from File…'s picker narrows itself to, or null to offer every file. Desktop pickers
+ * filter by extension. Android's filters by MIME type and has none for `.saltyRecipe`, and iOS knows the
+ * type only while an app that declares it is installed — so mobile offers every file, as the Swift app's
+ * own importer does, and the file's contents decide.
+ */
+expect val recipeImportFileExtensions: Set<String>?
+
 /** Absolute path of the live SQLite DB file (its `-wal`/`-shm` sidecars sit next to it), or null if unknown. */
 expect fun localLibraryDbPath(): String?
 

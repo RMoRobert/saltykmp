@@ -8,6 +8,7 @@ import com.enuvro.saltykmp.db.SALTY_DB_FILE
 import com.enuvro.saltykmp.db.SALTY_IMAGES_DIR
 import com.enuvro.saltykmp.db.SALTY_LIBRARY_DIR
 import com.enuvro.saltykmp.db.createAppDatabase
+import com.enuvro.saltykmp.importer.SaltyRecipeFile
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.cio.CIO
 import org.jetbrains.skia.EncodedImageFormat
@@ -39,6 +40,7 @@ actual fun currentLibraryDir(): String = saltyLibraryDir().absolutePath
 actual val linkedFolderSyncSupported: Boolean = false
 actual val linkedFolderProviderExamples: String = ""
 actual val linkedFolderProviderCaveat: String? = null
+actual val recipeImportFileExtensions: Set<String>? = SaltyRecipeFile.FILE_EXTENSIONS
 actual fun localLibraryDbPath(): String? = File(saltyLibraryDir(), SALTY_DB_FILE).absolutePath
 actual fun localLibraryImagesDir(): String? = File(saltyLibraryDir(), SALTY_IMAGES_DIR).absolutePath
 

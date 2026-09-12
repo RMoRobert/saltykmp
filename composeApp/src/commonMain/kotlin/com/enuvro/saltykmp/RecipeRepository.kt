@@ -2,6 +2,7 @@ package com.enuvro.saltykmp
 
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
+import app.cash.sqldelight.coroutines.mapToOneOrNull
 import com.enuvro.saltykmp.db.AppDatabase
 import com.enuvro.saltykmp.db.Category
 import com.enuvro.saltykmp.db.Course
@@ -34,6 +35,14 @@ class RecipeRepository(db: AppDatabase) {
         q.selectRecipesByTag(tagId).asFlow().mapToList(Dispatchers.Default)
 
     fun recipe(id: String): Recipe? = q.selectRecipeById(id).executeAsOneOrNull()
+
+    /**
+     * [id]'s row as it changes — re-read whenever the recipe table is written, and null once the recipe
+     * is gone. For screens that must not show a stale recipe: the same one can be open in two windows,
+     * and a sync can change it while it's on screen.
+     */
+    fun recipeFlow(id: String): Flow<Recipe?> =
+        q.selectRecipeById(id).asFlow().mapToOneOrNull(Dispatchers.Default)
 
     fun courses(): Flow<List<Course>> =
         q.selectAllCourses().asFlow().mapToList(Dispatchers.Default)

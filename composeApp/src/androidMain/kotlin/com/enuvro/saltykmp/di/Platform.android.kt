@@ -47,6 +47,8 @@ actual val linkedFolderProviderCaveat: String? =
         "As a workaround, use an app such as Autosync for OneDrive or FolderSync to mirror a OneDrive " +
         "folder to a folder on this device, then link that local folder here."
 
+actual val recipeImportFileExtensions: Set<String>? = null
+
 actual fun localLibraryDbPath(): String? = androidAppContext.getDatabasePath(SALTY_DB_FILE).absolutePath
 
 actual fun localLibraryImagesDir(): String? = File(androidAppContext.filesDir, SALTY_IMAGES_DIR).absolutePath

@@ -1,9 +1,17 @@
 package com.enuvro.saltykmp
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyShortcut
 import androidx.compose.ui.unit.DpSize
@@ -22,6 +30,7 @@ import io.github.vinceglb.filekit.FileKit
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.mapNotNull
 
 fun main() {
     // Without this the macOS application menu (and the Dock tile when run from Gradle) is labelled with
@@ -42,8 +51,12 @@ private const val WINDOW_STATE_KEY = "desktopWindowState"
 private fun isMac() = System.getProperty("os.name").orEmpty().startsWith("Mac")
 
 /** ⌘-key on macOS, Ctrl elsewhere. */
-private fun accelerator(key: Key, shift: Boolean = false): KeyShortcut =
-    if (isMac()) KeyShortcut(key, meta = true, shift = shift) else KeyShortcut(key, ctrl = true, shift = shift)
+private fun accelerator(key: Key, shift: Boolean = false, alt: Boolean = false): KeyShortcut =
+    if (isMac()) {
+        KeyShortcut(key, meta = true, shift = shift, alt = alt)
+    } else {
+        KeyShortcut(key, ctrl = true, shift = shift, alt = alt)
+    }
 
 @OptIn(FlowPreview::class)
 private fun runApp() = application {
@@ -63,14 +76,95 @@ private fun runApp() = application {
             .collect { store.putString(WINDOW_STATE_KEY, it) }
     }
 
-    val commands = remember { AppCommands() }
+    // Recipes open in windows of their own (File ▸ Open Recipe in New Window, and the recipe menus), by
+    // id, in the order opened. Each window's frame is kept by id as well, so opening a recipe that
+    // already has one brings that window forward rather than stacking a second copy on top of it.
+    val recipeWindows = remember { mutableStateListOf<String>() }
+    val recipeFrames = remember { mutableMapOf<String, ComposeWindow>() }
+    var mainFrame by remember { mutableStateOf<ComposeWindow?>(null) }
+    val commands = remember {
+        AppCommands().apply {
+            openRecipeWindow = { id ->
+                val open = recipeFrames[id]
+                when {
+                    open != null -> open.toFront()
+                    id !in recipeWindows -> recipeWindows += id
+                }
+            }
+        }
+    }
     Window(
         onCloseRequest = ::exitApplication,
         state = windowState,
         title = "Salty",
     ) {
-        SaltyMenuBar(commands)
+        LaunchedEffect(window) { mainFrame = window }
+        SaltyMenuBar(commands, openShownRecipe = true)
         App(commands)
+    }
+    for (id in recipeWindows) {
+        key(id) {
+            RecipeWindow(
+                recipeId = id,
+                commands = commands,
+                onFrame = { frame -> if (frame != null) recipeFrames[id] = frame else recipeFrames.remove(id) },
+                toMainWindow = { mainFrame?.toFront() },
+                onClose = { recipeWindows.remove(id) },
+            )
+        }
+    }
+}
+
+/** Opens roomy enough for the recipe's wide layout (a hero photo), with the reading column capped inside. */
+private val RECIPE_WINDOW_SIZE = DpSize(760.dp, 820.dp)
+
+/**
+ * A recipe in a window of its own. Titled by the recipe, and kept current, so a rename shows in the title
+ * bar and the Window menu; a deleted recipe keeps the name it last had.
+ *
+ * It has the same menu bar as the main window: on macOS the menu bar belongs to whichever window is in
+ * front, and a recipe window shouldn't take ⌘N or ⌘F away. Those commands act on the main window, so
+ * they bring it forward — except Sync Now, which has nothing to show there.
+ */
+@Composable
+private fun RecipeWindow(
+    recipeId: String,
+    commands: AppCommands,
+    onFrame: (ComposeWindow?) -> Unit,
+    toMainWindow: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val module = remember { AppModule.shared() }
+    val title by remember(recipeId) { module.repository.recipeFlow(recipeId).mapNotNull { it?.name?.ifBlank { null } } }
+        .collectAsState(initial = remember(recipeId) { module.repository.recipe(recipeId)?.name?.ifBlank { null } ?: "Recipe" })
+    // This window's own ⌘I: the dialog belongs to the recipe on screen here, not to the main window's.
+    var infoRequest by remember { mutableStateOf(0) }
+    Window(
+        onCloseRequest = onClose,
+        state = rememberWindowState(size = RECIPE_WINDOW_SIZE),
+        title = title,
+    ) {
+        DisposableEffect(window) {
+            onFrame(window)
+            onDispose { onFrame(null) }
+        }
+        SaltyMenuBar(
+            commands,
+            send = { command ->
+                if (command != AppCommand.SyncNow) toMainWindow()
+                commands.send(command)
+            },
+            getInfo = { infoRequest++ },
+            closeWindow = onClose,
+        )
+        RecipeWindowContent(
+            recipeId,
+            onShowInLibrary = { filter ->
+                toMainWindow()
+                commands.showInLibrary(filter)
+            },
+            infoRequest = infoRequest,
+        )
     }
 }
 
@@ -78,26 +172,53 @@ private fun runApp() = application {
  * The macOS/Windows menu bar. Everything here is a shortcut into the running app via [AppCommands] —
  * the Swift app has these as real menu commands, and on desktop a menu bar is where people look for
  * "new", "find" and "sync" before they look at a floating action button.
+ *
+ * [openShownRecipe] adds File ▸ Open Recipe in New Window and a Get Info that acts on whatever recipe the
+ * main window is reading (⌘↩ and ⌘I, as in the Swift app). A recipe window passes its own [getInfo] and
+ * [closeWindow] instead — closing the main window quits, as it always has.
  */
 @Composable
-private fun FrameWindowScope.SaltyMenuBar(commands: AppCommands) {
+private fun FrameWindowScope.SaltyMenuBar(
+    commands: AppCommands,
+    send: (AppCommand) -> Unit = commands::send,
+    openShownRecipe: Boolean = false,
+    getInfo: (() -> Unit)? = null,
+    closeWindow: (() -> Unit)? = null,
+) {
     MenuBar {
         Menu("File", mnemonic = 'F') {
-            Item("New Recipe", shortcut = accelerator(Key.N)) { commands.send(AppCommand.NewRecipe) }
-            Item("Import from Web…", shortcut = accelerator(Key.I)) { commands.send(AppCommand.ImportFromWeb) }
+            Item("New Recipe", shortcut = accelerator(Key.N)) { send(AppCommand.NewRecipe) }
+            // ⌥⌘N, as the Swift app's New Recipe from Web…, which leaves ⌘I where macOS expects it.
+            Item("Import from Web…", shortcut = accelerator(Key.N, alt = true)) { send(AppCommand.ImportFromWeb) }
+            Item("Import from File…") { send(AppCommand.ImportFromFile) }
             Separator()
-            Item("Sync Now", shortcut = accelerator(Key.R)) { commands.send(AppCommand.SyncNow) }
+            if (openShownRecipe) {
+                val shown = commands.shownRecipeId
+                Item("Open Recipe in New Window", enabled = shown != null, shortcut = accelerator(Key.Enter)) {
+                    shown?.let { commands.openRecipeWindow?.invoke(it) }
+                }
+                // Acts on the recipe the main window is reading; a recipe window passes its own below.
+                Item("Get Info", enabled = shown != null, shortcut = accelerator(Key.I)) { send(AppCommand.GetInfo) }
+            }
+            if (getInfo != null) {
+                Item("Get Info", shortcut = accelerator(Key.I), onClick = getInfo)
+            }
+            if (closeWindow != null) {
+                Item("Close Window", shortcut = accelerator(Key.W), onClick = closeWindow)
+            }
             Separator()
-            Item("Settings…", shortcut = accelerator(Key.Comma)) { commands.send(AppCommand.OpenSettings) }
+            Item("Sync Now", shortcut = accelerator(Key.R)) { send(AppCommand.SyncNow) }
+            Separator()
+            Item("Settings…", shortcut = accelerator(Key.Comma)) { send(AppCommand.OpenSettings) }
         }
         Menu("Edit", mnemonic = 'E') {
-            Item("Find in List", shortcut = accelerator(Key.F)) { commands.send(AppCommand.FindInList) }
+            Item("Find in List", shortcut = accelerator(Key.F)) { send(AppCommand.FindInList) }
         }
         Menu("Go", mnemonic = 'G') {
-            Item("All Recipes", shortcut = accelerator(Key.One)) { commands.send(AppCommand.ShowAllRecipes) }
-            Item("Favorites", shortcut = accelerator(Key.Two)) { commands.send(AppCommand.ShowFavorites) }
-            Item("Want to Make", shortcut = accelerator(Key.Three)) { commands.send(AppCommand.ShowWantToMake) }
-            Item("Shopping Lists", shortcut = accelerator(Key.Four)) { commands.send(AppCommand.ShowShoppingLists) }
+            Item("All Recipes", shortcut = accelerator(Key.One)) { send(AppCommand.ShowAllRecipes) }
+            Item("Favorites", shortcut = accelerator(Key.Two)) { send(AppCommand.ShowFavorites) }
+            Item("Want to Make", shortcut = accelerator(Key.Three)) { send(AppCommand.ShowWantToMake) }
+            Item("Shopping Lists", shortcut = accelerator(Key.Four)) { send(AppCommand.ShowShoppingLists) }
         }
     }
 }

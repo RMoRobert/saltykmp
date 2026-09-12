@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Pins the local-noon convention in [PreparedDates]. This code writes the same "last made on" column as the
+ * Pins the local-noon convention in [PreparedDates]. This code writes the same "last prepared" column as the
  * Swift app's `RecipeNavigationSplitViewModel.localNoon(on:)`, so a silent shift here desynchronises the two
  * clients rather than failing loudly.
  *

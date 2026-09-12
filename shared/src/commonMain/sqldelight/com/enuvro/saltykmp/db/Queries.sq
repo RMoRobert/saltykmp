@@ -74,8 +74,8 @@ UPDATE recipe SET syncedModifiedDate = lastModifiedDate;
 updateRecipeImage:
 UPDATE recipe SET imageFilename = ?, imageThumbnailData = ?, lastModifiedImageDate = ? WHERE id = ?;
 
--- Targeted "last made on" update, independent of the body: deliberately does NOT touch
--- lastModifiedDate, so marking a recipe made never disturbs the "Date Modified" sort. The paired
+-- Targeted "last prepared" update, independent of the body: deliberately does NOT touch
+-- lastModifiedDate, so marking a recipe prepared never disturbs the "Date Modified" sort. The paired
 -- lastModifiedPreparedDate is what sync reconciles on (see SyncService.reconcilePreparedDates).
 updateRecipePrepared:
 UPDATE recipe SET lastPrepared = ?, lastModifiedPreparedDate = ? WHERE id = ?;

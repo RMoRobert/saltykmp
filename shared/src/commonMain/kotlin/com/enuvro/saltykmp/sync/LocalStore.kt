@@ -61,7 +61,7 @@ class LocalStore(private val db: AppDatabase) {
         q.selectAllRecipes().executeAsList()
             .map { ImageEntry(it.id, it.imageFilename, dbToWireDate(it.lastModifiedImageDate)) }
 
-    /** Per-recipe "last made on" state for the independent prepared-date pass (wire form). */
+    /** Per-recipe "last prepared" state for the independent prepared-date pass (wire form). */
     data class PreparedEntry(val id: String, val lastPrepared: String?, val lastModifiedPreparedDate: String?)
 
     fun recipePreparedEntries(): List<PreparedEntry> =
@@ -110,7 +110,7 @@ class LocalStore(private val db: AppDatabase) {
             // row) so a text-only body update never disturbs the image, and a freshly-downloaded recipe keeps
             // a past image date — letting the image pass see the server's image as newer and fetch its bytes.
             val existing = q.selectRecipeById(s.id).executeAsOneOrNull()
-            // The "last made on" pair rides along with the body, but the body's clock doesn't decide it:
+            // The "last prepared" pair rides along with the body, but the body's clock doesn't decide it:
             // keep whichever side's lastModifiedPreparedDate is newer. Without this, downloading a body
             // edit made elsewhere would silently undo a mark-as-made this device hasn't uploaded yet.
             // (The server applies the same merge in RecipeRepository.upsert, so both directions agree.)
@@ -199,8 +199,8 @@ class LocalStore(private val db: AppDatabase) {
         q.updateRecipeImage(filename, thumbnailData, wireToDbDate(imageDate), id)
     }
 
-    /** Sets the "last made on" date and its sync stamp WITHOUT touching lastModifiedDate — marking a
-     * recipe made is deliberately not a body edit, so it never reorders a "Date Modified" sort. Pass
+    /** Sets the "last prepared" date and its sync stamp WITHOUT touching lastModifiedDate — marking a
+     * recipe prepared is deliberately not a body edit, so it never reorders a "Date Modified" sort. Pass
      * [lastPrepared] = null to clear the date. [preparedDate] is the wire/ISO stamp to record:
      * `nowTimestamp()` for a local edit, or the server's stamp when applying a downloaded change. */
     fun setRecipePrepared(id: String, lastPrepared: String?, preparedDate: String?) {

@@ -47,6 +47,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ListAlt
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.BookmarkAdded
 import androidx.compose.material.icons.filled.Favorite
@@ -65,6 +67,7 @@ import androidx.compose.material.icons.outlined.EventAvailable
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Menu
@@ -181,6 +184,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -196,6 +202,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import androidx.compose.ui.window.Dialog
@@ -224,6 +231,8 @@ import com.enuvro.saltykmp.export.RecipeExportFormat
 import com.enuvro.saltykmp.di.linkedFolderProviderCaveat
 import com.enuvro.saltykmp.di.linkedFolderProviderExamples
 import com.enuvro.saltykmp.di.linkedFolderSyncSupported
+import com.enuvro.saltykmp.di.recipeImportFileExtensions
+import com.enuvro.saltykmp.importer.RecipeFileImportSummary
 import com.enuvro.saltykmp.search.RecipeSearch
 import com.enuvro.saltykmp.text.RecipeListText
 import com.enuvro.saltykmp.search.RecipeSearchField
@@ -237,8 +246,10 @@ import kotlin.time.Instant
 import com.enuvro.saltykmp.sync.SyncResult
 import com.enuvro.saltykmp.util.PreparedDates
 import io.github.vinceglb.filekit.PlatformFile
+import io.github.vinceglb.filekit.name
 import io.github.vinceglb.filekit.path
 import io.github.vinceglb.filekit.readBytes
+import io.github.vinceglb.filekit.dialogs.FileKitMode
 import io.github.vinceglb.filekit.dialogs.FileKitType
 import io.github.vinceglb.filekit.dialogs.compose.rememberDirectoryPickerLauncher
 import io.github.vinceglb.filekit.dialogs.compose.rememberFilePickerLauncher
@@ -467,6 +478,8 @@ fun App(commands: AppCommands? = null) {
     var showWebImport by remember { mutableStateOf(false) }
     // Bumped by the Find command; the recipe list opens its search field whenever this changes.
     var findRequest by remember { mutableStateOf(0) }
+    // Likewise for Get Info, which the open recipe answers with its own dialog.
+    var infoRequest by remember { mutableStateOf(0) }
     var menuSyncRunning by remember { mutableStateOf(false) }
     val snackbarHost = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -509,14 +522,62 @@ fun App(commands: AppCommands? = null) {
         }
     }
 
+    // Import from File…, app-level for the same reason as the web import. The picker is the confirmation:
+    // what it hands back is imported at once, and the outcome is reported afterwards — a snackbar when
+    // everything came in, a dialog when something didn't.
+    var importingFiles by remember { mutableStateOf(false) }
+    var importReport by remember { mutableStateOf<RecipeFileImportSummary?>(null) }
+    val recipeFileLauncher = rememberFilePickerLauncher(
+        type = FileKitType.File(recipeImportFileExtensions),
+        mode = FileKitMode.Multiple(),
+    ) { files ->
+        if (files.isNullOrEmpty() || importingFiles) return@rememberFilePickerLauncher
+        importingFiles = true
+        scope.launch {
+            val summary = try {
+                RecipeFileImport.run(module, files)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                RecipeFileImportSummary(emptyList(), files.size, files.map { it.name }, skipped = 0)
+            } finally {
+                importingFiles = false
+            }
+            val single = summary.imported.singleOrNull()
+            when {
+                // Never navigate out of an open editor: that would drop its unsaved changes without asking.
+                screen is Screen.Edit -> Unit
+                // One recipe: open it, as saving a new one does.
+                single != null -> screen = Screen.Detail(single.id)
+                // Several from Settings or the shopping lists: go where they now are.
+                summary.imported.isNotEmpty() && screen !is Screen.List && screen !is Screen.Detail -> screen = Screen.List
+            }
+            if (summary.isClean) notify(summary.message) else importReport = summary
+        }
+    }
+
+    // What the desktop's File ▸ Open Recipe in New Window acts on: the recipe being read, if any. Not one
+    // being edited — its window would open on the saved version and lose the edit's place.
+    val shownRecipeId = (screen as? Screen.Detail)?.id
+    DisposableEffect(commands, shownRecipeId) {
+        commands?.shownRecipeId = shownRecipeId
+        onDispose { commands?.shownRecipeId = null }
+    }
+
     // Commands from the host platform (today: the desktop menu bar and its keyboard shortcuts). The handler
     // is installed for as long as the app is composed; anything sent outside that window is dropped rather
     // than crashing, which is what makes a menu item safe to click during startup.
     DisposableEffect(commands) {
+        // A recipe window's category and tag chips land here, in the main window's list.
+        commands?.libraryHandler = { filter ->
+            recipeFilter = filter
+            screen = Screen.List
+        }
         commands?.handler = handler@{ command ->
             when (command) {
                 AppCommand.NewRecipe -> screen = Screen.Edit(null)
                 AppCommand.ImportFromWeb -> showWebImport = true
+                AppCommand.ImportFromFile -> if (!importingFiles) recipeFileLauncher.launch()
                 AppCommand.OpenSettings -> screen = Screen.Settings
                 AppCommand.ShowAllRecipes -> { recipeFilter = RecipeFilter.All; screen = Screen.List }
                 AppCommand.ShowFavorites -> { recipeFilter = RecipeFilter.Favorites; screen = Screen.List }
@@ -527,6 +588,8 @@ fun App(commands: AppCommands? = null) {
                 AppCommand.FindInList -> if (screen != Screen.Settings && screen != Screen.ManageClassifiers) {
                     findRequest++
                 }
+                // Only a recipe has dates to show; the menu item is disabled without one anyway.
+                AppCommand.GetInfo -> if (screen is Screen.Detail) infoRequest++
                 AppCommand.Back -> goBack()
                 AppCommand.SyncNow -> {
                     if (menuSyncRunning) return@handler
@@ -544,7 +607,10 @@ fun App(commands: AppCommands? = null) {
                 }
             }
         }
-        onDispose { commands?.handler = null }
+        onDispose {
+            commands?.handler = null
+            commands?.libraryHandler = null
+        }
     }
 
     val uiDensity by module.uiDensity.collectAsState()
@@ -600,7 +666,10 @@ fun App(commands: AppCommands? = null) {
                         snackbarHost = snackbarHost,
                         onBack = { goBack() },
                         findRequest = findRequest,
+                        infoRequest = infoRequest,
                         onImportFromWeb = { showWebImport = true },
+                        onImportFromFile = { if (!importingFiles) recipeFileLauncher.launch() },
+                        openRecipeWindow = commands?.openRecipeWindow,
                     )
                 }
             }
@@ -612,7 +681,42 @@ fun App(commands: AppCommands? = null) {
                 onImported = { showWebImport = false; screen = Screen.Edit(null, it) },
             )
         }
+        if (importingFiles) ImportProgressDialog()
+        importReport?.let { report ->
+            AlertDialog(
+                onDismissRequest = { importReport = null },
+                title = { Text(report.title) },
+                text = { Text(report.message) },
+                confirmButton = { TextButton(onClick = { importReport = null }) { Text("OK") } },
+            )
+        }
     }
+}
+
+/**
+ * Shown while Import from File… runs — but only once it has run long enough to notice, so the usual
+ * single recipe finishes before a dialog could flash up. Not dismissible: the import completes either
+ * way, and its outcome is reported when it does.
+ */
+@Composable
+private fun ImportProgressDialog() {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(400)
+        visible = true
+    }
+    if (!visible) return
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("Importing Recipes") },
+        text = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                CircularProgressIndicator(Modifier.size(24.dp))
+                Text("A file with many photos can take a moment.")
+            }
+        },
+        confirmButton = {},
+    )
 }
 
 private enum class StartupPhase { Loading, Conflict, Ready }
@@ -638,14 +742,21 @@ private class AppShell(
     val screen: Screen,
     val filter: RecipeFilter,
     val findRequest: Int,
+    val infoRequest: Int,
     val onScreen: (Screen) -> Unit,
     val onFilter: (RecipeFilter) -> Unit,
     val onBack: () -> Unit,
     val onImportFromWeb: () -> Unit,
+    val onImportFromFile: () -> Unit,
+    /** Opens a recipe in its own window; null where there are no other windows to open (mobile). */
+    val openRecipeWindow: ((recipeId: String) -> Unit)?,
     val showUndo: (message: String, undo: () -> Unit) -> Unit,
     /** Report an outcome with no action attached (an export finished, a save failed). Blank = say nothing. */
     val notify: (message: String) -> Unit,
 ) {
+    /** The detail screen's Open in New Window for [recipeId], or null to leave the item out. */
+    fun openInNewWindow(recipeId: String): (() -> Unit)? = openRecipeWindow?.let { open -> { open(recipeId) } }
+
     /** Show the library sliced by [f]; also leaves whatever sub-screen asked for it. */
     fun openFilter(f: RecipeFilter) {
         onFilter(f)
@@ -668,7 +779,10 @@ private fun AppContent(
     snackbarHost: SnackbarHostState,
     onBack: () -> Unit,
     findRequest: Int,
+    infoRequest: Int,
     onImportFromWeb: () -> Unit,
+    onImportFromFile: () -> Unit,
+    openRecipeWindow: ((recipeId: String) -> Unit)?,
 ) {
     val snackbarScope = rememberCoroutineScope()
 
@@ -699,10 +813,13 @@ private fun AppContent(
         screen = screen,
         filter = recipeFilter,
         findRequest = findRequest,
+        infoRequest = infoRequest,
         onScreen = onScreen,
         onFilter = onRecipeFilter,
         onBack = onBack,
         onImportFromWeb = onImportFromWeb,
+        onImportFromFile = onImportFromFile,
+        openRecipeWindow = openRecipeWindow,
         showUndo = ::showUndo,
         notify = ::notify,
     )
@@ -749,6 +866,8 @@ private fun CompactLayout(shell: AppShell) {
             onFilter = { shell.openFilter(it) },
             onDeleted = shell.showUndo,
             onNotify = shell.notify,
+            onOpenInNewWindow = shell.openInNewWindow(s.id),
+            infoRequest = shell.infoRequest,
         )
         is Screen.Edit -> RecipeEditScreen(
             shell.module, s.id, s.imported,
@@ -833,6 +952,8 @@ private fun WideContent(shell: AppShell, width: WidthClass) {
                     onFilter = { shell.openFilter(it) },
                     onDeleted = shell.showUndo,
                     onNotify = shell.notify,
+                    onOpenInNewWindow = shell.openInNewWindow(s.id),
+                    infoRequest = shell.infoRequest,
                 )
                 is Screen.Edit -> RecipeEditScreen(
                     shell.module, s.id, s.imported,
@@ -908,6 +1029,8 @@ private fun RecipeDetailPane(shell: AppShell, screen: Screen) {
             onFilter = { shell.openFilter(it) },
             onDeleted = shell.showUndo,
             onNotify = shell.notify,
+            onOpenInNewWindow = shell.openInNewWindow(screen.id),
+            infoRequest = shell.infoRequest,
             wide = true,
         )
         is Screen.Edit -> RecipeEditScreen(
@@ -919,6 +1042,82 @@ private fun RecipeDetailPane(shell: AppShell, screen: Screen) {
             title = "No recipe selected",
             body = "Choose a recipe on the left to read it here.",
         )
+    }
+}
+
+/**
+ * One recipe in a window of its own — the desktop's Open in New Window, after the Swift app's
+ * `RecipeDetailWindowView`. The window keeps its recipe for life: editing and Chef Mode happen inside it
+ * and come back to it; a category or tag chip sends the MAIN window's list to that slice
+ * ([onShowInLibrary]); and deleting the recipe leaves the window in place with an Undo, rather than
+ * closing out from under the only way back.
+ */
+@Composable
+internal fun RecipeWindowContent(
+    recipeId: String,
+    onShowInLibrary: (RecipeFilter) -> Unit,
+    /** Bumped by this window's own File ▸ Get Info; see [RecipeDetailScreen]. */
+    infoRequest: Int = 0,
+) {
+    val module = remember { AppModule.shared() }
+    val uiDensity by module.uiDensity.collectAsState()
+    var screen by remember(recipeId) { mutableStateOf<Screen>(Screen.Detail(recipeId)) }
+    // Watched here as well as in the detail screen: whether the recipe exists decides what this window
+    // shows, whichever window (or sync) deleted it — and an Undo in either brings it straight back.
+    val row by remember(recipeId) { module.repository.recipeFlow(recipeId) }
+        .collectAsState(initial = remember(recipeId) { module.repository.recipe(recipeId) })
+    val snackbarHost = remember { SnackbarHostState() }
+    val snackbarScope = rememberCoroutineScope()
+
+    fun showUndo(message: String, undo: () -> Unit) {
+        snackbarScope.launch {
+            snackbarHost.currentSnackbarData?.dismiss()
+            val result = snackbarHost.showSnackbar(message = message, actionLabel = "Undo", duration = SnackbarDuration.Long)
+            if (result == SnackbarResult.ActionPerformed) undo()
+        }
+    }
+
+    fun notify(message: String) {
+        if (message.isBlank()) return
+        snackbarScope.launch {
+            snackbarHost.currentSnackbarData?.dismiss()
+            snackbarHost.showSnackbar(message)
+        }
+    }
+
+    SaltyTheme(uiDensity) {
+        when (val s = screen) {
+            // As in the main window, Chef Mode takes the whole window — which, being its own window, can
+            // go full screen on a second display while the library stays usable in the first.
+            is Screen.Chef -> ChefScreen(module, s.id, onExit = { screen = Screen.Detail(s.id) })
+            else -> Box(Modifier.fillMaxSize()) {
+                when {
+                    s is Screen.Edit -> RecipeEditScreen(module, s.id, onDone = { screen = Screen.Detail(recipeId) })
+                    row == null -> PanePlaceholder(
+                        icon = Icons.Outlined.Restaurant,
+                        title = "Recipe deleted",
+                        body = "This recipe is no longer in your library.",
+                    )
+                    else -> BoxWithConstraints(Modifier.fillMaxSize()) {
+                        RecipeDetailScreen(
+                            module, recipeId,
+                            // A window has nowhere to go back to; it closes instead.
+                            onBack = null,
+                            // Deleted from here: the placeholder above takes over as the row goes.
+                            onClose = {},
+                            onEdit = { screen = Screen.Edit(recipeId) },
+                            onChefMode = { screen = Screen.Chef(recipeId) },
+                            onFilter = onShowInLibrary,
+                            onDeleted = ::showUndo,
+                            onNotify = ::notify,
+                            infoRequest = infoRequest,
+                            wide = widthClassFor(maxWidth) != WidthClass.Compact,
+                        )
+                    }
+                }
+                SnackbarHost(snackbarHost, Modifier.align(Alignment.BottomCenter))
+            }
+        }
     }
 }
 
@@ -1006,8 +1205,11 @@ private fun AutoSyncFailureBanner(onClose: () -> Unit, onPause: () -> Unit) {
     }
 }
 
-/** Which slice of the library the list is currently showing (mirrors the Swift app's sidebar). */
-private sealed interface RecipeFilter {
+/**
+ * Which slice of the library the list is currently showing (mirrors the Swift app's sidebar). Internal
+ * rather than private because a desktop recipe window hands one to the main window through [AppCommands].
+ */
+internal sealed interface RecipeFilter {
     val title: String
 
     data object All : RecipeFilter {
@@ -1036,14 +1238,26 @@ private sealed interface RecipeFilter {
 }
 
 /** Recipe-list sort field (mirrors the Swift app's sort options); applied in-memory over the list. */
-private enum class RecipeSort(val label: String) {
+internal enum class RecipeSort(val label: String) {
     NAME("Name"),
     DATE_MODIFIED("Date Modified"),
     DATE_CREATED("Date Created"),
     SOURCE("Source"),
     RATING("Rating"),
     DIFFICULTY("Difficulty"),
-    LAST_MADE("Last Made"),
+    LAST_PREPARED("Last Prepared"),
+    ;
+
+    companion object {
+        /**
+         * The stored choice, defaulting to [NAME]. `LAST_MADE` is what builds that called this "Last
+         * Made" wrote; honouring it keeps their sort from silently resetting to Name.
+         */
+        fun stored(value: String): RecipeSort = when (value) {
+            "LAST_MADE" -> LAST_PREPARED
+            else -> runCatching { valueOf(value) }.getOrDefault(NAME)
+        }
+    }
 }
 
 /**
@@ -1067,7 +1281,7 @@ private fun sortRecipes(list: List<Recipe>, sort: RecipeSort, ascending: Boolean
     val dates: Map<String, Instant> = when (sort) {
         RecipeSort.DATE_MODIFIED -> list.associate { it.id to sortInstant(it.lastModifiedDate) }
         RecipeSort.DATE_CREATED -> list.associate { it.id to sortInstant(it.createdDate) }
-        RecipeSort.LAST_MADE -> list.associate { it.id to sortInstant(it.lastPrepared) }
+        RecipeSort.LAST_PREPARED -> list.associate { it.id to sortInstant(it.lastPrepared) }
         else -> emptyMap()
     }
     val key: Comparator<Recipe> = when (sort) {
@@ -1077,15 +1291,15 @@ private fun sortRecipes(list: List<Recipe>, sort: RecipeSort, ascending: Boolean
         RecipeSort.SOURCE -> compareBy { it.source?.lowercase() ?: "" }
         RecipeSort.RATING -> compareBy { it.rating?.rawValue ?: 0L }
         RecipeSort.DIFFICULTY -> compareBy { it.difficulty?.rawValue ?: 0L }
-        RecipeSort.LAST_MADE -> compareBy { dates.getValue(it.id) }
+        RecipeSort.LAST_PREPARED -> compareBy { dates.getValue(it.id) }
     }
     val sorted = list.sortedWith(key.thenBy { it.name.lowercase() })
     val ordered = if (ascending) sorted else sorted.reversed()
-    // Never-made recipes go LAST in both directions (the Swift app's ORDER BY does the same). Ascending
-    // would otherwise open with every recipe that has no date at all — noise, for a sort that exists to
-    // answer "what have I cooked lately".
-    return if (sort == RecipeSort.LAST_MADE) {
-        ordered.partition { !it.lastPrepared.isNullOrBlank() }.let { (made, never) -> made + never }
+    // Never-prepared recipes go LAST in both directions (the Swift app's ORDER BY does the same).
+    // Ascending would otherwise open with every recipe that has no date at all — noise, for a sort that
+    // exists to answer "what have I cooked lately".
+    return if (sort == RecipeSort.LAST_PREPARED) {
+        ordered.partition { !it.lastPrepared.isNullOrBlank() }.let { (dated, never) -> dated + never }
     } else {
         ordered
     }
@@ -1161,6 +1375,41 @@ private fun RecipeExportDialog(
 }
 
 /**
+ * Get Info: when a recipe was created, last changed, and last prepared (the Swift app's info inspector, which
+ * is where those first two dates live there too — no screen in either app shows them otherwise).
+ *
+ * A dialog rather than an inspector pane: there are three lines to read and nothing to do with them, so
+ * they don't need room kept for them beside the recipe. Dates are the caller's wire timestamps; see
+ * [recipeInfoOf] for the formatting.
+ */
+@Composable
+private fun RecipeInfoDialog(
+    recipeName: String,
+    createdWire: String?,
+    lastModifiedWire: String?,
+    lastPreparedWire: String?,
+    onDismiss: () -> Unit,
+) {
+    val info = remember(createdWire, lastModifiedWire, lastPreparedWire) {
+        recipeInfoOf(createdWire, lastModifiedWire, lastPreparedWire)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Info, contentDescription = null) },
+        title = { Text(recipeName, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            // Selectable: a date someone opens this for is a date they may want to quote somewhere.
+            SelectionContainer {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    info.rows.forEach { (label, value) -> DetailMeta(label, value) }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+/**
  * Phone-width recipe list: the pane plus the modal drawer it opens. Wider layouts render
  * [RecipeListPane] directly, with the navigation already on screen beside it.
  */
@@ -1205,9 +1454,7 @@ private fun RecipeListPane(
 ) {
     val module = shell.module
     val filter = shell.filter
-    var sort by remember {
-        mutableStateOf(runCatching { RecipeSort.valueOf(module.settings.recipeSort) }.getOrDefault(RecipeSort.NAME))
-    }
+    var sort by remember { mutableStateOf(RecipeSort.stored(module.settings.recipeSort)) }
     var ascending by remember { mutableStateOf(module.settings.recipeSortAscending) }
     var sortMenu by remember { mutableStateOf(false) }
     // Search is opt-in: the field replaces the title while active, and closing it clears the query so the
@@ -1221,6 +1468,8 @@ private fun RecipeListPane(
     // it survives the row menu closing — and so the name is still there to title the dialog after the
     // recipe scrolls out of the composition.
     var exporting by remember { mutableStateOf<Pair<String, String>?>(null) }
+    // The row whose Get Info dialog is open, for the same reason: the row it came from may scroll away.
+    var infoFor by remember { mutableStateOf<Recipe?>(null) }
     val exportScope = rememberCoroutineScope()
 
     // The desktop menu bar's Find command (⌘F) arrives as a bumped counter. Skipping 0 keeps the field
@@ -1396,6 +1645,10 @@ private fun RecipeListPane(
                                 text = { Text("Import from Web…") },
                                 onClick = { overflowMenu = false; shell.onImportFromWeb() },
                             )
+                            DropdownMenuItem(
+                                text = { Text("Import from File…") },
+                                onClick = { overflowMenu = false; shell.onImportFromFile() },
+                            )
                         }
                     }
                 },
@@ -1421,7 +1674,8 @@ private fun RecipeListPane(
                     filter is RecipeFilter.All -> EmptyState(
                         icon = Icons.Outlined.Restaurant,
                         title = "No recipes yet",
-                        body = "Add one by hand, import a recipe from the web, or sync with Salty Server.",
+                        body = "Add one by hand, import some from the web or a Salty recipe file, or sync " +
+                            "with Salty Server.",
                         actionLabel = "New recipe",
                         onAction = { shell.onScreen(Screen.Edit(null)) },
                     )
@@ -1449,14 +1703,17 @@ private fun RecipeListPane(
                                 ?.let { decodeImageBitmap(it) }
                         }
                         var rowMenu by remember(recipe.id) { mutableStateOf(false) }
-                        var rowLastMadeMenu by remember(recipe.id) { mutableStateOf(false) }
-                        // When sorting by "Last Made", surface the date in the row itself — otherwise the
-                        // ordering has no visible explanation.
-                        val lastMade = remember(recipe.lastPrepared) {
+                        // Where the menu opens: under the row after a long press, at the pointer after a
+                        // right-click. Relative to the row's bottom-left, which is where a menu anchors.
+                        var rowMenuOffset by remember(recipe.id) { mutableStateOf(DpOffset.Zero) }
+                        var rowLastPreparedMenu by remember(recipe.id) { mutableStateOf(false) }
+                        // When sorting by "Last Prepared", surface the date in the row itself — otherwise
+                        // the ordering has no visible explanation. Worded as the web app words it.
+                        val lastPrepared = remember(recipe.lastPrepared) {
                             PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
                         }
                         val subtitle = when {
-                            sort == RecipeSort.LAST_MADE -> lastMade?.let { "Made $it" } ?: "Never made"
+                            sort == RecipeSort.LAST_PREPARED -> lastPrepared?.let { "Last prepared $it" } ?: "Never prepared"
                             else -> recipe.source?.takeIf { it.isNotBlank() }
                         }
                         Box {
@@ -1489,15 +1746,41 @@ private fun RecipeListPane(
                                 } else {
                                     ListItemDefaults.colors()
                                 },
-                                modifier = Modifier.combinedClickable(
-                                    onClick = { shell.onScreen(Screen.Detail(recipe.id)) },
-                                    onLongClick = { rowMenu = true },
-                                ),
+                                modifier = Modifier
+                                    // A right-click opens the menu too — on desktop that is where anyone
+                                    // looks for it, and a long press with a mouse is not something people
+                                    // try. Taken in the Initial pass and consumed, so the click handler
+                                    // below never sees it and opens the recipe as well.
+                                    .pointerInput(recipe.id) {
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                                    val at = event.changes.first().position
+                                                    rowMenuOffset = DpOffset(at.x.toDp(), (at.y - size.height).toDp())
+                                                    rowMenu = true
+                                                    event.changes.forEach { it.consume() }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .combinedClickable(
+                                        onClick = { shell.onScreen(Screen.Detail(recipe.id)) },
+                                        onLongClick = { rowMenuOffset = DpOffset.Zero; rowMenu = true },
+                                    ),
                             )
                             // Long-press acts on the row without opening it — the same set the Swift
-                            // app's context menu offers. It used to open straight into the Last Made
+                            // app's context menu offers. It used to open straight into the last-prepared
                             // menu, which made that the only thing a long press could ever do.
-                            DropdownMenu(expanded = rowMenu, onDismissRequest = { rowMenu = false }) {
+                            DropdownMenu(expanded = rowMenu, onDismissRequest = { rowMenu = false }, offset = rowMenuOffset) {
+                                // First, as in the Swift app's context menu. Desktop only.
+                                shell.openRecipeWindow?.let { open ->
+                                    DropdownMenuItem(
+                                        text = { Text("Open in New Window") },
+                                        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) },
+                                        onClick = { rowMenu = false; open(recipe.id) },
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Edit") },
                                     leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
@@ -1509,9 +1792,19 @@ private fun RecipeListPane(
                                     onClick = { rowMenu = false; exporting = recipe.id to recipe.name },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Last Made…") },
+                                    text = { Text("Last Prepared Date") },
                                     leadingIcon = { Icon(Icons.Outlined.EventAvailable, contentDescription = null) },
-                                    onClick = { rowMenu = false; rowLastMadeMenu = true },
+                                    // A chevron, because this opens a menu of its own (the Swift app has
+                                    // it as a real submenu; Material has no such thing).
+                                    trailingIcon = {
+                                        Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null)
+                                    },
+                                    onClick = { rowMenu = false; rowLastPreparedMenu = true },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Get Info") },
+                                    leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) },
+                                    onClick = { rowMenu = false; infoFor = recipe },
                                 )
                                 HorizontalDivider()
                                 DropdownMenuItem(
@@ -1528,18 +1821,18 @@ private fun RecipeListPane(
                                     },
                                     onClick = {
                                         rowMenu = false
-                                        // In a split view the detail pane reads its recipe once, so
-                                        // deleting the one it's showing would leave it on screen. Send
-                                        // the pane back to its placeholder first.
+                                        // In a split view, deleting the recipe the detail pane shows
+                                        // would leave the pane saying "Not found". Send it back to its
+                                        // placeholder first.
                                         if (recipe.id == selectedId) shell.onScreen(Screen.List)
                                         deleteRecipeWithUndo(module, recipe.id, shell.showUndo)
                                     },
                                 )
                             }
-                            LastMadeMenu(
-                                expanded = rowLastMadeMenu,
+                            LastPreparedMenu(
+                                expanded = rowLastPreparedMenu,
                                 currentLastPrepared = recipe.lastPrepared,
-                                onDismiss = { rowLastMadeMenu = false },
+                                onDismiss = { rowLastPreparedMenu = false },
                                 onSet = { wire ->
                                     module.localStore.setRecipePrepared(recipe.id, wire, nowTimestamp())
                                     module.onLocalChange()
@@ -1566,33 +1859,57 @@ private fun RecipeListPane(
             },
         )
     }
+
+    infoFor?.let { row ->
+        RecipeInfoDialog(
+            recipeName = row.name,
+            createdWire = LocalStore.dbToWireDate(row.createdDate),
+            lastModifiedWire = LocalStore.dbToWireDate(row.lastModifiedDate),
+            lastPreparedWire = LocalStore.dbToWireDate(row.lastPrepared),
+            onDismiss = { infoFor = null },
+        )
+    }
 }
 
 /**
- * Long-press menu for a recipe's "last made on" date, plus the date picker "Set Date…" opens.
+ * A recipe's last-prepared date: what it is now, and the three ways to change it. Item for item the
+ * Swift app's "Last Prepared Date" submenu, heading included.
+ *
+ * The heading states the current value rather than making the user go and look — the question this menu
+ * is opened with is often "when did I last make this?", and answering it in place is what the Swift app
+ * does too. It is a heading, not a disabled item: a greyed-out row reads as "a command you can't run".
  *
  * [onSet] receives the wire timestamp to store (null clears the date); the caller pairs it with a fresh
  * `lastModifiedPreparedDate` and — deliberately — leaves `lastModifiedDate` alone, so marking a recipe
- * made never reorders the "Date Modified" sort. "Clear" is offered because a single date field
+ * prepared never reorders the "Date Modified" sort. "Clear" is offered because a single date field
  * overwrites irreversibly, so a mis-tap needs a way back.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LastMadeMenu(
+private fun LastPreparedMenu(
     expanded: Boolean,
     currentLastPrepared: String?,
     onDismiss: () -> Unit,
     onSet: (String?) -> Unit,
 ) {
     var showPicker by remember { mutableStateOf(false) }
+    val current = remember(currentLastPrepared) {
+        PreparedDates.formatForDisplay(LocalStore.dbToWireDate(currentLastPrepared)) ?: "Not Set"
+    }
 
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        Text(
+            "Last Prepared: $current",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
         DropdownMenuItem(
-            text = { Text("Made Today") },
+            text = { Text("Set to Today") },
             onClick = { onSet(nowTimestamp()); onDismiss() },
         )
         DropdownMenuItem(
-            text = { Text("Set Date…") },
+            text = { Text("Set as Date…") },
             onClick = { onDismiss(); showPicker = true },
         )
         HorizontalDivider()
@@ -1631,7 +1948,7 @@ private fun LastMadeMenu(
     }
 }
 
-/** Restricts the "last made" picker to days that have already happened. */
+/** Restricts the last-prepared picker to days that have already happened. */
 @OptIn(ExperimentalMaterial3Api::class)
 private object PastOrPresentDates : SelectableDates {
     override fun isSelectableDate(utcTimeMillis: Long): Boolean =
@@ -2107,36 +2424,53 @@ private fun RecipeDetailScreen(
     onDeleted: (message: String, undo: () -> Unit) -> Unit,
     /** Report an export's outcome; blank means there is nothing to say (a cancelled save dialog). */
     onNotify: (String) -> Unit,
+    /** Open this recipe in a window of its own; null leaves the item out (mobile, or already in one). */
+    onOpenInNewWindow: (() -> Unit)? = null,
+    /** Bumped to open Get Info from outside the screen (a menu bar's ⌘I); 0 means nothing asked. */
+    infoRequest: Int = 0,
     wide: Boolean = false,
 ) {
-    // This screen reads the recipe once rather than collecting a flow; bumping [reload] re-reads it after
-    // an edit made from here (setting "Last Made"), which would otherwise not show until it was reopened.
-    var reload by remember(id) { mutableStateOf(0) }
+    // Live rather than read once: on desktop the same recipe can be open in two windows, and a sync can
+    // change it while it's showing — either way this should be the recipe as it is now. (An edit made
+    // from here, setting the last-prepared date, used to need a manual re-read for the same reason.)
+    // That menu reads the row itself, since it works in the stored date format.
+    val row by remember(id) { module.repository.recipeFlow(id) }
+        .collectAsState(initial = remember(id) { module.repository.recipe(id) })
     // recipeForUpload gives the full ServerRecipe incl. category/tag ids (the db row omits junctions).
-    val recipe = remember(id, reload) { module.localStore.recipeForUpload(id) }
-    // The DB row carries the image state (thumbnail blob + image timestamp) that the wire shape doesn't,
-    // so keep it for restoring the recipe if the delete is undone.
-    val row = remember(id, reload) { module.repository.recipe(id) }
-    val image = remember(recipe?.imageFilename) {
+    // Keyed on the row, whose every emission is a fresh object, so each change re-reads.
+    val recipe = remember(id, row) { module.localStore.recipeForUpload(id) }
+    // The image date as well as the name: a replaced photo keeps its filename.
+    val image = remember(recipe?.imageFilename, row?.lastModifiedImageDate) {
         recipe?.imageFilename?.let { fn -> module.imageFiles.load(fn)?.let { decodeImageBitmap(it) } }
     }
-    val courseName = remember(id) {
+    val courseName = remember(recipe) {
         recipe?.courseId?.let { cid -> module.localStore.courses().firstOrNull { it.id == cid }?.name?.takeIf { it.isNotBlank() } }
     }
-    val categoryChips = remember(id) {
+    val categoryChips = remember(recipe) {
         val m = module.localStore.categories().associate { it.id to it.name }
         recipe?.categoryIds.orEmpty().mapNotNull { cid -> m[cid]?.takeIf { it.isNotBlank() }?.let { cid to it } }
     }
-    val tagChips = remember(id) {
+    val tagChips = remember(recipe) {
         val m = module.localStore.tags().associate { it.id to it.name }
         recipe?.tagIds.orEmpty().mapNotNull { tid -> m[tid]?.takeIf { it.isNotBlank() }?.let { tid to it } }
     }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var overflowMenu by remember { mutableStateOf(false) }
-    var lastMadeMenu by remember { mutableStateOf(false) }
+    var lastPreparedMenu by remember { mutableStateOf(false) }
     var showExport by remember(id) { mutableStateOf(false) }
+    var showInfo by remember(id) { mutableStateOf(false) }
     var showFullImage by remember(id) { mutableStateOf(false) }
     val exportScope = rememberCoroutineScope()
+    // Get Info from a menu bar (⌘I) arrives as a bumped counter, since the dialog is this screen's.
+    // The count this composition started at is "already handled", so arriving on a recipe after an
+    // earlier ⌘I — or swapping the recipe in a reused slot — doesn't spring the dialog open.
+    var handledInfoRequest by remember { mutableStateOf(infoRequest) }
+    LaunchedEffect(infoRequest) {
+        if (infoRequest != handledInfoRequest) {
+            handledInfoRequest = infoRequest
+            showInfo = true
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -2169,6 +2503,13 @@ private fun RecipeDetailScreen(
                                 Icon(Icons.Outlined.MoreVert, contentDescription = "More options")
                             }
                             DropdownMenu(expanded = overflowMenu, onDismissRequest = { overflowMenu = false }) {
+                                onOpenInNewWindow?.let { open ->
+                                    DropdownMenuItem(
+                                        text = { Text("Open in New Window") },
+                                        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) },
+                                        onClick = { overflowMenu = false; open() },
+                                    )
+                                }
                                 // The list's long-press is the only other route to these, and a long press
                                 // is not something anyone discovers — so the recipe carries them too.
                                 DropdownMenuItem(
@@ -2177,19 +2518,26 @@ private fun RecipeDetailScreen(
                                     onClick = { overflowMenu = false; showExport = true },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Last Made…") },
+                                    text = { Text("Last Prepared Date") },
                                     leadingIcon = { Icon(Icons.Outlined.EventAvailable, contentDescription = null) },
-                                    onClick = { overflowMenu = false; lastMadeMenu = true },
+                                    trailingIcon = {
+                                        Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null)
+                                    },
+                                    onClick = { overflowMenu = false; lastPreparedMenu = true },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Get Info") },
+                                    leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) },
+                                    onClick = { overflowMenu = false; showInfo = true },
                                 )
                             }
-                            LastMadeMenu(
-                                expanded = lastMadeMenu,
+                            LastPreparedMenu(
+                                expanded = lastPreparedMenu,
                                 currentLastPrepared = row?.lastPrepared,
-                                onDismiss = { lastMadeMenu = false },
+                                onDismiss = { lastPreparedMenu = false },
                                 onSet = { wire ->
                                     module.localStore.setRecipePrepared(id, wire, nowTimestamp())
                                     module.onLocalChange()
-                                    reload++
                                 },
                             )
                         }
@@ -2241,7 +2589,7 @@ private fun RecipeDetailScreen(
                             recipe.servings?.let { add("Servings" to it.toString()) }
                             recipe.yield?.takeIf { it.isNotBlank() }?.let { add("Yield" to it) }
                             PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
-                                ?.let { add("Last Made" to it) }
+                                ?.let { add("Last Prepared" to it) }
                         }
                         // Each flag carries its own tint so the favorite heart is the same red here as in
                         // the list — one colour for one meaning, wherever it shows up.
@@ -2361,6 +2709,16 @@ private fun RecipeDetailScreen(
             image = image,
             title = recipe?.name.orEmpty(),
             onDismiss = { showFullImage = false },
+        )
+    }
+
+    if (showInfo && recipe != null) {
+        RecipeInfoDialog(
+            recipeName = recipe.name,
+            createdWire = recipe.createdDate,
+            lastModifiedWire = recipe.lastModifiedDate,
+            lastPreparedWire = recipe.lastPrepared,
+            onDismiss = { showInfo = false },
         )
     }
 

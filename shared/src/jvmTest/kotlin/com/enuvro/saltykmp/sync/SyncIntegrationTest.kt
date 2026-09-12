@@ -61,7 +61,7 @@ class SyncIntegrationTest {
         }
 
         /**
-         * Mirror of the real server's independent-field merge in RecipeRepository.upsert: the "last made
+         * Mirror of the real server's independent-field merge in RecipeRepository.upsert: the "last prepared
          * on" pair is resolved by lastModifiedPreparedDate (newer wins), NOT by the body clock — so a
          * body upload carrying a stale prepared date can't clobber a newer mark-as-made.
          */
@@ -751,9 +751,9 @@ class SyncIntegrationTest {
         assertEquals(0, imageSourceCalls, "a text-only edit must not re-transfer the image")
     }
 
-    // ---- "Last made on" (prepared dates) --------------------------------------------------------
+    // ---- "Last prepared" (prepared dates) --------------------------------------------------------
     //
-    // The whole point of the separate channel: marking a recipe made does NOT bump lastModifiedDate, so
+    // The whole point of the separate channel: marking a recipe prepared does NOT bump lastModifiedDate, so
     // the body reconciler is blind to it and these transfers have to come from the prepared-date pass.
 
     @Test
@@ -765,7 +765,7 @@ class SyncIntegrationTest {
         val server = FakeServer()
         server.recipes["r1"] = ServerRecipe(id = "r1", name = "Chili", lastModifiedDate = "2026-06-01T00:00:00.000Z")
 
-        // "Made today" — sets the date and its stamp, deliberately leaving lastModifiedDate alone.
+        // "Set to Today" — sets the date and its stamp, deliberately leaving lastModifiedDate alone.
         local.setRecipePrepared("r1", "2026-08-14T12:00:00.000Z", "2026-08-14T18:30:00.000Z")
 
         val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())

@@ -1,5 +1,8 @@
 package com.enuvro.saltykmp
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -64,6 +67,7 @@ internal val FORM_WIDTH = 720.dp
 enum class AppCommand {
     NewRecipe,
     ImportFromWeb,
+    ImportFromFile,
     SyncNow,
     OpenSettings,
     ShowAllRecipes,
@@ -71,6 +75,8 @@ enum class AppCommand {
     ShowWantToMake,
     ShowShoppingLists,
     FindInList,
+    /** Show the open recipe's dates; dropped when no recipe is open (see [AppCommands.shownRecipeId]). */
+    GetInfo,
     Back,
 }
 
@@ -84,5 +90,26 @@ class AppCommands {
 
     fun send(command: AppCommand) {
         handler?.invoke(command)
+    }
+
+    /**
+     * Opens a recipe in a window of its own (the Swift app's Open in New Window). Set by a host with
+     * windows to give — the desktop — and left null everywhere else, which is what keeps the menu items
+     * off mobile.
+     */
+    var openRecipeWindow: ((recipeId: String) -> Unit)? = null
+
+    /**
+     * The recipe the main window is showing, or null when it isn't showing one. File ▸ Open Recipe in
+     * New Window acts on it, and is disabled without one.
+     */
+    var shownRecipeId: String? by mutableStateOf(null)
+        internal set
+
+    /** Receives a recipe window's category and tag chips: the main window lists that slice. */
+    internal var libraryHandler: ((RecipeFilter) -> Unit)? = null
+
+    internal fun showInLibrary(filter: RecipeFilter) {
+        libraryHandler?.invoke(filter)
     }
 }

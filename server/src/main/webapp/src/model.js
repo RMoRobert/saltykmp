@@ -453,7 +453,7 @@ const dayValue = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.get
 /** Today as an `<input type="date">` value -- the cap on a field that cannot accept the future. */
 export const todayValue = () => dayValue(new Date());
 
-/** A stored "last prepared" stamp as the local day to seed a date field with, or "" for never made. */
+/** A stored "last prepared" stamp as the local day to seed a date field with, or "" for never prepared. */
 export function preparedToDayValue(iso) {
   const t = Date.parse(iso || "");
   return Number.isFinite(t) ? dayValue(new Date(t)) : "";

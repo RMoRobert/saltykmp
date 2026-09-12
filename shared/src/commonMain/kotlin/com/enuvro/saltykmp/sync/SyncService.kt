@@ -443,13 +443,13 @@ class SyncService(
     }
 
     /**
-     * Independent "last made on" reconciliation, keyed on lastModifiedPreparedDate — the same decoupling
+     * Independent "last prepared" reconciliation, keyed on lastModifiedPreparedDate — the same decoupling
      * as [syncImages], for the opposite reason. Images get their own channel because re-sending bytes on a
-     * body edit is EXPENSIVE; prepared dates get one because marking a recipe made deliberately does NOT
+     * body edit is EXPENSIVE; prepared dates get one because marking a recipe prepared deliberately does NOT
      * bump lastModifiedDate (that would reorder every client's "Date Modified" sort), so the body plan is
      * blind to the change and would never move it.
      *
-     * Newer stamp wins; a null stamp means "never marked made through a prepared-date-aware client" and
+     * Newer stamp wins; a null stamp means "never marked prepared through a prepared-date-aware client" and
      * always loses. A whole-row upload is what moves the value — safe because the bodies agree by the time
      * a push happens here, so it re-sends matching content and moves only the prepared pair, needing no
      * partial-update endpoint.

@@ -199,7 +199,7 @@ class SettingsState(
 private const val SYNC_DEVICE_NAME = "KMP App"
 
 /** Longest-side pixel size for cached recipe thumbnails (matches the Swift app's 300×300). */
-private const val THUMBNAIL_MAX_PX = 300
+internal const val THUMBNAIL_MAX_PX = 300
 
 /** Quiet period after the last edit before the library is copied to the linked folder. */
 private val FOLDER_PUSH_DEBOUNCE = 45.seconds

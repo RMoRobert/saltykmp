@@ -17,19 +17,19 @@ enum class RecipeExportFormat(
     val mimeType: String,
 ) {
     SALTY(
-        label = "Salty recipe file",
-        description = "Everything, including the photo. Opens in Salty on any device.",
+        label = "Salty recipe file (.saltyRecipe)",
+        description = "All recipe data, including photo. Opens in Salty on any device.",
         extension = "saltyRecipe",
         mimeType = "application/json",
     ),
     JSON_LD(
-        label = "Schema.org JSON-LD",
+        label = "Schema.org JSON-LD (.json)",
         description = "Standard recipe format other apps and sites can read.",
         extension = "json",
         mimeType = "application/ld+json",
     ),
     TEXT(
-        label = "Plain text",
+        label = "Plain text (.txt)",
         description = "Readable anywhere — for email, messages, or printing.",
         extension = "txt",
         mimeType = "text/plain",

@@ -50,6 +50,7 @@ actual fun currentLibraryDir(): String =
 actual val linkedFolderSyncSupported: Boolean = true
 actual val linkedFolderProviderExamples: String = "iCloud Drive, OneDrive, or Nextcloud"
 actual val linkedFolderProviderCaveat: String? = null
+actual val recipeImportFileExtensions: Set<String>? = null
 
 // Matches where SQLiter's NativeSqliteDriver actually puts the DB by default — File(<AppSupport>/databases,
 // name) — so we reference the EXISTING file (no driver change, no data move). Images live in Documents

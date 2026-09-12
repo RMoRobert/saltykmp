@@ -50,8 +50,8 @@ server/src/main/webapp/
 
 `src/model.js` is a straight port of the Alpine app's rules rather than a rewrite — UUIDv7 minted
 client-side, the `yyyy-MM-dd'T'HH:mm:ss.SSS'Z'` wire format, the fraction table that turns a scaled
-`1/2` into `3/4` instead of `0.75`, the sort comparators, and never-made recipes sorting last under
-"Last made" in both directions. Those all have to keep agreeing with the Swift and Compose clients,
+`1/2` into `3/4` instead of `0.75`, the sort comparators, and never-prepared recipes sorting last under
+"Last prepared" in both directions. Those all have to keep agreeing with the Swift and Compose clients,
 so none of them were re-derived.
 
 The bundle is served from the classpath at `/static/app/salty.js`, which is why `vite.config.js`
@@ -193,12 +193,12 @@ already makes a checklist: the menu has to read as the complete set of things th
 as a list of leftovers.
 
 **Every label the app puts on itself is sentence case** — *New recipe*, *Get info*, *Last prepared*,
-*Set to today*, *All recipes*, *Want to make*, *Shopping lists*, *Edit classifiers*, *Date modified*,
-*Last made*. This is Fluent's own rule (Microsoft's style guide asks for sentence-style
+*Set to today*, *All recipes*, *Want to make*, *Shopping lists*, *Edit classifiers*, *Date modified*.
+This is Fluent's own rule (Microsoft's style guide asks for sentence-style
 capitalization in menus, buttons, navigation and headings); title case is the *Apple* convention,
-which is why the Swift app reads *Get Info* and *Last Prepared Date* and the Compose app *Made
+which is why the Swift and Compose apps read *Get Info*, *Last Prepared Date* and *Set to
 Today*. It is the one place this client deliberately does **not** copy its siblings' wording
-character for character: the names still line up (*Last made* is the same sort *Last Made* is), but
+character for character: the names still line up (*Last prepared* is the same sort *Last Prepared* is), but
 the capitals follow the toolkit the app is actually built in. A borrowed label loses its capitals at
 the door.
 
@@ -228,7 +228,7 @@ same.
 
 **Sort is a field plus a direction, chosen separately** — the split the CMP and Swift apps use, so
 the same ordering goes by the same name whichever client you opened. Name, Date modified, Date
-created and Last made, each ascending or descending. Both halves are ticked in the menu (two
+created and Last prepared, each ascending or descending. Both halves are ticked in the menu (two
 `MenuItemRadio` groups under one `checkedValues`) and both are remembered in `localStorage`: an
 order you picked is a preference, not a per-visit decision, and it sits beside the pane width for
 the same reason chef mode's wake-lock switch does — it is a fact about this browser, not about the
@@ -240,9 +240,9 @@ the one menu rather than a submenu behind a hover — and an ordering is somethi
 leave, which does not earn a permanent button in a header three glyphs wide.
 
 Two details are not decoration. The direction items carry a hint (`A → Z`, `Newest first`) because
-"Ascending" on a date does not say oldest-first on its own. And **Last made parks never-made
-recipes at the end in both directions**, with the row's second line switching to `Made 3 days ago` /
-`Never made` while that sort is in force: ascending would otherwise open on every recipe that has no
+"Ascending" on a date does not say oldest-first on its own. And **Last prepared parks never-prepared
+recipes at the end in both directions**, with the row's second line switching to `Last prepared 3 days
+ago` / `Never prepared` while that sort is in force: ascending would otherwise open on every recipe that has no
 date at all, and without the date on the row nothing on screen explains the order or the block at
 the bottom. The CMP app does both, for the same reasons.
 
@@ -652,7 +652,7 @@ its fetch lands — "Loading…" until then, "Unknown" if it never arrives, rath
 that would be a claim about the recipe rather than about what is known of it. No menu in select
 mode: there a row means "in the set", and every item here is about one recipe.
 
-**Get info** is the recipe's `⋯` opening a panel of its three dates — added, modified and last made
+**Get info** is the recipe's `⋯` opening a panel of its three dates — added, modified and last prepared
 — named after the Swift app's command of the same name and spelled, as that platform spells it,
 without an ellipsis. It reports; it does not set. **Last prepared** is the item under it, and behind
 its chevron the stored day is read back at the head of the submenu — the stored date, or *Not set* —
@@ -669,7 +669,7 @@ reads an empty field as "no date". *Set to today* stays on the menu: it is an an
 compose, so a dialog around it would be a step for nothing.
 
 That date is why any of this exists: `lastPrepared` was sorted on and shown on the row but could not
-be *answered* anywhere in this app, so "Last made" was an ordering over a field the web client could
+be *answered* anywhere in this app, so "Last prepared" was an ordering over a field the web client could
 never write. It was first answered inside Get info, which was the wrong home for it — a panel that
 reports facts is no place for the one control that changes one of them — and it is deliberately not
 in the editor either, for the reason below.
@@ -685,8 +685,8 @@ midnight would read as the *previous* day for anyone west of UTC; `PreparedDates
 the Swift app's `localNoon(on:)` write the same column the same way. And it travels with a fresh
 `lastModifiedPreparedDate` while **`lastModifiedDate` is left alone** — marking a recipe made is not
 a body edit, and bumping it would reorder every client's Date modified sort. The server merges the
-pair by that stamp rather than the body clock, so a body edit racing a mark-made on another device
-cannot clobber it. A collapsed **Sync details** in Get info shows the three clocks a recipe syncs on — itself, its photo, its last-made date — with
+pair by that stamp rather than the body clock, so a body edit racing a mark-prepared on another device
+cannot clobber it. A collapsed **Sync details** in Get info shows the three clocks a recipe syncs on — itself, its photo, its last-prepared date — with
 the identifier under them.
 
 Drag-and-drop is hand-rolled on the HTML5 drag events rather than pulling in `@dnd-kit`: it is one

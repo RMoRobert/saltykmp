@@ -170,8 +170,8 @@ function Devices({ notify, ask }) {
         <Button
           onClick={() =>
             ask({
-              title: "Sign every app out",
-              body: "Every device will need to sign in again before it can sync.",
+              title: "Sign out all apps",
+              body: "All devices will need to sign in again to sync",
               confirmLabel: "Sign all out",
               onConfirm: async () => {
                 const res = await api.devices.revokeAll();
@@ -182,7 +182,7 @@ function Devices({ notify, ask }) {
             })
           }
         >
-          Sign every app out
+          Sign out all apps
         </Button>
       </div>
     </div>

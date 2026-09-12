@@ -311,12 +311,12 @@ internal fun ChefScreen(module: AppModule, id: String, onExit: () -> Unit) {
     }
 
     // Asked rather than stamped outright: the control sits in a menu that gets opened with messy hands
-    // mid-cook, and a stray tap would otherwise silently overwrite a real "last made" date with today's.
+    // mid-cook, and a stray tap would otherwise silently overwrite a real last-prepared date with today's.
     if (confirmPrepared) {
         AlertDialog(
             onDismissRequest = { confirmPrepared = false },
             title = { Text("Mark as prepared?") },
-            text = { Text("Set this recipe's \"Last Made\" date to today?") },
+            text = { Text("Set this recipe's \"Last Prepared\" date to today?") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmPrepared = false
