@@ -37,7 +37,6 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.EventAvailable
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
-import androidx.compose.material.icons.outlined.Restaurant
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.TextDecrease
 import androidx.compose.material.icons.outlined.TextIncrease
@@ -225,7 +224,7 @@ internal fun ChefScreen(module: AppModule, id: String, onExit: () -> Unit) {
 
                     when {
                         recipe == null -> ChefMessage(
-                            icon = Icons.Outlined.Restaurant,
+                            icon = Icons.AutoMirrored.Outlined.ListAlt,
                             title = "Recipe not found",
                             body = "This recipe is no longer in your library.",
                             onExit = onExit,

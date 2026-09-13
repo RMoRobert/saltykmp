@@ -204,6 +204,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -222,6 +223,7 @@ import com.enuvro.saltykmp.db.model.Ingredient
 import com.enuvro.saltykmp.db.model.Note
 import com.enuvro.saltykmp.db.model.NutritionInformation
 import com.enuvro.saltykmp.db.model.PreparationTime
+import com.enuvro.saltykmp.db.model.Rating
 import com.enuvro.saltykmp.db.model.Variation
 import com.enuvro.saltykmp.di.currentLibraryDir
 import com.enuvro.saltykmp.di.customLibraryLocationSupported
@@ -1038,7 +1040,7 @@ private fun RecipeDetailPane(shell: AppShell, screen: Screen) {
             onDone = { savedId -> shell.onScreen(savedId?.let { Screen.Detail(it) } ?: Screen.List) },
         )
         else -> PanePlaceholder(
-            icon = Icons.Outlined.Restaurant,
+            icon = Icons.AutoMirrored.Outlined.ListAlt,
             title = "No recipe selected",
             body = "Choose a recipe on the left to read it here.",
         )
@@ -1094,7 +1096,7 @@ internal fun RecipeWindowContent(
                 when {
                     s is Screen.Edit -> RecipeEditScreen(module, s.id, onDone = { screen = Screen.Detail(recipeId) })
                     row == null -> PanePlaceholder(
-                        icon = Icons.Outlined.Restaurant,
+                        icon = Icons.AutoMirrored.Outlined.ListAlt,
                         title = "Recipe deleted",
                         body = "This recipe is no longer in your library.",
                     )
@@ -1672,7 +1674,7 @@ private fun RecipeListPane(
                             "term, or search more fields from the filter button.",
                     )
                     filter is RecipeFilter.All -> EmptyState(
-                        icon = Icons.Outlined.Restaurant,
+                        icon = Icons.AutoMirrored.Outlined.ListAlt,
                         title = "No recipes yet",
                         body = "Add one by hand, import some from the web or a Salty recipe file, or sync " +
                             "with Salty Server.",
@@ -1680,7 +1682,7 @@ private fun RecipeListPane(
                         onAction = { shell.onScreen(Screen.Edit(null)) },
                     )
                     else -> EmptyState(
-                        icon = Icons.Outlined.Restaurant,
+                        icon = Icons.AutoMirrored.Outlined.ListAlt,
                         title = "Nothing in ${filter.title}",
                         body = "Recipes filed under ${filter.title} will appear here.",
                     )
@@ -1712,32 +1714,25 @@ private fun RecipeListPane(
                         val lastPrepared = remember(recipe.lastPrepared) {
                             PreparedDates.formatForDisplay(LocalStore.dbToWireDate(recipe.lastPrepared))
                         }
+                        // Otherwise the SwiftUI row's summary: the introduction, else the source, else the
+                        // source details.
                         val subtitle = when {
                             sort == RecipeSort.LAST_PREPARED -> lastPrepared?.let { "Last prepared $it" } ?: "Never prepared"
-                            else -> recipe.source?.takeIf { it.isNotBlank() }
+                            else -> listOf(recipe.introduction, recipe.source, recipe.sourceDetails)
+                                .firstOrNull { it.isNotBlank() }.orEmpty()
                         }
                         Box {
+                            // Laid out as the SwiftUI row is: name, summary, then stars and heart, each one
+                            // line and each always there even when empty, so every row puts its name at the
+                            // same height rather than centering whatever it happens to have.
                             ListItem(
                                 leadingContent = { RecipeThumbnail(thumb) },
-                                headlineContent = { Text(recipe.name) },
-                                supportingContent = subtitle?.let { { Text(it) } },
-                                // Favorite belongs on the trailing edge (as in the SwiftUI app): prefixed to
-                                // the headline it read as the first character of the recipe's name. A heart,
-                                // not a star, because stars already mean the 1-5 rating here — and "favorite"
-                                // is what Material's icon set calls this glyph.
-                                // 20dp rather than the 24dp M3 gives a trailing icon: this is a status
-                                // marker, not an action, and at full size it competed with the thumbnail.
-                                trailingContent = if (recipe.isFavorite == true) {
-                                    {
-                                        Icon(
-                                            Icons.Filled.Favorite,
-                                            contentDescription = "Favorite",
-                                            tint = LocalFavoriteColor.current,
-                                            modifier = Modifier.size(20.dp),
-                                        )
+                                headlineContent = { Text(recipe.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                supportingContent = {
+                                    Column {
+                                        Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        RecipeRowRatingLine(recipe.rating, recipe.isFavorite)
                                     }
-                                } else {
-                                    null
                                 },
                                 // In a split view the row for the recipe showing on the right is marked, so
                                 // the list always says which one you're reading.
@@ -2189,7 +2184,53 @@ private fun RecipeThumbnail(image: ImageBitmap?) {
     }
 }
 
-/** Drawn (not stored) placeholder for recipes with no image — a Material icon on a muted surface. */
+/**
+ * A recipe row's bottom line, as the SwiftUI list has it: the rating as five small stars on the left, the
+ * favorite heart on the right. Either may be absent (unrated recipes show no stars — five empty ones on
+ * every unrated row would be noise), but the line keeps its height so rows stay aligned with each other.
+ *
+ * A heart, not a star, because stars already mean the 1-5 rating — and "favorite" is what Material's icon
+ * set calls this glyph. The heart is the stars' size, as in the SwiftUI row; it no longer needs to hold
+ * its own against the thumbnail from the trailing slot.
+ *
+ * 12sp is the most this line can take without making the row taller: name (24) + summary (20) + this (12)
+ * is the 56dp thumbnail, so every row stays 72dp. It stays two-line in M3's terms because icons have no
+ * baseline — ListItem only switches to its taller three-line layout when the supporting content's first
+ * and last baselines differ. Sized in sp so the icons grow with the text.
+ */
+@Composable
+private fun RecipeRowRatingLine(rating: Rating, isFavorite: Boolean) {
+    val iconSize = with(LocalDensity.current) { 12.sp.toDp() }
+    Row(Modifier.fillMaxWidth().height(iconSize)) {
+        if (rating != Rating.NOT_SET) {
+            Row(Modifier.semantics { contentDescription = "Rated ${rating.rawValue} of 5 stars" }) {
+                (1..5).forEach { star ->
+                    Icon(
+                        if (star <= rating.rawValue) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                        contentDescription = null,
+                        modifier = Modifier.size(iconSize),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        if (isFavorite) {
+            Icon(
+                Icons.Filled.Favorite,
+                contentDescription = "Favorite",
+                tint = LocalFavoriteColor.current,
+                modifier = Modifier.size(iconSize),
+            )
+        }
+    }
+}
+
+/**
+ * Drawn (not stored) placeholder for recipes with no image — a Material icon on a muted surface.
+ *
+ * A bulleted list in a box, the recipe-card glyph the other clients use (SwiftUI's `list.bullet.rectangle`,
+ * the web app's `TextBulletListSquare`), rather than a fork and knife, which in the drawer means "Courses".
+ */
 @Composable
 private fun ImagePlaceholder(modifier: Modifier) {
     Box(
@@ -2197,7 +2238,7 @@ private fun ImagePlaceholder(modifier: Modifier) {
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            Icons.Outlined.Restaurant,
+            Icons.AutoMirrored.Outlined.ListAlt,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.fillMaxSize(0.5f),
