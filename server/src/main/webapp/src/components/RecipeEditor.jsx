@@ -84,6 +84,9 @@ const useStyles = makeStyles({
     marginBottom: tokens.spacingVerticalXS,
   },
   blockRow: { marginBottom: tokens.spacingVerticalM, display: "grid", gap: tokens.spacingVerticalXS },
+  /* For the inner <textarea> slot, not the Textarea: Fluent caps that element at 260px (medium),
+     so the resize grip stopped there and a long introduction or note could never be shown whole. */
+  longText: { maxHeight: "none" },
   /* Where the row will land if dropped now. A line, not a reflowed list: moving rows around on
      every dragover makes the target you are aiming at slide out from under the cursor. */
   dropTarget: { borderTop: `2px solid ${tokens.colorBrandStroke1}` },
@@ -448,6 +451,7 @@ export default function RecipeEditor({
           <Field label="Introduction">
             <Textarea
               resize="vertical"
+              textarea={{ className: styles.longText }}
               value={draft.introduction ?? ""}
               onChange={(_, d) => set({ introduction: d.value })}
             />
@@ -671,6 +675,7 @@ export default function RecipeEditor({
                     />
                     <Textarea
                       resize="vertical"
+                      textarea={{ className: styles.longText }}
                       value={n.content ?? ""}
                       onChange={(_, d) =>
                         set({
@@ -717,6 +722,7 @@ export default function RecipeEditor({
                     />
                     <Textarea
                       resize="vertical"
+                      textarea={{ className: styles.longText }}
                       value={v.text ?? ""}
                       onChange={(_, d) =>
                         set({

@@ -73,7 +73,28 @@ const useStyles = makeStyles({
     margin: "0 auto",
     padding: `${tokens.spacingVerticalL} ${tokens.spacingHorizontalXXL}`,
   },
-  freeform: { width: "100%", minHeight: "24rem" },
+  /* The markdown list is a notes page, so the editor takes the whole pane rather than a box in it.
+
+     It used to be `minHeight: 24rem` on the Textarea, which sizes only Fluent's bordered wrapper:
+     the real <textarea> inside keeps its own `height: 100%` against that indefinite wrapper (so,
+     its content) and Fluent's `max-height: 260px` for the medium size. The border drew a tall box
+     with a short editor in its top corner, text clipped at the editor's edge, and the grip could
+     never drag it past 260px -- about three quarters of the way down.
+
+     Each level is a column that hands its height to the next. `width: 100%` because an auto
+     inline margin on a flex item shrinks it to its content instead of stretching it, and a
+     <textarea>'s content width is 20 columns. */
+  freeformScroll: { display: "flex", flexDirection: "column" },
+  freeformDoc: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    width: "100%",
+    boxSizing: "border-box",
+  },
+  // A floor, so a short window scrolls the pane instead of squeezing the editor to a sliver.
+  freeform: { flex: 1, minHeight: "12rem" },
+  freeformText: { maxHeight: "none" },
   itemRow: {
     display: "flex",
     alignItems: "center",
@@ -429,12 +450,14 @@ export function ShoppingListDetail({ id, notify, ask, onChanged, onDeleted, onBa
         </Menu>
       </div>
 
-      <div className={styles.scroll}>
-        <div className={styles.doc}>
+      <div className={mergeClasses(styles.scroll, list.isFreeform && styles.freeformScroll)}>
+        <div className={mergeClasses(styles.doc, list.isFreeform && styles.freeformDoc)}>
           {list.isFreeform ? (
             <Textarea
-              resize="vertical"
+              // Nothing to drag: it already fills the pane, and it scrolls inside itself past that.
+              resize="none"
               className={styles.freeform}
+              textarea={{ className: styles.freeformText }}
               value={list.contentsForFreeform ?? ""}
               onChange={(_, d) => setList({ ...list, contentsForFreeform: d.value })}
               // On blur rather than on every keystroke: a save per character would be a request per
