@@ -923,24 +923,159 @@ class ReactUiSmokeTest {
         page.close()
     }
 
-    /** A tag can be made without leaving the editor, and lands on the recipe being edited. */
+    /** By role: the suggestion list is labelled by the same "Tags" field label. */
+    private fun tagsInput(page: Page) =
+        page.getByRole(AriaRole.COMBOBOX, com.microsoft.playwright.Page.GetByRoleOptions().setName("Tags").setExact(true))
+
+    private fun option(page: Page, name: String) =
+        page.getByRole(AriaRole.OPTION, com.microsoft.playwright.Page.GetByRoleOptions().setName(name).setExact(true))
+
+    /** The recipe's tag bubbles, as opposed to the suggestions under the field. */
+    private fun selectedTag(page: Page, name: String) =
+        page.getByRole(AriaRole.LISTBOX, com.microsoft.playwright.Page.GetByRoleOptions().setName("Selected tags"))
+            .getByRole(AriaRole.OPTION, com.microsoft.playwright.Locator.GetByRoleOptions().setName(name).setExact(true))
+
+    /** The editor section headed [title]: Ingredients and Directions each have an "Edit as text". */
+    private fun editorSection(page: Page, title: String) =
+        page.locator("section").filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHas(
+                page.getByRole(AriaRole.HEADING, com.microsoft.playwright.Page.GetByRoleOptions().setName(title).setExact(true))
+            )
+        )
+
+    private fun dialogButton(page: Page, name: String) =
+        page.getByRole(AriaRole.DIALOG).getByRole(
+            AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName(name).setExact(true),
+        )
+
+    /** The medal is a toggle: it reports its state, and turning it on marks that ingredient main. */
     @Test
-    fun aTagCanBeCreatedFromInsideTheEditor() {
+    fun theMedalMarksAMainIngredient() {
         val b = requireBrowser()
         val (page, _) = appPage(b)
         openEditor(page, "Australian Mini Meat Pies")
 
-        page.getByLabel("New tag").click()
-        page.getByRole(AriaRole.DIALOG).getByLabel("Tag name").fill("Sheet Pan")
-        page.getByRole(AriaRole.DIALOG).getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Create")
-        ).click()
-        page.waitForTimeout(600.0)
+        val medals = page.getByRole(
+            AriaRole.BUTTON, com.microsoft.playwright.Page.GetByRoleOptions().setName("Main ingredient"),
+        )
+        assertEquals(listOf("false", "true", "false"), medals.all().map { it.getAttribute("aria-pressed") })
+        medals.first().click()
+        assertEquals("true", medals.first().getAttribute("aria-pressed"))
+        save(page)
+
+        assertEquals(listOf(false, true, true, false), storedPies()?.ingredients?.map { it.isMain })
+        page.close()
+    }
+
+    /** Ingredients as text: headings by colon or blank line, [*] for main, and the list replaced on Apply. */
+    @Test
+    fun ingredientsCanBeEditedAsText() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+        openEditor(page, "Australian Mini Meat Pies")
+
+        // The tooltip says what "as text" is for, and is the button's name as well.
+        val editAsText = editorSection(page, "Ingredients").getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Locator.GetByRoleOptions().setName("Edit as text (bulk edit)").setExact(true),
+        )
+        editAsText.hover()
+        page.getByRole(AriaRole.TOOLTIP).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit as text (bulk edit)")
+        ).waitFor()
+        editAsText.click()
+        page.getByRole(AriaRole.DIALOG).locator("textarea")
+            .fill("Filling:\n2 cups flour [*]\n1 tsp salt\n\nGlaze\n1 cup sugar")
+        dialogButton(page, "Apply").click()
+        page.getByRole(AriaRole.DIALOG).waitFor(com.microsoft.playwright.Locator.WaitForOptions()
+            .setState(com.microsoft.playwright.options.WaitForSelectorState.DETACHED))
+        save(page)
+
+        val stored = storedPies()?.ingredients.orEmpty()
+        assertEquals(listOf("Filling", "2 cups flour", "1 tsp salt", "Glaze", "1 cup sugar"), stored.map { it.text })
+        assertEquals(listOf(true, false, false, true, false), stored.map { it.isHeading })
+        assertEquals(listOf(false, true, false, false, false), stored.map { it.isMain })
+        assertEquals(emptyList<String>(), errors, "editing as text should not log console errors")
+        page.close()
+    }
+
+    /**
+     * Directions as text open in the shared format, Clean up strips pasted numbering, wrapped lines
+     * join into one step -- and a long step's box grows to show it rather than scrolling one line.
+     */
+    @Test
+    fun directionsCanBeEditedAsTextAndLongStepsGrow() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        openEditor(page, "Australian Mini Meat Pies")
+        val directions = editorSection(page, "Directions")
+
+        val step = directions.locator("textarea").first()
+        val shortHeight = step.boundingBox().height
+        step.fill("Brown the beef in batches. ".repeat(12).trim())
+        assertTrue(step.boundingBox().height > shortHeight * 1.5, "a long step's box grows to fit it")
+
+        directions.getByText("Edit as text").click()
+        val box = page.getByRole(AriaRole.DIALOG).locator("textarea")
+        assertEquals(
+            "${"Brown the beef in batches. ".repeat(12).trim()}\n\n\nAssembly\n\nFill the tins and bake 25 minutes.",
+            box.inputValue(),
+            "opens in the format the other apps read",
+        )
+        box.fill("1. Brown the beef\nin batches.\n\n2) Fill the tins.")
+        dialogButton(page, "Clean up").click()
+        assertEquals("Brown the beef\nin batches.\n\nFill the tins.", box.inputValue())
+        dialogButton(page, "Apply").click()
+        save(page)
+
+        val stored = storedPies()?.directions.orEmpty()
+        assertEquals(listOf("Brown the beef in batches.", "Fill the tins."), stored.map { it.text })
+        page.close()
+    }
+
+    /** A tag can be made without leaving the editor, and lands on the recipe being edited. */
+    @Test
+    fun aTagCanBeCreatedFromInsideTheEditor() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+        openEditor(page, "Australian Mini Meat Pies")
+
+        tagsInput(page).fill("Sheet Pan")
+        option(page, "Create \"Sheet Pan\"").click()
+        selectedTag(page, "Sheet Pan").waitFor()
         save(page)
 
         val tags = runBlocking { LibraryRepository.listTags(userId()) }
         assertTrue(tags.any { it.name == "Sheet Pan" }, "the tag was created")
         assertEquals(2, storedPies()?.tagIds?.size, "and applied to the recipe being edited")
+        assertEquals(emptyList<String>(), errors, "creating a tag should not log console errors")
+        page.close()
+    }
+
+    /**
+     * Typing a tag's name in another case finds that tag rather than offering to make a second one,
+     * and a bubble's X takes its tag off the recipe.
+     */
+    @Test
+    fun anExistingTagIsReusedAndABubbleRemovesItsTag() {
+        val weeknight = "01A05100-0000-7000-8000-00000000RT02"
+        runBlocking { LibraryRepository.upsertTag(userId(), ServerTag(weeknight, "Weeknight")) }
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        openEditor(page, "Australian Mini Meat Pies")
+
+        tagsInput(page).fill("weeknight")
+        option(page, "Weeknight").waitFor()
+        assertEquals(0, page.getByText("Create \"weeknight\"").count(), "no create for a name that exists")
+        option(page, "Weeknight").click()
+        selectedTag(page, "Weeknight").waitFor()
+
+        selectedTag(page, "Quick").click()
+        page.waitForCondition { selectedTag(page, "Quick").count() == 0 }
+        save(page)
+
+        assertEquals(listOf(weeknight), storedPies()?.tagIds, "Weeknight added, Quick removed")
+        assertEquals(2, runBlocking { LibraryRepository.listTags(userId()) }.size, "and no tag was made")
         page.close()
     }
 

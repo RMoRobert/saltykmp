@@ -866,18 +866,16 @@ export default function App() {
         categories={categories}
         tags={tags}
         onDirtyChange={setDirty}
-        onCreateTag={(then) =>
-          ask({
-            title: "New tag",
-            prompt: "Tag name",
-            confirmLabel: "Create",
-            onConfirm: async (name) => {
-              const created = await api.classifiers.create("tag", name);
-              await reloadClassifiers();
-              await then(created);
-            },
-          })
-        }
+        onCreateTag={async (name) => {
+          try {
+            const created = await api.classifiers.create("tag", name);
+            await reloadClassifiers();
+            return created;
+          } catch (e) {
+            notify(e.message || "Could not create that tag", "error");
+            return null;
+          }
+        }}
         onCancel={() =>
           guard(() => {
             setMode("read");

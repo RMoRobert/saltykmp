@@ -355,6 +355,121 @@ export function stepNumbers(directions) {
   return directions.map((d) => (d.isHeading ? null : ++n));
 }
 
+/* ------------------------------------------------------------ list text -- */
+
+/*
+ * Ingredient and direction lists as one block of text, for "Edit as text". A port of the shared
+ * module's RecipeListText, itself a port of the Swift app's parsers, so text written in one client
+ * reads back the same in the others. The grammar and the reasons for it are documented there; a
+ * change to it belongs in all three.
+ *
+ * Ingredients are one per line: a blank line before a line, or a trailing colon, makes it a heading,
+ * and a trailing [*] marks a main ingredient. Directions are paragraphs: one blank line separates
+ * steps, wrapped lines join into one, and a heading takes two blank lines or a trailing colon.
+ *
+ * Parsing mints fresh row ids, as the other clients do: the list is replaced wholesale, and nothing
+ * outside the recipe refers to its rows.
+ */
+const MAIN_MARKER = "[*]";
+const LIST_MARKERS = ["*", "-", "•", "○", "▪", "▫", "‣", "⁃"];
+const textLines = (text) => String(text ?? "").split(/\r\n|\r|\n/);
+const isBlank = (line) => line.trim() === "";
+
+export function parseIngredients(text) {
+  const lines = textLines(text);
+  const rows = [];
+  lines.forEach((raw, i) => {
+    let line = raw.trim();
+    if (!line) return;
+    const byColon = line.endsWith(":");
+    if (byColon) line = line.slice(0, -1);
+    const isHeading = (i > 0 && isBlank(lines[i - 1])) || byColon;
+    // A heading is not something to buy, so the marker stays in its text rather than flagging it.
+    let isMain = false;
+    if (!isHeading && line.endsWith(MAIN_MARKER)) {
+      isMain = true;
+      line = line.slice(0, -MAIN_MARKER.length).trim();
+    }
+    rows.push(newRow(line, { isHeading, isMain }));
+  });
+  return rows;
+}
+
+export const formatIngredients = (rows) =>
+  rows
+    .flatMap((r) =>
+      r.isHeading ? ["", r.text ?? ""] : [r.isMain ? `${r.text ?? ""} ${MAIN_MARKER}` : r.text ?? ""],
+    )
+    .join("\n");
+
+export function parseDirections(text) {
+  const lines = textLines(text);
+  const rows = [];
+  let i = 0;
+  while (i < lines.length) {
+    let line = lines[i].trim();
+    if (!line) {
+      i++;
+      continue;
+    }
+    const byColon = line.endsWith(":");
+    if (byColon) line = line.slice(0, -1);
+    const isHeading = (i > 1 && isBlank(lines[i - 1]) && isBlank(lines[i - 2])) || byColon;
+
+    let step = line;
+    let j = i + 1;
+    // A heading is one line; only a step takes in the lines under it.
+    if (!isHeading) {
+      while (j < lines.length) {
+        const next = lines[j].trim();
+        if (!next) {
+          // Blank lines end the step only when something follows them, not at the end of the box.
+          let k = j + 1;
+          while (k < lines.length && isBlank(lines[k])) k++;
+          if (k < lines.length) break;
+          j++;
+          continue;
+        }
+        if (next.endsWith(":")) break; // the next heading starts here
+        step += ` ${next}`;
+        j++;
+      }
+    }
+    rows.push(newRow(step, { isHeading }));
+    i = j;
+  }
+  return rows;
+}
+
+export function formatDirections(rows) {
+  const lines = [];
+  rows.forEach((r, i) => {
+    if (r.isHeading) {
+      lines.push("", "", r.text ?? "");
+    } else {
+      if (i > 0 && lines.length) lines.push("");
+      lines.push(r.text ?? "");
+    }
+  });
+  return lines.join("\n");
+}
+
+/**
+ * Strips the bullets that come with a pasted list, and for directions the step numbers the editor
+ * shows itself. Never numbers for ingredients, whose lines start with a quantity: the rule would
+ * turn "2.5 cups flour" into "5 cups flour".
+ */
+export const cleanUpListText = (text, stripNumbering) =>
+  textLines(text)
+    .map((raw) => {
+      let line = raw.trim();
+      const marker = LIST_MARKERS.find((m) => line.startsWith(m));
+      if (marker) line = line.slice(marker.length);
+      if (stripNumbering) line = line.replace(/^\d+[.)]\s*/, "");
+      return line.trim();
+    })
+    .join("\n");
+
 /** The first http(s) URL in a source line, so it can be offered as a link. */
 export function sourceLink(r) {
   const text = [r.source, r.sourceDetails].filter(Boolean).join(" ");

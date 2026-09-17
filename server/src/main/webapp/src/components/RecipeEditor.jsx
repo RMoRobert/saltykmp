@@ -13,7 +13,15 @@ import {
   SpinButton,
   Subtitle2,
   Switch,
+  Tag,
+  TagPicker,
+  TagPickerControl,
+  TagPickerGroup,
+  TagPickerInput,
+  TagPickerList,
+  TagPickerOption,
   Textarea,
+  ToggleButton,
   Tooltip,
   makeStyles,
   mergeClasses,
@@ -25,12 +33,28 @@ import {
   ArrowUp20Regular,
   Delete20Regular,
   Image20Regular,
+  Medal20Filled,
+  Medal20Regular,
   ReOrderDotsVertical20Regular,
-  TextT20Regular,
+  TextBulletListSquareEdit20Regular,
+  bundleIcon,
 } from "@fluentui/react-icons";
 
 import { IMAGE_TYPES, MAX_IMAGE_BYTES, imageUrl } from "../api";
-import { DIFFICULTIES, NUTRITION_GROUPS, cleanNutrition, newRow } from "../model";
+import {
+  DIFFICULTIES,
+  NUTRITION_GROUPS,
+  cleanNutrition,
+  formatDirections,
+  formatIngredients,
+  newRow,
+  parseDirections,
+  parseIngredients,
+} from "../model";
+import ListTextDialog from "./ListTextDialog";
+
+// Filled while its ToggleButton is checked (and on hover), outlined otherwise.
+const MedalIcon = bundleIcon(Medal20Filled, Medal20Regular);
 
 const useStyles = makeStyles({
   bar: {
@@ -54,10 +78,14 @@ const useStyles = makeStyles({
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(13rem, 1fr))",
     gap: tokens.spacingHorizontalM,
+    /* The tag picker grows a line for every row of tags, and a stretched Categories dropdown beside
+       it grew with it. */
+    alignItems: "start",
     /* Fluent's Dropdown carries a 250px min-width of its own, wider than a 13rem track, so at
        tablet widths — three columns on an iPad mini — each dropdown spilled over the field beside
-       it. Let them shrink to their track like every other control here. */
-    "& .fui-Dropdown": { minWidth: 0 },
+       it. Let them shrink to their track like every other control here. The tag picker carries
+       the same 250px. */
+    "& .fui-Dropdown, & .fui-TagPickerControl": { minWidth: 0 },
   },
   switches: { display: "flex", gap: tokens.spacingHorizontalXXL, flexWrap: "wrap" },
   section: { marginTop: tokens.spacingVerticalL },
@@ -75,15 +103,32 @@ const useStyles = makeStyles({
     marginBottom: tokens.spacingVerticalXS,
   },
   rowInput: { flex: 1 },
+  /* A step's row, whose box can be several lines: the handle and buttons stay by its first line. */
+  tallRow: { alignItems: "flex-start" },
+  /* A step grows to fit its text (every current browser has field-sizing) and past Fluent's 260px
+     cap, and can still be dragged taller for room to write. */
+  stepText: { fieldSizing: "content", maxHeight: "none" },
+  /* Section headings, and the title half of a note, variation or time. Semibold is Fluent's
+     emphasis weight, and it is the weight the read view gives the same text, so a title stays
+     distinguishable from the body under it once the placeholder saying which is which has gone. */
   headingInput: { fontWeight: tokens.fontWeightSemibold },
   addRow: { display: "flex", gap: tokens.spacingHorizontalS, marginTop: tokens.spacingVerticalXS },
   pairRow: {
     display: "grid",
-    gridTemplateColumns: "1fr 1fr auto",
+    /* minmax(0, …), not a bare 1fr: a track will not go below the input's intrinsic width
+       otherwise, and at phone width the two inputs pushed the remove button off the edge. */
+    gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) auto",
     gap: tokens.spacingHorizontalS,
     marginBottom: tokens.spacingVerticalXS,
   },
-  blockRow: { marginBottom: tokens.spacingVerticalM, display: "grid", gap: tokens.spacingVerticalXS },
+  /* A note or variation: title and remove button on the first line, the text under the title. The
+     button's column lines up with the time rows' above, and the text ends where its title does. */
+  blockRow: {
+    marginBottom: tokens.spacingVerticalM,
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
+    gap: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalS}`,
+  },
   /* For the inner <textarea> slot, not the Textarea: Fluent caps that element at 260px (medium),
      so the resize grip stopped there and a long introduction or note could never be shown whole. */
   longText: { maxHeight: "none" },
@@ -93,7 +138,6 @@ const useStyles = makeStyles({
   dragging: { opacity: 0.4 },
   handle: { cursor: "grab", color: tokens.colorNeutralForeground3, display: "flex" },
   imageRow: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalM },
-  tagRow: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalXS },
   preview: {
     width: "120px",
     height: "120px",
@@ -171,12 +215,107 @@ function ImageField({ styles, recipe, file, removed, onPick, onRemove, notify })
   );
 }
 
+// The two list entries that are not tags. Tag ids are UUIDs, so neither can collide with one.
+const CREATE_TAG = ":create";
+const NO_TAGS = ":none";
+
+/**
+ * The recipe's tags, typed rather than picked from a closed list.
+ *
+ * Courses and categories are few and kept tidy, so a dropdown suits them. Tags are the catch-all
+ * and can run long, so this narrows as you type and offers to create a name nothing matches --
+ * reaching for a tag that does not exist yet is common mid-edit, and sending someone to Organize
+ * and back loses the edit's thread. The tag is created when picked, not at Save, as the "New tag"
+ * dialog this replaces did.
+ *
+ * "Create" is offered only when no tag has that name ignoring case, the same lookup the Swift
+ * app's addTag makes. The server keys tags by id alone and would keep a second "Dinner" beside
+ * the first.
+ *
+ * `onChange` takes an updater, not a list: a create resolves after a round trip, and a tag removed
+ * in the meantime must stay removed.
+ */
+function TagsField({ tags, tagIds, onChange, onCreateTag }) {
+  const [query, setQuery] = useState("");
+  // Fluent opens the list on a keydown it reads as typing. A paste is not one, and Android keyboards
+  // report every key as "Unidentified", so the list is opened by the text changing instead.
+  const [open, setOpen] = useState(false);
+  const name = query.trim();
+  const needle = name.toLocaleLowerCase();
+  const byId = new Map(tags.map((t) => [t.id, t]));
+  const shown = tagIds.filter((id) => byId.has(id));
+  const exists = tags.some((t) => (t.name ?? "").trim().toLocaleLowerCase() === needle);
+  const matches = tags
+    .filter((t) => !tagIds.includes(t.id) && (t.name ?? "").toLocaleLowerCase().includes(needle))
+    .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", undefined, { sensitivity: "base" }));
+  const offerCreate = !!name && !exists;
+
+  const pick = async (_, d) => {
+    setQuery("");
+    if (d.value === NO_TAGS) return;
+    if (d.value === CREATE_TAG) {
+      const created = await onCreateTag(name);
+      if (created) onChange((ids) => (ids.includes(created.id) ? ids : [...ids, created.id]));
+      return;
+    }
+    onChange(() => d.selectedOptions);
+  };
+
+  return (
+    <Field label="Tags">
+      <TagPicker
+        open={open}
+        onOpenChange={(_, d) => setOpen(d.open)}
+        selectedOptions={tagIds}
+        onOptionSelect={pick}
+      >
+        <TagPickerControl>
+          <TagPickerGroup aria-label="Selected tags">
+            {shown.map((id) => (
+              <Tag key={id} value={id} shape="rounded">
+                {byId.get(id).name || "Untitled"}
+              </Tag>
+            ))}
+          </TagPickerGroup>
+          <TagPickerInput
+            value={query}
+            placeholder={shown.length ? undefined : "Type to add a tag"}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setOpen(true);
+            }}
+          />
+        </TagPickerControl>
+        <TagPickerList>
+          {matches.map((t) => (
+            <TagPickerOption key={t.id} value={t.id} text={t.name || "Untitled"}>
+              {t.name || "Untitled"}
+            </TagPickerOption>
+          ))}
+          {offerCreate ? (
+            <TagPickerOption value={CREATE_TAG} text={`Create "${name}"`} media={<Add20Regular />}>
+              {`Create "${name}"`}
+            </TagPickerOption>
+          ) : null}
+          {!matches.length && !offerCreate ? (
+            <TagPickerOption value={NO_TAGS} text="No tags">
+              {name ? `"${name}" is already added` : tags.length ? "Every tag is added" : "Type a name to create a tag"}
+            </TagPickerOption>
+          ) : null}
+        </TagPickerList>
+      </TagPicker>
+    </Field>
+  );
+}
+
 /** One editable line of a list: the text, what kind of line it is, and where it sits. */
-function ListRow({ styles, row, index, count, onChange, onMove, onRemove, allowMain, drag }) {
+function ListRow({ styles, row, index, count, onChange, onMove, onRemove, allowMain, multiline, drag }) {
+  const tall = multiline && !row.isHeading;
   return (
     <div
       className={mergeClasses(
         styles.row,
+        tall && styles.tallRow,
         drag.overIndex === index && styles.dropTarget,
         drag.fromIndex === index && styles.dragging,
       )}
@@ -205,20 +344,35 @@ function ListRow({ styles, row, index, count, onChange, onMove, onRemove, allowM
       >
         <ReOrderDotsVertical20Regular />
       </span>
-      <Input
-        className={styles.rowInput}
-        input={row.isHeading ? { className: styles.headingInput } : undefined}
-        value={row.text}
-        placeholder={row.isHeading ? "Section heading" : "One line"}
-        onChange={(_, d) => onChange({ ...row, text: d.value })}
-      />
+      {/* A step can run to a paragraph; an ingredient or a heading is one line. */}
+      {tall ? (
+        <Textarea
+          className={styles.rowInput}
+          resize="vertical"
+          textarea={{ className: styles.stepText }}
+          value={row.text}
+          placeholder="Step"
+          onChange={(_, d) => onChange({ ...row, text: d.value })}
+        />
+      ) : (
+        <Input
+          className={styles.rowInput}
+          input={row.isHeading ? { className: styles.headingInput } : undefined}
+          value={row.text}
+          placeholder={row.isHeading ? "Section heading" : "One line"}
+          onChange={(_, d) => onChange({ ...row, text: d.value })}
+        />
+      )}
       <div className={styles.rowActions}>
         {allowMain && !row.isHeading ? (
           <Tooltip content="Main ingredient" relationship="label">
-            <Button
-              appearance={row.isMain ? "primary" : "subtle"}
+            {/* A toggle, so a screen reader hears on or off, and a medal that fills when on: the
+                Swift and Compose apps' mark for a main ingredient. */}
+            <ToggleButton
+              appearance="subtle"
               size="small"
-              icon={<TextT20Regular />}
+              checked={!!row.isMain}
+              icon={<MedalIcon />}
               onClick={() => onChange({ ...row, isMain: !row.isMain })}
             />
           </Tooltip>
@@ -254,9 +408,30 @@ function ListRow({ styles, row, index, count, onChange, onMove, onRemove, allowM
   );
 }
 
-function EditableList({ styles, title, rows, onRows, allowMain, addLabel }) {
+// What "Edit as text" needs for each list
+const INGREDIENTS_AS_TEXT = {
+  format: formatIngredients,
+  parse: parseIngredients,
+  stripNumbering: false,
+  help:
+    "One ingredient per line. A blank line before a line marks that line as a section heading, or so does " +
+    "ending it with a colon. End an ingredient with [*] to mark it as a main ingredient. \"Clean up\" " +
+    "removes bullets and extra spaces.",
+};
+const DIRECTIONS_AS_TEXT = {
+  format: formatDirections,
+  parse: parseDirections,
+  stripNumbering: true,
+  help:
+    "Use a blank line to separate steps (lines with no blank line between them join as one). " +
+    "Two blank lines before a line indicate a section heading, or so does ending it with a colon. " +
+    "\"Clean up\" removes bullets, step numbers and extra spaces.",
+};
+
+function EditableList({ styles, title, rows, onRows, allowMain, multiline, asText, addLabel }) {
   const [fromIndex, setFromIndex] = useState(null);
   const [overIndex, setOverIndex] = useState(null);
+  const [editingText, setEditingText] = useState(false);
 
   const set = (i, next) => onRows(rows.map((r, j) => (j === i ? next : r)));
   const move = (i, d) => {
@@ -296,7 +471,25 @@ function EditableList({ styles, title, rows, onRows, allowMain, addLabel }) {
     <section className={styles.section}>
       <div className={styles.sectionHead}>
         <Subtitle2 as="h2">{title}</Subtitle2>
+        {/* As the label, not a description: a screen reader then says the longer name once, rather
+            than "Edit as text" followed by nearly the same words again. It starts with the visible
+            text, so a voice command naming what is on screen still finds the button. */}
+        <Tooltip content="Edit as text (bulk edit)" relationship="label">
+          <Button appearance="subtle" icon={<TextBulletListSquareEdit20Regular />} onClick={() => setEditingText(true)}>
+            Edit as text
+          </Button>
+        </Tooltip>
       </div>
+      {editingText ? (
+        <ListTextDialog
+          title={`Edit ${title.toLowerCase()} as text`}
+          help={asText.help}
+          initialText={asText.format(rows)}
+          stripNumbering={asText.stripNumbering}
+          onApply={(text) => onRows(asText.parse(text))}
+          onClose={() => setEditingText(false)}
+        />
+      ) : null}
       {rows.map((row, i) => (
         <ListRow
           key={row.id}
@@ -308,6 +501,7 @@ function EditableList({ styles, title, rows, onRows, allowMain, addLabel }) {
           onMove={move}
           onRemove={remove}
           allowMain={allowMain}
+          multiline={multiline}
           drag={drag}
         />
       ))}
@@ -541,40 +735,12 @@ export default function RecipeEditor({
               </Dropdown>
             </Field>
 
-            <Field label="Tags">
-              <div className={styles.tagRow}>
-                <Dropdown
-                  className={styles.rowInput}
-                  multiselect
-                  placeholder="None"
-                  value={tags
-                    .filter((t) => (draft.tagIds ?? []).includes(t.id))
-                    .map((t) => t.name)
-                    .join(", ")}
-                  selectedOptions={draft.tagIds ?? []}
-                  onOptionSelect={(_, d) => set({ tagIds: d.selectedOptions })}
-                >
-                  {tags.map((t) => (
-                    <Option key={t.id} value={t.id}>
-                      {t.name || "Untitled"}
-                    </Option>
-                  ))}
-                </Dropdown>
-                {/* Tagging is the one classifier you reach for mid-edit, when the tag you want does
-                    not exist yet. Sending someone to Organize and back loses the edit's thread. */}
-                <Tooltip content="New tag" relationship="label">
-                  <Button
-                    data-testid="new-tag"
-                    icon={<Add20Regular />}
-                    onClick={() =>
-                      onCreateTag(async (created) => {
-                        if (created) set({ tagIds: [...(draft.tagIds ?? []), created.id] });
-                      })
-                    }
-                  />
-                </Tooltip>
-              </div>
-            </Field>
+            <TagsField
+              tags={tags}
+              tagIds={draft.tagIds ?? []}
+              onChange={(update) => setDraft((d) => ({ ...d, tagIds: update(d.tagIds ?? []) }))}
+              onCreateTag={onCreateTag}
+            />
           </div>
 
           <div className={styles.switches}>
@@ -597,6 +763,7 @@ export default function RecipeEditor({
             rows={ingredients}
             onRows={(rows) => set({ ingredients: rows })}
             allowMain
+            asText={INGREDIENTS_AS_TEXT}
           />
 
           <EditableList
@@ -605,6 +772,8 @@ export default function RecipeEditor({
             addLabel="Add step"
             rows={directions}
             onRows={(rows) => set({ directions: rows })}
+            multiline
+            asText={DIRECTIONS_AS_TEXT}
           />
 
           <Accordion multiple collapsible className={styles.section}>
@@ -613,7 +782,11 @@ export default function RecipeEditor({
               <AccordionPanel>
                 {times.map((t, i) => (
                   <div key={t.id} className={styles.pairRow}>
+                    {/* These rows have no Field, so aria-label is their only name: a placeholder
+                        is an example, and it disappears the moment there is text to describe. */}
                     <Input
+                      aria-label="Time type"
+                      input={{ className: styles.headingInput }}
                       value={t.type ?? ""}
                       placeholder="Prep"
                       onChange={(_, d) =>
@@ -625,6 +798,7 @@ export default function RecipeEditor({
                       }
                     />
                     <Input
+                      aria-label="Duration"
                       value={t.timeString ?? ""}
                       placeholder="30 min"
                       onChange={(_, d) =>
@@ -635,13 +809,15 @@ export default function RecipeEditor({
                         })
                       }
                     />
-                    <Button
-                      appearance="subtle"
-                      icon={<Delete20Regular />}
-                      onClick={() =>
-                        set({ preparationTimes: times.filter((_, j) => j !== i) })
-                      }
-                    />
+                    <Tooltip content="Remove time" relationship="label">
+                      <Button
+                        appearance="subtle"
+                        icon={<Delete20Regular />}
+                        onClick={() =>
+                          set({ preparationTimes: times.filter((_, j) => j !== i) })
+                        }
+                      />
+                    </Tooltip>
                   </div>
                 ))}
                 <Button
@@ -667,13 +843,23 @@ export default function RecipeEditor({
                 {notes.map((n, i) => (
                   <div key={n.id} className={styles.blockRow}>
                     <Input
+                      aria-label="Note title"
+                      input={{ className: styles.headingInput }}
                       value={n.title ?? ""}
                       placeholder="Title"
                       onChange={(_, d) =>
                         set({ notes: notes.map((x, j) => (j === i ? { ...x, title: d.value } : x)) })
                       }
                     />
+                    <Tooltip content="Remove note" relationship="label">
+                      <Button
+                        appearance="subtle"
+                        icon={<Delete20Regular />}
+                        onClick={() => set({ notes: notes.filter((_, j) => j !== i) })}
+                      />
+                    </Tooltip>
                     <Textarea
+                      aria-label="Note text"
                       resize="vertical"
                       textarea={{ className: styles.longText }}
                       value={n.content ?? ""}
@@ -683,13 +869,6 @@ export default function RecipeEditor({
                         })
                       }
                     />
-                    <Button
-                      appearance="subtle"
-                      icon={<Delete20Regular />}
-                      onClick={() => set({ notes: notes.filter((_, j) => j !== i) })}
-                    >
-                      Remove note
-                    </Button>
                   </div>
                 ))}
                 <Button
@@ -710,6 +889,8 @@ export default function RecipeEditor({
                 {variations.map((v, i) => (
                   <div key={v.id} className={styles.blockRow}>
                     <Input
+                      aria-label="Variation name"
+                      input={{ className: styles.headingInput }}
                       value={v.variationName ?? ""}
                       placeholder="Name"
                       onChange={(_, d) =>
@@ -720,7 +901,15 @@ export default function RecipeEditor({
                         })
                       }
                     />
+                    <Tooltip content="Remove variation" relationship="label">
+                      <Button
+                        appearance="subtle"
+                        icon={<Delete20Regular />}
+                        onClick={() => set({ variations: variations.filter((_, j) => j !== i) })}
+                      />
+                    </Tooltip>
                     <Textarea
+                      aria-label="Variation text"
                       resize="vertical"
                       textarea={{ className: styles.longText }}
                       value={v.text ?? ""}
@@ -732,13 +921,6 @@ export default function RecipeEditor({
                         })
                       }
                     />
-                    <Button
-                      appearance="subtle"
-                      icon={<Delete20Regular />}
-                      onClick={() => set({ variations: variations.filter((_, j) => j !== i) })}
-                    >
-                      Remove variation
-                    </Button>
                   </div>
                 ))}
                 <Button
