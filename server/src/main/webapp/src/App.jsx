@@ -261,9 +261,11 @@ export default function App() {
      the date it seeds from and the name it prints are both on the row. */
   const [lastMadeFor, setLastMadeFor] = useState(null);
 
-  const { route, push: pushRoute, replace: replaceRoute, closeDialog: closeDialogRoute } =
+  const { route, push: pushRoute, replace: replaceRoute, leave: leaveRoute } =
     useHashRoute(DIALOGS);
   const dialog = route.dialog;
+  /** How the open recipe is on screen, in the route's terms: read, edit or chef. */
+  const view = chefMode ? "chef" : mode;
   useUnloadGuard(dirty);
 
   const openDialog = useCallback(
@@ -280,8 +282,8 @@ export default function App() {
   /* What the dialog is sitting on top of: the recipe the panes still have behind it, which is where
      closing one has to land whether it gets there by popping our entry or by replacing it. */
   const closeDialog = useCallback(
-    () => closeDialogRoute({ recipeId: selectedId, editing: mode === "edit" }),
-    [closeDialogRoute, mode, selectedId],
+    () => leaveRoute({ recipeId: selectedId, view }),
+    [leaveRoute, selectedId, view],
   );
 
   useEffect(() => writeStored(SORT_KEY, sortBy), [sortBy]);
@@ -362,7 +364,7 @@ export default function App() {
    * is what that address costs.
    */
   const loadRecipe = useCallback(
-    async (id, editing) => {
+    async (id, view) => {
       const serial = claimDetail();
       // A recipe's address can arrive while the shopping lists are on screen -- pasted, or Back from
       // a list to the recipe that was open before it. The section follows the address, or the recipe
@@ -370,6 +372,7 @@ export default function App() {
       setSection("recipes");
       setSelectedId(id);
       setMode("read");
+      setChefMode(false);
       setDirty(false);
       setPane("detail");
       try {
@@ -378,8 +381,11 @@ export default function App() {
         setCurrent(loaded);
         // The editor is entered only once there is something to edit: mounted against a null recipe
         // it falls back to the empty placeholder, so `#/recipe/<id>/edit` flashed "Select a recipe."
-        // in the pane it was about to fill.
-        if (editing) setMode("edit");
+        // in the pane it was about to fill. Chef mode waits for the same reason, and both are set in
+        // the render the recipe lands in rather than left to the route effect, which would catch up
+        // a paint later with the three-pane read view already shown.
+        if (view === "edit") setMode("edit");
+        else if (view === "chef") setChefMode(true);
       } catch (e) {
         if (serial !== detailSerial.current) return;
         notify(e.message || "Could not open that recipe", "error");
@@ -442,7 +448,7 @@ export default function App() {
     // nothing about what is behind it.
     if (route.dialog) return;
 
-    const restore = () => replaceRoute({ recipeId: selectedId, editing: mode === "edit" });
+    const restore = () => replaceRoute({ recipeId: selectedId, view });
 
     if (!route.recipeId) {
       // An unsaved draft has no address of its own, so the empty route is where it lives: nothing to
@@ -453,24 +459,35 @@ export default function App() {
         setCurrent(null);
         setSelectedId(null);
         setMode("read");
+        setChefMode(false);
         setPane("list");
       }, restore);
       return;
     }
 
     if (route.recipeId !== selectedId) {
-      guard(() => loadRecipe(route.recipeId, route.editing), restore);
+      guard(() => loadRecipe(route.recipeId, route.view), restore);
       return;
     }
 
-    // The same recipe, described differently: entering the editor from its own address, or leaving
-    // it because Back went to the address the recipe was being read at.
-    if (route.editing && mode !== "edit") {
-      if (current) setMode("edit");
-    } else if (!route.editing && mode === "edit") {
-      guard(() => setMode("read"), () => replaceRoute({ recipeId: selectedId, editing: true }));
+    // The same recipe, described differently: entering the editor or chef mode from its own address,
+    // or leaving either because Back went to the address the recipe was being read at.
+    if (route.view === view) return;
+    if (mode === "edit") {
+      guard(() => {
+        setMode("read");
+        setChefMode(route.view === "chef");
+      }, restore);
+      return;
     }
-  }, [claimDetail, current, guard, loadRecipe, mode, replaceRoute, route, selectedId]);
+    // Not `current` alone: that goes on holding the last recipe while the next one loads, and an
+    // editor entered on it then showed the OLD recipe under the new one's address until the fetch
+    // landed. Mid-load, loadRecipe enters the view itself -- and if the address moved on while it
+    // was fetching, this runs again when `current` arrives and catches up.
+    if (current?.id !== selectedId) return;
+    setMode(route.view === "edit" ? "edit" : "read");
+    setChefMode(route.view === "chef");
+  }, [claimDetail, current, guard, loadRecipe, mode, replaceRoute, route, selectedId, view]);
 
   /**
    * Opening a recipe is a navigation: this sets the address, and the effect above does the rest.
@@ -481,15 +498,15 @@ export default function App() {
    * the twentieth recipe as readily as from the first.
    */
   const showRecipe = useCallback(
-    (id, editing = false) => guard(() => pushRoute({ recipeId: id, editing })),
+    (id, view = "read") => guard(() => pushRoute({ recipeId: id, view })),
     [guard, pushRoute],
   );
 
   /** Edit: a navigation for a row that is not open, and only a change of mode for the one that is. */
   const editRecipe = useCallback(
     (recipe) => {
-      if (recipe.id !== selectedId) showRecipe(recipe.id, true);
-      else replaceRoute({ recipeId: recipe.id, editing: true });
+      if (recipe.id !== selectedId) showRecipe(recipe.id, "edit");
+      else replaceRoute({ recipeId: recipe.id, view: "edit" });
     },
     [replaceRoute, selectedId, showRecipe],
   );
@@ -799,17 +816,27 @@ export default function App() {
   /**
    * Only from a recipe that is open and being read: chef mode takes the detail bar away, so there
    * would be no way out of an editor entered underneath it, and nothing to show with no recipe.
+   *
+   * A navigation like the rest, so chef mode has an address to bookmark on the kitchen tablet. Pushed
+   * rather than replaced: it takes the screen over the way a dialog does, and Back -- the way out a
+   * phone or tablet offers first -- should leave chef mode, not the recipe.
    */
   const enterChefMode = useCallback(() => {
-    if (current && mode === "read") setChefMode(true);
-  }, [current, mode]);
+    if (current && selectedId && mode === "read") pushRoute({ recipeId: selectedId, view: "chef" });
+  }, [current, mode, pushRoute, selectedId]);
+
+  /** Back to the recipe being read -- by popping the entry enterChefMode pushed, when it did. */
+  const exitChefMode = useCallback(
+    () => leaveRoute({ recipeId: selectedId }),
+    [leaveRoute, selectedId],
+  );
 
   useEffect(() => {
     if (!chefMode) return undefined;
-    const onKey = (e) => e.key === "Escape" && setChefMode(false);
+    const onKey = (e) => e.key === "Escape" && exitChefMode();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [chefMode]);
+  }, [chefMode, exitChefMode]);
 
   /* -------------------------------------------------------------- resizing -- */
 
@@ -904,7 +931,7 @@ export default function App() {
         onToggleFavorite={(r) => toggleFlag(r, "isFavorite")}
         onToggleWantToMake={(r) => toggleFlag(r, "wantToMake")}
         onEnterChefMode={enterChefMode}
-        onExitChefMode={() => setChefMode(false)}
+        onExitChefMode={exitChefMode}
       />
     );
 

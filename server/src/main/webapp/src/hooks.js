@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /** The empty route -- /app with nothing after it. Spread into every route so the shape is fixed. */
-const NO_ROUTE = { dialog: null, recipeId: null, editing: false };
+const NO_ROUTE = { dialog: null, recipeId: null, view: "read" };
+
+/**
+ * How a recipe is on screen, and the suffix that says so. One field rather than a flag per view: the
+ * three are exclusive, and a route with room for "editing AND cooking" is a route that can hold it.
+ * Both directions read this table, so a suffix changed here cannot be written one way and parsed
+ * another.
+ */
+const VIEW_SUFFIX = { read: "", edit: "/edit", chef: "/chefview" };
 
 const routeToHash = (route) => {
   if (route.dialog) return `#/${route.dialog}`;
   if (route.recipeId) {
-    return `#/recipe/${encodeURIComponent(route.recipeId)}${route.editing ? "/edit" : ""}`;
+    return `#/recipe/${encodeURIComponent(route.recipeId)}${VIEW_SUFFIX[route.view] ?? ""}`;
   }
   return "";
 };
@@ -15,7 +23,7 @@ const routeToHash = (route) => {
  * A recipe's address, for a link or a new tab -- `#/recipe/<id>`, relative to whatever /app path is
  * serving the page. Exported so the one place that writes recipe URLs is the one that reads them.
  */
-export const recipeHash = (id, editing = false) => routeToHash({ recipeId: id, editing });
+export const recipeHash = (id, view = "read") => routeToHash({ recipeId: id, view });
 
 function hashToRoute(dialogNames) {
   const hash = window.location.hash || "";
@@ -25,19 +33,21 @@ function hashToRoute(dialogNames) {
   }
   // Ids are UUIDs, so the encoding is a formality -- but a route that only works for the ids we
   // happen to mint today is a route that breaks quietly the first time one of them isn't.
-  const recipe = /^#\/recipe\/([^/]+)(\/edit)?$/.exec(hash);
-  if (recipe) {
-    return { ...NO_ROUTE, recipeId: decodeURIComponent(recipe[1]), editing: Boolean(recipe[2]) };
+  const recipe = /^#\/recipe\/([^/]+)(\/[a-z]+)?$/.exec(hash);
+  const view = recipe && Object.keys(VIEW_SUFFIX).find((v) => VIEW_SUFFIX[v] === (recipe[2] ?? ""));
+  if (view) {
+    return { ...NO_ROUTE, recipeId: decodeURIComponent(recipe[1]), view };
   }
   return NO_ROUTE;
 }
 
 /**
- * The hash IS the route: which recipe is open, whether it is being edited, and which dialog is up.
+ * The hash IS the route: which recipe is open, how it is on screen, and which dialog is up.
  *
- *   #/recipe/<id>        a recipe, being read
- *   #/recipe/<id>/edit   the same recipe, in the editor
- *   #/preferences        a dialog -- one of the names the caller passes in
+ *   #/recipe/<id>            a recipe, being read
+ *   #/recipe/<id>/edit       the same recipe, in the editor
+ *   #/recipe/<id>/chefview   the same recipe, in chef mode
+ *   #/preferences            a dialog -- one of the names the caller passes in
  *
  * A route is one or the other, never both: a dialog's address replaces the recipe's for as long as
  * it is open, and closing it goes BACK to the recipe rather than forward to a third address. That is
@@ -78,7 +88,7 @@ export function useHashRoute(dialogNames) {
     };
   }, [read]);
 
-  /** Whether the entry now on screen is one push() pushed, and so one closeDialog() should pop. */
+  /** Whether the entry now on screen is one push() pushed, and so one leave() should pop. */
   const pushedByUs = useRef(false);
 
   const write = useCallback((next, pushing) => {
@@ -96,7 +106,10 @@ export function useHashRoute(dialogNames) {
     return route;
   }, []);
 
-  /** A new place: Back returns to where the reader was. Opening a recipe, or a dialog over one. */
+  /**
+   * A new place: Back returns to where the reader was. Opening a recipe, a dialog over one, or chef
+   * mode -- which takes the screen over the way a dialog does, and so leaves it the same way.
+   */
   const push = useCallback((next) => write(next, true), [write]);
 
   /**
@@ -106,7 +119,8 @@ export function useHashRoute(dialogNames) {
   const replace = useCallback((next) => write(next, false), [write]);
 
   /**
-   * Closing a dialog, which is a pop rather than a push when we pushed to open it.
+   * Leaving what push() opened over the page -- closing a dialog, exiting chef mode -- which is a pop
+   * rather than a push when we pushed to open it.
    *
    * Replacing instead left the pushed entry sitting in the history with the same address as the
    * page under it, so the first press of Back after closing a dialog appeared to do nothing at all
@@ -116,7 +130,7 @@ export function useHashRoute(dialogNames) {
    * the panes are showing. It is set here rather than waited for so the dialog closes on the click:
    * the pop is what actually restores it, a moment later, to the same value.
    */
-  const closeDialog = useCallback(
+  const leave = useCallback(
     (under) => {
       if (pushedByUs.current) {
         pushedByUs.current = false;
@@ -124,13 +138,13 @@ export function useHashRoute(dialogNames) {
         history.back();
         return;
       }
-      // Nothing of ours to pop -- the dialog was opened by an address typed or pasted in.
+      // Nothing of ours to pop -- the address was typed or pasted in.
       write(under, false);
     },
     [write],
   );
 
-  return { route, push, replace, closeDialog };
+  return { route, push, replace, leave };
 }
 
 /**

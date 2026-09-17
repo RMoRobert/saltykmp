@@ -1545,6 +1545,77 @@ class ReactUiSmokeTest {
     }
 
     /**
+     * Chef mode has an address of its own, and Back leaves it the way it closes a dialog: to the
+     * recipe being read, not to whatever was open before that.
+     */
+    @Test
+    fun chefModeIsAddressableAndBackLeavesIt() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Chef mode")
+        ).first().click()
+        awaitHash(page, "#/recipe/$PIES_ID/chefview")
+        page.waitForSelector("text=Exit chef mode")
+
+        page.goBack()
+        awaitHash(page, "#/recipe/$PIES_ID")
+        page.waitForSelector("[role=option]")
+        assertEquals(0, page.getByText("Exit chef mode").count(), "Back left chef mode")
+        assertTrue(page.getByText("Fill the tins and bake 25 minutes.").isVisible,
+            "and stayed on the recipe")
+        assertEquals(emptyList<String>(), errors, "chef mode routing should not log console errors")
+        page.close()
+    }
+
+    /**
+     * Exit pops the entry chef mode pushed. Writing the recipe's address over it instead would leave
+     * two copies of that address in a row, and the next press of Back would appear to do nothing.
+     */
+    @Test
+    fun exitingChefModeLeavesNoEntryBehindForBack() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Chef mode")
+        ).first().click()
+        page.waitForSelector("text=Exit chef mode").click()
+        awaitHash(page, "#/recipe/$PIES_ID")
+
+        page.goBack()
+        awaitHash(page, "")
+        page.waitForSelector("text=Select a recipe.")
+        page.close()
+    }
+
+    /**
+     * The kitchen tablet's bookmark: a pasted chef address lands in chef mode on a tab that has never
+     * seen the list. With nothing of ours to pop, Exit rewrites the address to the recipe's.
+     */
+    @Test
+    fun aPastedChefAddressOpensChefMode() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.navigate("http://localhost:$port/app#/recipe/$PIES_ID/chefview")
+        page.waitForSelector("text=Exit chef mode")
+        assertTrue(page.getByText("Fill the tins and bake 25 minutes.").isVisible)
+        assertEquals(0, page.locator("[role=option]").count(), "the list pane is not on screen")
+
+        page.getByText("Exit chef mode").click()
+        awaitHash(page, "#/recipe/$PIES_ID")
+        page.waitForSelector("[role=option]")
+        assertEquals(emptyList<String>(), errors, "a pasted chef address should not log console errors")
+        page.close()
+    }
+
+    /**
      * A bookmark outlives the recipe it names. Landing on one that is gone says so and falls back to
      * the list, rather than sitting on an empty pane under an address that will never resolve.
      */
