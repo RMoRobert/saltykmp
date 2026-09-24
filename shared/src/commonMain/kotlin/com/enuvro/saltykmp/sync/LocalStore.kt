@@ -7,7 +7,11 @@ import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
 import com.enuvro.saltykmp.api.apiJson
 import com.enuvro.saltykmp.db.AppDatabase
+import com.enuvro.saltykmp.db.LibraryClassifier
 import com.enuvro.saltykmp.db.LibraryDuplicateMerger
+import com.enuvro.saltykmp.db.classifierTombstones
+import com.enuvro.saltykmp.db.clearAllClassifierTombstones
+import com.enuvro.saltykmp.db.clearClassifierTombstones
 import com.enuvro.saltykmp.db.LibraryMergeSummary
 import com.enuvro.saltykmp.db.model.Difficulty
 import com.enuvro.saltykmp.db.model.Rating
@@ -270,6 +274,13 @@ class LocalStore(private val db: AppDatabase) {
     fun deleteCategory(id: String) = q.deleteCategoryById(id)
     fun deleteTag(id: String) = q.deleteTagById(id)
 
+    /** Ids of [kind] deleted here and awaiting a delete on the server. See ClassifierTombstones.kt. */
+    fun tombstonedClassifierIds(kind: LibraryClassifier): Set<String> = q.classifierTombstones(kind)
+
+    fun clearClassifierTombstones(kind: LibraryClassifier, ids: Collection<String>) = q.transaction {
+        q.clearClassifierTombstones(kind, ids)
+    }
+
     /**
      * Folds same-named courses, categories and tags into one row each — the tidy-up a sync owes the
      * library after reconciling those three tables by id. See [LibraryDuplicateMerger].
@@ -365,6 +376,7 @@ class LocalStore(private val db: AppDatabase) {
         q.deleteAllTags()
         q.deleteAllShoppingLists()
         q.deleteAllTombstones() // server-wins reset discards pending local deletions
+        q.clearAllClassifierTombstones()
     }
 
     companion object {

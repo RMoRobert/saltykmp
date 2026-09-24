@@ -96,7 +96,10 @@ fun Route.recipeImportRoutes(addressPolicy: AddressPolicy = ::addressRefusal) {
             }
             val ok = page as Fetch.Ok
 
-            val parsed = SchemaOrgRecipeParser.parse(ok.text()).firstOrNull()
+            // The fetched address goes along: a recipe that declares no `url` records it as its source
+            // (contract WEB-020), and relative addresses on the page resolve against it (WEB-011). It is
+            // the one actually fetched, after redirects.
+            val parsed = SchemaOrgRecipeParser.parse(ok.text(), ok.url.toString()).firstOrNull()
             if (parsed == null) {
                 call.respond(
                     HttpStatusCode.UnprocessableEntity,
@@ -106,19 +109,13 @@ fun Route.recipeImportRoutes(addressPolicy: AddressPolicy = ::addressRefusal) {
                 return@post
             }
 
-            // Plenty of sites — AllRecipes among them — publish a Recipe with no `url` in it. Where it
-            // came from is the one thing we always know, and it is what sourceDetails is for. The
-            // address recorded is the one actually fetched, after redirects.
-            val withSource =
-                if (parsed.sourceDetails.isBlank()) parsed.copy(sourceDetails = ok.url.toString()) else parsed
-
             // A photo is a nicety: failing to get one still imports the recipe.
-            val image = withSource.imageUrl
+            val image = parsed.imageUrl
                 ?.let { withContext(Dispatchers.IO) { fetchImage(it, ok.url, addressPolicy) } }
 
             call.respond(
                 ImportResponse(
-                    recipe = withSource.toDraftRecipe(),
+                    recipe = parsed.toDraftRecipe(),
                     imageBase64 = image?.let { Base64.getEncoder().encodeToString(it.bytes) },
                     imageContentType = image?.contentType,
                 ),
@@ -157,6 +154,7 @@ private fun ParsedRecipe.toDraftRecipe(): ServerRecipe = ServerRecipe(
     ingredients = ingredients,
     directions = directions,
     preparationTimes = preparationTimes,
+    nutrition = nutrition,
 )
 
 // ---- fetching ----

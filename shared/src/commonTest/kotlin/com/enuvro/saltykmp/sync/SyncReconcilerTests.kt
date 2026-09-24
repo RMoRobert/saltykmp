@@ -189,4 +189,81 @@ class SyncReconcilerTests {
         assertEquals(listOf("old"), SyncReconciler.plan(listOf(e("old", 50)), emptyList(), false, t(150)).toDeleteLocally)
         assertEquals(listOf("new"), SyncReconciler.plan(listOf(e("new", 200)), emptyList(), false, t(150)).toUpload)
     }
+
+    // ---- Classifier tombstones: server-only rows ----
+
+    private fun classifiers(
+        server: List<SyncReconciler.Entry>,
+        tombstones: Set<String> = emptySet(),
+        local: List<SyncReconciler.Entry> = emptyList(),
+        lastSyncDate: Instant? = t(150),
+        isFirstSync: Boolean = false,
+    ) = SyncReconciler.planClassifiers(local, server, isFirstSync, lastSyncDate, tombstones)
+
+    /**
+     * The bug tombstones fix: a server-only row older than the watermark used to be deleted on the
+     * server. Nothing recorded deleting it here, so it's one this device never had — downloaded.
+     */
+    @Test
+    fun aServerOnlyClassifierOlderThanTheWatermarkIsDownloadedNotDeleted() {
+        val (plan, settled) = classifiers(listOf(e("theirs", 50)))
+        assertEquals(listOf("theirs"), plan.toDownload)
+        assertTrue(plan.toDeleteOnServer.isEmpty())
+        assertTrue(settled.isEmpty())
+    }
+
+    @Test
+    fun aTombstonedServerOnlyClassifierIsDeletedOnTheServer() {
+        val (plan, settled) = classifiers(listOf(e("gone", 50)), tombstones = setOf("gone"))
+        assertEquals(listOf("gone"), plan.toDeleteOnServer)
+        assertTrue(plan.toDownload.isEmpty())
+        assertTrue(settled.isEmpty(), "it settles when the delete goes through, not before")
+    }
+
+    /** An edit beats a delete: changed on the server since the last sync, it comes back. */
+    @Test
+    fun aTombstonedClassifierEditedSinceTheLastSyncIsDownloadedAndTheTombstoneSettled() {
+        val (plan, settled) = classifiers(listOf(e("renamed", 200)), tombstones = setOf("renamed"))
+        assertEquals(listOf("renamed"), plan.toDownload)
+        assertTrue(plan.toDeleteOnServer.isEmpty())
+        assertEquals(setOf("renamed"), settled)
+    }
+
+    /** No watermark means no edit to prove, so the recorded deletion stands — as in the Swift app. */
+    @Test
+    fun onAFirstSyncATombstoneStillDeletes() {
+        val (plan, _) = classifiers(listOf(e("gone", 200)), tombstones = setOf("gone"), lastSyncDate = null, isFirstSync = true)
+        assertEquals(listOf("gone"), plan.toDeleteOnServer)
+    }
+
+    @Test
+    fun tombstonesForRowsBackHereOrGoneFromTheServerSettleWithoutARequest() {
+        val (plan, settled) = classifiers(
+            server = listOf(e("both", 100)),
+            local = listOf(agreed("both", 100)),
+            tombstones = setOf("both", "neither"),
+        )
+        assertTrue(plan.toDeleteOnServer.isEmpty())
+        assertEquals(setOf("both", "neither"), settled)
+    }
+
+    @Test
+    fun changedSinceLastSyncNeedsAWatermarkAndANewerServerCopy() {
+        assertTrue(SyncReconciler.changedSinceLastSync(t(200), isFirstSync = false, lastSyncDate = t(150)))
+        assertTrue(!SyncReconciler.changedSinceLastSync(t(150), isFirstSync = false, lastSyncDate = t(150)), "equal is not newer")
+        assertTrue(!SyncReconciler.changedSinceLastSync(t(200), isFirstSync = false, lastSyncDate = null))
+        assertTrue(!SyncReconciler.changedSinceLastSync(t(200), isFirstSync = true, lastSyncDate = t(150)))
+    }
+
+    /** Local-only rows and two-sided rows are decided exactly as [SyncReconciler.plan] decides them. */
+    @Test
+    fun theRestOfThePlanIsUnchanged() {
+        val local = listOf(e("newHere", 100), agreed("goneThere", 100), e("localNewer", 200), e("serverNewer", 100))
+        val server = listOf(e("localNewer", 100), e("serverNewer", 200))
+        val base = SyncReconciler.plan(local, server, false, t(150), tracksAgreement = true)
+        val (plan, _) = classifiers(server, local = local)
+        assertEquals(base.toUpload, plan.toUpload)
+        assertEquals(base.toDeleteLocally, plan.toDeleteLocally)
+        assertEquals(listOf("serverNewer"), plan.toDownload)
+    }
 }

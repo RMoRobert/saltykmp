@@ -364,12 +364,29 @@ private fun ensureJunctionIndexes(driver: SqlDriver) {
     ).forEach { driver.execute(null, it, 0) }
 }
 
+/**
+ * The course/category/tag tombstone tables (see ClassifierTombstones.kt). A fresh KMP library gets them
+ * from Schema.sq; one the Swift app made has them only once it has deleted a classifier, since it
+ * creates them on demand. Same shape either way, so CREATE IF NOT EXISTS on every open is all it takes
+ * — cheaper than a shared migration, and correct whichever app opens the file first.
+ */
+private fun ensureClassifierTombstoneTables(driver: SqlDriver) {
+    listOf("deletedCourse", "deletedCategory", "deletedTag").forEach { table ->
+        driver.execute(
+            null,
+            """CREATE TABLE IF NOT EXISTS "$table" ("id" TEXT NOT NULL PRIMARY KEY, "deletedDate" TEXT NOT NULL)""",
+            0,
+        )
+    }
+}
+
 fun createAppDatabase(driver: SqlDriver): AppDatabase {
     activeDriver = driver
     // Runs on every open (after the native schema setup), so shared migrations land regardless of which
     // platform created the DB or whether they were added after the DB already existed.
     applySharedMigrations(driver)
     ensureJunctionIndexes(driver)
+    ensureClassifierTombstoneTables(driver)
     coalesceNullRecipeColumns(driver)
     return AppDatabase(
         driver = driver,

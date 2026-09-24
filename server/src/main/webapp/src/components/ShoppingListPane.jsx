@@ -556,8 +556,12 @@ export function ShoppingListDetail({ id, notify, ask, onChanged, onDeleted, onBa
                 >
                   Add
                 </Button>
-                <Tooltip content="Add a section heading" relationship="label">
-                  <Button icon={<TextHeader120Regular />} onClick={() => addItem(true)} />
+                {/* Labelled, not icon-only: the glyph is a literal "H1", which says heading only to
+                    someone who writes HTML. */}
+                <Tooltip content="Add a section heading" relationship="description">
+                  <Button icon={<TextHeader120Regular />} onClick={() => addItem(true)}>
+                    Heading
+                  </Button>
                 </Tooltip>
               </div>
             </>

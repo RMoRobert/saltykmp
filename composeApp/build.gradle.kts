@@ -178,6 +178,10 @@ compose.desktop {
                 "java.management",
                 "java.prefs",        // KeyValueStore on desktop (Preferences.userRoot)
                 "java.sql",          // SQLDelight / sqlite-jdbc
+                // Screen readers on Windows (NVDA, JAWS) reach a Java app through the Java Access Bridge.
+                // Once a user turns it on (jabswitch /enable), AWT loads it at startup, and without this
+                // module the packaged app died with "Failed to launch JVM" (found on Windows, 2026-09-22).
+                "jdk.accessibility",
                 "jdk.security.auth",
                 "jdk.unsupported",
             )

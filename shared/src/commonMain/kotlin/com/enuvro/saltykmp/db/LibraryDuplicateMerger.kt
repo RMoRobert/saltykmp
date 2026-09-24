@@ -200,6 +200,8 @@ class LibraryDuplicateMerger(private val db: AppDatabase) {
             for (duplicate in group.duplicates) {
                 if (duplicate.id == group.survivor.id || duplicate.id !in liveIds(group.kind)) continue
                 touched += fold(group.kind, duplicate.id, group.survivor.id)
+                // Tombstoned, so the next sync deletes it on the server too and the libraries converge.
+                q.recordClassifierTombstones(group.kind, listOf(duplicate.id))
                 liveIds(group.kind) -= duplicate.id
                 removedItems++
                 mergedAny = true

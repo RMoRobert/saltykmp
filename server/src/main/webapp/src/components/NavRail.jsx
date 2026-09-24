@@ -1,7 +1,11 @@
 import {
+  Avatar,
   Button,
   Hamburger,
   Menu,
+  MenuDivider,
+  MenuGroup,
+  MenuGroupHeader,
   MenuItem,
   MenuList,
   MenuPopover,
@@ -31,8 +35,8 @@ import {
   Grid24Regular,
   Heart24Regular,
   Options24Regular,
-  Person24Regular,
   People24Regular,
+  PersonAccounts24Regular,
   Settings24Regular,
   Tag24Regular,
   TableSimple24Regular,
@@ -47,7 +51,16 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     fontSize: tokens.fontSizeBase200,
   },
-  footButton: { justifyContent: "flex-start" },
+  /* Full width and start-aligned, so the avatar sits in the column of glyphs above it and the name
+     in the column of labels. A Button sizes to its content, and the footer centred what was left --
+     the one row in the rail that did not line up with the rest. The padding matches NavItem's. */
+  footButton: {
+    width: "100%",
+    justifyContent: "flex-start",
+    paddingInlineStart: tokens.spacingHorizontalM,
+    gap: tokens.spacingHorizontalM,
+    fontWeight: tokens.fontWeightRegular,
+  },
   /* The hamburger had this row to itself and the rest of it was empty, so the app's identity
      goes beside it rather than costing a row in the body. 24px to match the nav glyphs below:
      the mark is a full-bleed coloured plate, and at Fluent's default 32 it was the loudest thing
@@ -104,6 +117,7 @@ export default function NavRail({
   tags,
   onManageLibrary,
   onPreferences,
+  onAccount,
 }) {
   const styles = useStyles();
 
@@ -199,28 +213,44 @@ export default function NavRail({
             the list. Label matches the Compose app's. Neither is ever `selectedValue`: they open
             dialogs rather than changing what the panes show. */}
         <NavItem value="classifiers" icon={<Options24Regular />}>
-          Edit classifiers
+          Manage classifiers
         </NavItem>
         <NavItem value="settings" icon={<Settings24Regular />}>
           Settings
         </NavItem>
         <NavDivider />
 
-        {/* The account's own actions, kept apart from the library's: signing out and administering
-            users are not things you do to a recipe collection. */}
-        <Menu>
+        {/* The account's own actions, kept apart from the library's: signing out, the password and
+            the apps signed in to it are not things you do to a recipe collection -- and they are
+            where people look for them, under their own name, rather than among the settings. */}
+        <Menu positioning="above-start">
           <MenuTrigger disableButtonEnhancement>
-            <Button appearance="subtle" icon={<Person24Regular />} className={styles.footButton}>
+            <Button
+              appearance="subtle"
+              icon={<Avatar name={SALTY.username || undefined} size={24} aria-hidden />}
+              className={styles.footButton}
+            >
               {SALTY.username || "Account"}
             </Button>
           </MenuTrigger>
           <MenuPopover>
             <MenuList>
-              {SALTY.isAdmin ? (
-                <MenuItem icon={<People24Regular />} onClick={onUsers}>
-                  Manage users…
+              {/* The trigger can be clipped by a long name; this is where the whole of it shows. */}
+              <MenuGroup>
+                <MenuGroupHeader>
+                  Signed in as {SALTY.username || "—"}
+                  {SALTY.isAdmin ? " (admin)" : ""}
+                </MenuGroupHeader>
+                <MenuItem icon={<PersonAccounts24Regular />} onClick={onAccount}>
+                  Account…
                 </MenuItem>
-              ) : null}
+                {SALTY.isAdmin ? (
+                  <MenuItem icon={<People24Regular />} onClick={onUsers}>
+                    Manage users…
+                  </MenuItem>
+                ) : null}
+              </MenuGroup>
+              <MenuDivider />
               <MenuItem
                 icon={<TableSimple24Regular />}
                 onClick={() => {

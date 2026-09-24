@@ -352,6 +352,7 @@ export default function RecipeList({
   onNew,
   onImport,
   onShowRail,
+  searchRef,
   listStyle,
   rowActions,
 }) {
@@ -422,7 +423,7 @@ export default function RecipeList({
           <Subtitle1 className={styles.title}>{title}</Subtitle1>
 
           <Tooltip content="New recipe" relationship="label">
-            <Button appearance="subtle" icon={<Add24Regular />} onClick={onNew} />
+            <Button appearance="subtle" icon={<Add24Regular />} onClick={onNew} aria-keyshortcuts="N" />
           </Tooltip>
 
           {/* One overflow menu, not two. Sorting used to have a button of its own, but a toolbar of
@@ -478,7 +479,11 @@ export default function RecipeList({
         </div>
       )}
 
+      {/* The ref reaches the input itself (Fluent forwards it to the primary slot), which is what `/`
+          focuses from anywhere in the app. */}
       <SearchBox
+        ref={searchRef}
+        aria-keyshortcuts="/"
         className={styles.search}
         placeholder="Search recipes"
         value={query}

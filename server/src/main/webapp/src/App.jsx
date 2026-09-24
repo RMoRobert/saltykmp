@@ -34,6 +34,7 @@ import LastMadeDialog from "./components/LastMadeDialog";
 import RecipeInfoDialog from "./components/RecipeInfoDialog";
 import { ShoppingListDetail, ShoppingListsIndex } from "./components/ShoppingListPane";
 import {
+  AccountDialog,
   ImportDialog,
   ManageLibraryDialog,
   PreferencesDialog,
@@ -123,7 +124,19 @@ const SORT_ASC_KEY = "salty.recipeSortAsc";
 const LIST_STYLE_KEY = "salty.recipeListStyle";
 const WAKE_LOCK_KEY = "salty.chefWakeLock";
 
-const DIALOGS = ["library", "import", "preferences", "users"];
+const DIALOGS = ["library", "import", "preferences", "account", "users"];
+
+/** Where a key press is text: a field, or anything Fluent renders as one (Dropdown, TagPicker). */
+function isTypingTarget(target) {
+  return !!target?.closest?.(
+    'input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="combobox"]',
+  );
+}
+
+/** A dialog or menu is showing, portalled out of the app's own tree, and the keyboard is its. */
+function overlayOpen() {
+  return !!document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]');
+}
 
 export default function App() {
   const styles = useStyles();
@@ -231,6 +244,12 @@ export default function App() {
   const [selectMode, setSelectMode] = useState(false);
   const [current, setCurrent] = useState(null);
   const [mode, setMode] = useState("read"); // read | edit
+  /**
+   * A photo that came with a draft, `{ recipeId, file }`, until the draft is saved or dropped. Tied to
+   * the draft's id so it can only ever be staged in that draft's editor: held unconditionally, it
+   * would come back -- and upload again -- the next time the saved recipe was edited.
+   */
+  const [draftPhoto, setDraftPhoto] = useState(null);
   /** Owned by the editor while it is mounted; see RecipeEditor for what counts. */
   const [dirty, setDirty] = useState(false);
   const [selectedListId, setSelectedListId] = useState(null);
@@ -513,13 +532,19 @@ export default function App() {
 
   /* ----------------------------------------------------------------- edits -- */
 
-  /** Opens a draft that exists only in this tab: nothing is written until Save. */
+  /**
+   * Opens a draft that exists only in this tab: nothing is written until Save.
+   *
+   * `imageFile` is a photo that comes with it -- an import's -- staged in the editor exactly as if it
+   * had been picked there, so Save uploads it and Remove drops it.
+   */
   const openDraft = useCallback(
-    (draft) => {
+    (draft, { imageFile } = {}) => {
       claimDetail(); // a recipe still loading must not land on top of the draft
       // A draft exists only in this tab, so there is no address for it -- and replacing rather than
       // pushing keeps Back from walking into a draft that was already abandoned once.
       replaceRoute({});
+      setDraftPhoto(imageFile ? { recipeId: draft.id, file: imageFile } : null);
       setCurrent(draft);
       setSelectedId(null); // nothing in the list to highlight until it is saved
       setMode("edit");
@@ -595,6 +620,7 @@ export default function App() {
         setSelectedId(saved.id);
         setMode("read");
         setDirty(false);
+        setDraftPhoto(null); // saved or reported above: either way it is not staged again
         // Replaced, not pushed: the editor and the recipe it saved are one place, and a draft's
         // first save is where that place gets an address at all.
         replaceRoute({ recipeId: saved.id });
@@ -838,6 +864,40 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [chefMode, exitChefMode]);
 
+  /* ------------------------------------------------------------- shortcuts -- */
+
+  /** The recipe list's search field, for `/`. Null whenever the list is not on screen. */
+  const searchRef = useRef(null);
+
+  /*
+   * Single keys, as GitHub and Gmail do: `/` searches, `n` starts a recipe, `e` edits the one open.
+   * ⌘S / Ctrl+S is the editor's own (see RecipeEditor), because only the editor has anything to save.
+   *
+   * None of them fire while typing, with a modifier held (those are the browser's), or with a dialog
+   * or menu open -- a letter pressed there belongs to it. Each one does only what its button would
+   * do in the same state, through the same functions, so `n` over an unsaved edit asks first exactly
+   * as the + does.
+   */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.defaultPrevented || e.repeat || e.isComposing) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTypingTarget(e.target) || overlayOpen()) return;
+      if (chefMode || section !== "recipes") return;
+
+      if (e.key === "/" && searchRef.current) {
+        e.preventDefault(); // or the slash lands in the field it just focused
+        searchRef.current.focus();
+      } else if (e.key === "n") {
+        newRecipe();
+      } else if (e.key === "e" && mode === "read" && current && selectedId && (!compact || pane === "detail")) {
+        editRecipe(current);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chefMode, compact, current, editRecipe, mode, newRecipe, pane, section, selectedId]);
+
   /* -------------------------------------------------------------- resizing -- */
 
   /*
@@ -888,6 +948,7 @@ export default function App() {
       <RecipeEditor
         key={current.id}
         recipe={current}
+        initialImageFile={draftPhoto?.recipeId === current.id ? draftPhoto.file : null}
         unsaved={!selectedId}
         courses={courses}
         categories={categories}
@@ -909,6 +970,7 @@ export default function App() {
             replaceRoute(selectedId ? { recipeId: selectedId } : {});
             if (!selectedId) {
               setCurrent(null);
+              setDraftPhoto(null);
               setPane("list"); // compact: cancelling a new recipe leaves nothing to look at
             }
           })
@@ -966,6 +1028,7 @@ export default function App() {
         onNew={newRecipe}
         onImport={() => openDialog("import")}
         onShowRail={showRail}
+        searchRef={searchRef}
         listStyle={listStyle}
         // One object rather than eight props: these are the row menu's actions, they are only ever
         // passed together, and every one of them takes the row it was opened on.
@@ -1030,6 +1093,7 @@ export default function App() {
             }
             onManageLibrary={() => openDialog("library")}
             onPreferences={() => openDialog("preferences")}
+            onAccount={() => openDialog("account")}
             onUsers={() => openDialog("users")}
           />
         )}
@@ -1082,13 +1146,12 @@ export default function App() {
       <PreferencesDialog
         open={dialog === "preferences"}
         onClose={closeDialog}
-        notify={notify}
-        ask={ask}
         wakeLockPref={wakeLockPref}
         onWakeLockPref={setWakeLockPref}
         listStyle={listStyle}
         onListStyle={setListStyle}
       />
+      <AccountDialog open={dialog === "account"} onClose={closeDialog} notify={notify} ask={ask} />
       <UsersDialog open={dialog === "users"} onClose={closeDialog} notify={notify} ask={ask} />
       <ManageLibraryDialog
         open={dialog === "library"}
@@ -1108,10 +1171,10 @@ export default function App() {
         notify={notify}
         // Through the guard like every other way of replacing what the editor holds. An import
         // used to go straight to openDraft, so an edit in progress vanished without a word.
-        onImported={(draft) =>
+        onImported={(draft, extras) =>
           guard(() => {
             closeDialog();
-            openDraft(draft);
+            openDraft(draft, extras);
           })
         }
       />

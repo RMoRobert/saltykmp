@@ -12,6 +12,8 @@ import com.enuvro.saltykmp.api.SyncDeleteRequest
 import com.enuvro.saltykmp.api.SyncDeleteResponse
 import com.enuvro.saltykmp.api.apiJson
 import com.enuvro.saltykmp.db.AppDatabase
+import com.enuvro.saltykmp.db.LibraryClassifier
+import com.enuvro.saltykmp.db.LibraryClassifierEditor
 import com.enuvro.saltykmp.db.createAppDatabase
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -933,6 +935,138 @@ class SyncIntegrationTest {
         assertTrue(local.recipeEntries().none { it.id == "r1" }, "deleted recipe must not be resurrected")
         assertTrue(!server.recipes.containsKey("r1"), "deletion must propagate to the server")
         assertTrue(local.tombstonedRecipeIds().isEmpty(), "tombstone cleared after a successful sync")
+    }
+
+    /**
+     * An edit beats a delete (SYNC-013): a recipe deleted here but edited on another device since this
+     * one last synced keeps the edit. The tombstone is dropped rather than pushed, and the recipe comes
+     * back with the other device's change. Mirrors the Swift engine's recipe tombstone check.
+     */
+    @Test
+    fun aDeletedRecipeEditedElsewhereSinceTheLastSyncComesBack() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.registered = true // not a first sync
+        server.lastSyncDate = "2026-08-10T00:00:00.000Z"
+        local.upsertRecipe(ServerRecipe(id = "r1", name = "Before", lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+        local.deleteRecipe("r1")
+        server.saveRecipe(ServerRecipe(id = "r1", name = "Edited elsewhere", lastModifiedDate = "2026-08-12T00:00:00.000Z"))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        assertTrue(server.recipes.containsKey("r1"), "the edited recipe stays on the server")
+        assertEquals("Edited elsewhere", local.recipeForUpload("r1")?.name, "and comes back here with the edit")
+        assertTrue(local.tombstonedRecipeIds().isEmpty(), "the overruled tombstone is dropped")
+    }
+
+    /** The counterpart: unchanged on the server since the last sync, the deletion goes through. */
+    @Test
+    fun aDeletedRecipeUnchangedSinceTheLastSyncIsDeletedOnTheServer() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.registered = true
+        server.lastSyncDate = "2026-08-10T00:00:00.000Z"
+        local.upsertRecipe(ServerRecipe(id = "r1", name = "Doomed", lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+        local.deleteRecipe("r1")
+        server.saveRecipe(ServerRecipe(id = "r1", name = "Doomed", lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        assertFalse(server.recipes.containsKey("r1"))
+        assertTrue(local.recipeEntries().none { it.id == "r1" })
+        assertTrue(local.tombstonedRecipeIds().isEmpty())
+    }
+
+    // ---- classifier tombstones ----
+
+    /**
+     * A category the server has and this library doesn't, stamped before this device's last sync, is
+     * DOWNLOADED — it used to be deleted from the server, and so from every device. Nothing recorded
+     * deleting it here: it's a row from a restored backup, another app's library, or another client
+     * that kept its original date. The classifier counterpart of
+     * [aServerRecipeOlderThanTheWatermarkIsTakenNotDeleted].
+     */
+    @Test
+    fun aServerCategoryOlderThanTheWatermarkIsTakenNotDeleted() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.registered = true // not a first sync
+        server.lastSyncDate = "2026-08-10T00:00:00.000Z"
+        local.upsertCategory(ServerCategory("mine", "Mine", "2026-08-11T00:00:00.000Z"))
+        server.categories["mine"] = ServerCategory("mine", "Mine", "2026-08-11T00:00:00.000Z")
+        server.categories["theirs"] = ServerCategory("theirs", "From another library", "2026-08-01T00:00:00.000Z")
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        assertTrue(server.categories.containsKey("theirs"), "a category this library can't prove it deleted stays")
+        assertTrue(local.categories().any { it.id == "theirs" }, "and is downloaded")
+    }
+
+    /**
+     * A tag deleted here reaches the server even when it was the last one, so the library is empty:
+     * the deletion is recorded, and the SYNC-016 guard is for inferred ones. Refusing it would repeat
+     * on every sync, forever.
+     */
+    @Test
+    fun aTagDeletedHereIsDeletedOnTheServerEvenFromAnEmptyLibrary() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.registered = true
+        server.lastSyncDate = "2026-08-10T00:00:00.000Z"
+        local.upsertTag(ServerTag("t1", "Unwanted", "2026-08-01T00:00:00.000Z"))
+        server.tags["t1"] = ServerTag("t1", "Unwanted", "2026-08-01T00:00:00.000Z")
+        LibraryClassifierEditor(db).delete(LibraryClassifier.TAG, listOf("t1"))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        assertFalse(server.tags.containsKey("t1"), "the deletion reaches the server")
+        assertTrue(local.tags().isEmpty(), "and isn't downloaded back")
+        assertTrue(local.tombstonedClassifierIds(LibraryClassifier.TAG).isEmpty())
+    }
+
+    /** An edit beats a delete: renamed elsewhere after this device last synced, the tag comes back. */
+    @Test
+    fun aDeletedTagRenamedElsewhereSinceTheLastSyncComesBack() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        server.registered = true
+        server.lastSyncDate = "2026-08-10T00:00:00.000Z"
+        local.upsertTag(ServerTag("t1", "Old name", "2026-08-01T00:00:00.000Z"))
+        server.tags["t1"] = ServerTag("t1", "Renamed elsewhere", "2026-08-12T00:00:00.000Z")
+        LibraryClassifierEditor(db).delete(LibraryClassifier.TAG, listOf("t1"))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").syncNow()
+
+        assertTrue(server.tags.containsKey("t1"))
+        assertEquals(listOf("Renamed elsewhere"), local.tags().map { it.name })
+        assertTrue(local.tombstonedClassifierIds(LibraryClassifier.TAG).isEmpty())
+    }
+
+    /** "Delete Local, Pull from Server" restores what was deleted here, so it drops the tombstones too. */
+    @Test
+    fun pullingEverythingFromTheServerDropsPendingClassifierDeletions() = runTest {
+        val db = freshDb()
+        val local = LocalStore(db)
+        val server = FakeServer()
+        local.upsertCategory(ServerCategory("c1", "Soups", "2026-08-01T00:00:00.000Z"))
+        server.categories["c1"] = ServerCategory("c1", "Soups", "2026-08-01T00:00:00.000Z")
+        LibraryClassifierEditor(db).delete(LibraryClassifier.CATEGORY, listOf("c1"))
+
+        val api = SaltyApiClient("http://fake", InMemoryTokenStore("t"), server.engine())
+        SyncService(api, local, deviceId = "test-device", deviceName = "Test").pullEverythingFromServer()
+
+        assertTrue(local.categories().any { it.id == "c1" }, "restored")
+        assertTrue(local.tombstonedClassifierIds(LibraryClassifier.CATEGORY).isEmpty())
     }
 
     // ---- progress reporting and stopping ----

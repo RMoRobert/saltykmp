@@ -38,14 +38,14 @@ server/src/main/webapp/
   src/hooks.js                    addressable dialogs, the wake lock, the unload guard, storage, media queries
   src/App.jsx                     shell, data loading, panes, the three-column layout
   src/components/ConfirmDialog.jsx     the app's confirm() and prompt(), as one Fluent dialog
-  src/components/NavRail.jsx           the library, as a Fluent NavDrawer; Edit classifiers/Settings/account at the foot
+  src/components/NavRail.jsx           the library, as a Fluent NavDrawer; Manage classifiers/Settings/account at the foot
   src/components/RecipeList.jsx        search, the list's ⋯ menu (sort included), rows in three densities
   src/components/RecipeDetail.jsx      the read view, including ingredient scaling and chef mode
   src/components/RecipeInfoDialog.jsx  Get info: a recipe's dates, read only
   src/components/LastMadeDialog.jsx    "Set date…" from the recipe's Last prepared menu
   src/components/RecipeEditor.jsx      the full editor
   src/components/ShoppingListPane.jsx  the lists index and a list's items
-  src/components/dialogs.jsx           Settings (with About), Users, Edit classifiers, Import from web
+  src/components/dialogs.jsx           Settings (with shortcuts, About), Account, Users, Manage classifiers, Import from web
 ```
 
 `src/model.js` is a straight port of the Alpine app's rules rather than a rewrite — UUIDv7 minted
@@ -68,7 +68,7 @@ name, so it never has to be regenerated, and the server sends no far-future `Cac
 | `/app` | The app. Recipes, shopping lists, classifiers, settings, users. |
 | `/app#/recipe/<id>` | A recipe, open for reading. Bookmarkable, linkable, and what a row's "Open in new tab" points at. |
 | `/app#/recipe/<id>/edit` | The same recipe, in the editor. |
-| `/app#/…` | The open dialog: `#/library`, `#/import`, `#/preferences`, `#/users`. Reload-safe and Back-closes — and closing it any other way pops the entry Back would have, so the button never has to be pressed twice to leave. |
+| `/app#/…` | The open dialog: `#/library`, `#/import`, `#/preferences`, `#/account`, `#/users`. Reload-safe and Back-closes — and closing it any other way pops the entry Back would have, so the button never has to be pressed twice to leave. |
 | `/editor` | 301 to `/app`. It was this page's address while it was an experiment. |
 | `/classic/…` | The old Pico-styled, mostly view-only pages. **Legacy** — see below. |
 
@@ -116,17 +116,24 @@ Two things about the shape are deliberate.
   strip built by hand to imitate it (which is what the rail had first) would have been the one
   part of the rail that was not Fluent's.
 
-Along the bottom: **Edit classifiers** and **Settings**, then a divider and the **account menu**
-(Manage users… for admins, Classic view, Log out). Edit classifiers sits there rather than as an
-"Edit…" hung off each of the three groups above, for the reason the Compose app gives in its own
-drawer: editing classifiers is rare and app-level, so it is one row, and the recipe list's toolbar
-is for actions on the list. The account's actions are kept apart from the library's because signing
-out and administering users are not things you do to a recipe collection.
+Along the bottom: **Manage classifiers** and **Settings**, then a divider and the **account menu**:
+an avatar and your name, opening *Signed in as …* (the whole name, which the button can clip),
+**Account…**, Manage users… for admins, Classic view and Log out. Manage classifiers sits there rather
+than as an "Edit…" hung off each of the three groups above, for the reason the Compose app gives in its
+own drawer: editing classifiers is rare and app-level, so it is one row, and the recipe list's toolbar
+is for actions on the list. (It was *Edit classifiers* until 2026-09-22; the name is still under
+review.) The account's actions are kept apart from the library's because signing out, the password
+and the apps signed in to the account are not things you do to a recipe collection.
 
-**Settings** is one page, not three menu items. Chef mode's wake-lock switch, changing your password
-and the list of apps authorized to sync are all "settings about me", and splitting them across a
-menu meant knowing which item held the thing you were looking for before you looked. They are
-sections in one scroll, which is what Microsoft's own
+**Settings is this browser; Account is the account.** Everything in Settings — the list style, chef
+mode's wake lock — is stored in the browser, so it is per device by nature. The password and the apps
+signed in to sync are facts about the account on the server: change them in one place and every device
+sees it. Those moved to an **Account** dialog off the account menu on 2026-09-22, which is also where
+people look for them. Settings also lists the keyboard shortcuts (below), since nothing else draws them.
+
+Each is one page, not a menu of items: splitting a dialog across a menu meant knowing which item held
+the thing you were looking for before you looked. Its parts are sections in one scroll, which is what
+Microsoft's own
 [app-settings guidance](https://learn.microsoft.com/en-us/windows/apps/design/app-settings/guidelines-for-app-settings)
 asks for: "present content from top to bottom in a single column, scrollable if necessary". The same
 guidance puts **About** at the bottom of the settings page, collapsed — "app information that isn't
@@ -134,6 +141,14 @@ accessed very often, such as privacy policy, help, app version, or copyright inf
 collapsed `Accordion`, v9's equivalent of the `SettingsExpander` it names, at the end of Settings
 rather than a top-level rail entry. Managing *other people's* accounts stays its own dialog; that is
 administration, not a preference.
+
+**Keyboard shortcuts** (2026-09-22): `/` focuses the recipe search, `n` starts a new recipe, `e` edits
+the open one, ⌘S / Ctrl+S saves in the editor, and Escape leaves chef mode. Single keys, as GitHub and
+Gmail do, so none of them fire while typing in a field, with a modifier held, or with a dialog or menu
+open. Each calls the same function its button does, so `n` over unsaved edits asks first, exactly as
+the + does. ⌘S never reaches the browser's "Save page as" while the editor is open, and does nothing
+while a dialog sits over the editor (Edit as text holds text it has not applied yet). The controls
+carry `aria-keyshortcuts`; Settings lists them, since nothing else draws them.
 
 ## The classic view
 
@@ -193,7 +208,7 @@ already makes a checklist: the menu has to read as the complete set of things th
 as a list of leftovers.
 
 **Every label the app puts on itself is sentence case** — *New recipe*, *Get info*, *Last prepared*,
-*Set to today*, *All recipes*, *Want to make*, *Shopping lists*, *Edit classifiers*, *Date modified*.
+*Set to today*, *All recipes*, *Want to make*, *Shopping lists*, *Manage classifiers*, *Date modified*.
 This is Fluent's own rule (Microsoft's style guide asks for sentence-style
 capitalization in menus, buttons, navigation and headings); title case is the *Apple* convention,
 which is why the Swift and Compose apps read *Get Info*, *Last Prepared Date* and *Set to
@@ -371,8 +386,16 @@ Paste a recipe page's address; the server reads the schema.org JSON-LD most reci
 hands back a **draft**, which opens in the editor. Nothing is written until the user saves it, so a
 mis-pasted URL costs nothing — the same contract the desktop import has.
 
+The page's **photo** comes back beside the draft (`imageBase64` + `imageContentType`), not on it, and
+the import dialog stages it in the editor exactly as if it had been picked there: it previews, Remove
+drops it, and Save uploads it through the normal image path so it gets its thumbnail like any other.
+App holds it keyed to the draft's id until the draft is saved or cancelled, so editing the saved
+recipe later can't stage it again. (Until 2026-09-22 the dialog dropped it, and every web import
+saved without a photo.)
+
 The parsing is the shared `SchemaOrgRecipeParser`, untouched, so a page imports identically here and
-on the phone. The *fetching* is not shared, and that is the whole design:
+on the phone — and it follows salty-contract SPEC.md §8, pinned by the corpus's `webimport` suite, so it
+imports identically in the Swift apps too. The *fetching* is not shared, and that is the whole design:
 
 **A browser may not read a third-party page cross-origin, so the server has to fetch it — and a
 server that fetches a URL a user typed is an SSRF primitive.** The same code that loads a recipe blog
@@ -441,8 +464,8 @@ Every password field -- your own, a new user's, an admin's reset for someone els
 `PasswordInput`: masked, with a reveal toggle in the input's own `contentAfter` slot. Masked because
 a password on screen is a password over a shoulder; the toggle because an admin setting a temporary
 password has to read it back to pass it on, and a masked field with no reveal makes a typo invisible
-until the other person cannot sign in. The Settings password form is its own component mounted
-inside the dialog, so closing Settings without submitting takes the half-typed passwords with it.
+until the other person cannot sign in. The Account password form is its own component mounted
+inside the dialog, so closing Account without submitting takes the half-typed passwords with it.
 
 ## Why this stack
 
@@ -458,7 +481,7 @@ component: NavDrawer is the one Microsoft documents for exactly this, and it car
 categories, the overlay mode, the hamburger and a footer itself.
 
 **Where things go, when the other clients already decided.** Placements were checked against the
-Compose app rather than argued from taste — Edit classifiers at the foot of the rail, Settings as a
+Compose app rather than argued from taste — Manage classifiers at the foot of the rail, Settings as a
 single scrolling column, tabs only inside the classifier editor. See *The rail* above.
 
 **Branding is a ramp, not an override.** `createLightTheme`/`createDarkTheme` take a sixteen-step
@@ -731,6 +754,19 @@ Sharing the parser fixed a range along the way. `1-2 tsp` used to scale its firs
 the second ("2-2 tsp" at 2×); the shared split sees the range as one quantity, as the Swift scaler
 always has, and doubles both ends.
 
+**The scale takes any size** (2026-09-22). It was six fixed steps, 0.5× to 4×; now it is a Fluent
+`Combobox` between − and +. Type a size as a cook writes it — `1.5`, `1,5`, `1/2`, `1 1/3`, `½`,
+`1½`, `2x` — or pick one of the common sizes from its list (¼ ⅓ ½ ⅔ ¾ 1 1½ 2 3 4). − and + step
+between those common sizes from wherever the scale is, so + from a typed 1.25 is 1½. `parseScale`
+reads the box with the same number rules as the quantities it scales, so "1 1/3" is the exact third:
+3 tablespoons become 4, not 3.99. Typing applies on Enter or on leaving the box. Anything that isn't
+a size (including 0, and anything over 100×) puts the box back as it was, so a half-typed "1/"
+never blanks the page. Two Fluent behaviours that `ScaleControl` has to work around, both found by
+the browser test: Fluent answers Enter *before* the input's own handler by selecting whichever option
+is highlighted, whatever was typed; and it reports clearing its selection, which happens mid-typing,
+through `onOptionSelect` with no option. Escape in the box only cancels the typing or closes the list,
+so it doesn't also leave chef mode.
+
 The line under a recipe's name — course, yield, servings, difficulty — is **built as a list and
 joined once**, so a recipe with no yield does not read "Main ·  · Serves 6", and an empty line goes
 away rather than leaving a gap. Categories and tags are not drawn over the recipe: they are how you
@@ -768,6 +804,14 @@ overwrite what the upload just set.
 - **No `.saltyRecipe` file import.** The menu it belongs in exists; the format handling does not.
 - **Web import reads JSON-LD only.** A site that renders its recipe in the browser, or publishes
   microdata rather than JSON-LD, imports as "no recipe data found" — same as the native clients.
+- **Some big sites refuse the server's fetch.** Checked 2026-09-22 from a home connection, so not a
+  datacenter-IP problem: the server's Java `HttpClient` gets 403 from Food Network and, from
+  AllRecipes, a 200 page with no recipe data in it; curl gets 402/403. Apple's URLSession, sending the
+  same honest `Salty/1.0 (recipe import)` user agent, gets both real pages. The sites are judging the
+  HTTP client itself (its TLS/HTTP fingerprint), not the user agent or where the request comes from, so
+  the apps that fetch on the device do better than the server can. Disguising the server's client to
+  get past that isn't planned; a bookmarklet that hands the open page's JSON-LD to the editor is the
+  route that would cover these sites here.
 - **No Markdown preview.** The text area shows source, as the classic page did.
 - **No code splitting.** See the bundle note above.
 
@@ -812,7 +856,7 @@ quantities and leaves un-quantified lines alone; an ingredient's quantity is sem
 unit ("3 tablespoons", not a bare "3"), a count with no unit keeps the rest of its line intact, and a
 scaled quantity keeps the unit with the number; the editor opens on the recipe being read and its
 save reaches the database; chef mode takes the other panes away and Escape brings them back;
-Select mode in Edit classifiers merges two courses with the survivor the reader chose rather than
+Select mode in Manage classifiers merges two courses with the survivor the reader chose rather than
 the pre-picked one, and the database shows every recipe re-pointed and only the re-pointed ones
 restamped; it also deletes both courses at once after a confirmation that counts their four
 recipes, leaving no recipe naming a course and the ones that had one restamped;

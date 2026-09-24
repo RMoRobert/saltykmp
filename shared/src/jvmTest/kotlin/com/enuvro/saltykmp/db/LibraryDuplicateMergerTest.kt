@@ -72,6 +72,7 @@ class LibraryDuplicateMergerTest {
         assertEquals(listOf("A-cat"), categoryIds(db, moved))
         assertEquals(stamp, lastModified(db, moved), "membership travels on the recipe, so the clock must move")
         assertEquals(before, lastModified(db, untouched), "a recipe the fold didn't touch must not be re-uploaded")
+        assertEquals(setOf("B-cat"), local.tombstonedClassifierIds(LibraryClassifier.CATEGORY), "the loser is deleted on the server next sync")
     }
 
     @Test

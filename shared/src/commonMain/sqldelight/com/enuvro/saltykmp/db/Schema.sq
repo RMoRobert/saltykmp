@@ -145,3 +145,22 @@ CREATE TABLE "deletedRecipe" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "deletedDate" TEXT NOT NULL
 );
+
+-- The same for courses, categories and tags deleted locally (the editor, a duplicate merge). Sync deletes
+-- a server-only row only when it has one of these; any other server-only row is downloaded, however old.
+-- Also created on every open (ensureClassifierTombstoneTables), since the Swift app creates them only on
+-- its first classifier delete and a library it made may not have them yet. See ClassifierTombstones.kt.
+CREATE TABLE "deletedCourse" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "deletedDate" TEXT NOT NULL
+);
+
+CREATE TABLE "deletedCategory" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "deletedDate" TEXT NOT NULL
+);
+
+CREATE TABLE "deletedTag" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "deletedDate" TEXT NOT NULL
+);

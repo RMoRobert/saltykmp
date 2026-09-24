@@ -120,4 +120,5 @@ private fun ParsedRecipe.toServerRecipe(): ServerRecipe = ServerRecipe(
     ingredients = ingredients,
     directions = directions,
     preparationTimes = preparationTimes,
+    nutrition = nutrition,
 )

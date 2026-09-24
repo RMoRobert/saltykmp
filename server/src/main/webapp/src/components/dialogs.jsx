@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   Accordion,
   AccordionHeader,
@@ -86,7 +86,25 @@ const useStyles = makeStyles({
      the only text this small in the dialog, which made the one section that used it read as shrunk
      rather than as secondary -- and on a phone it was simply hard to read. */
   radioHint: { color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase300 },
+  kbd: {
+    fontFamily: tokens.fontFamilyMonospace,
+    fontSize: tokens.fontSizeBase200,
+    padding: `0 ${tokens.spacingHorizontalXS}`,
+    border: `1px solid ${tokens.colorNeutralStroke1}`,
+    borderRadius: tokens.borderRadiusSmall,
+    justifySelf: "start",
+  },
 });
+
+/** The shortcuts App and RecipeEditor handle, as this platform writes them. */
+const SAVE_KEYS = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘S" : "Ctrl+S";
+const SHORTCUTS = [
+  ["/", "Search recipes"],
+  ["N", "New recipe"],
+  ["E", "Edit the open recipe"],
+  [SAVE_KEYS, "Save, while editing"],
+  ["Esc", "Leave chef mode"],
+];
 
 /* ------------------------------------------------------------------ devices -- */
 
@@ -189,11 +207,11 @@ function Devices({ notify, ask }) {
   );
 }
 
-/* ------------------------------------------------------------- preferences -- */
+/* ------------------------------------------------- account and preferences -- */
 
 /**
- * The password section of Settings, as its own component so its state is the dialog's: closing
- * Settings without submitting unmounts this and takes the half-typed passwords with it, rather
+ * The password section of Account, as its own component so its state is the dialog's: closing
+ * Account without submitting unmounts this and takes the half-typed passwords with it, rather
  * than leaving them in memory for the next time the dialog opens.
  */
 function ChangePassword({ notify, onChanged }) {
@@ -243,11 +261,58 @@ function ChangePassword({ notify, onChanged }) {
   );
 }
 
+/**
+ * The signed-in account: its password, and the apps that sync with it.
+ *
+ * Off the account menu rather than in Settings, because these are facts about the account on the
+ * server -- change them here and every device sees it -- not preferences for this browser.
+ */
+export function AccountDialog({ open, onClose, notify, ask }) {
+  const styles = useStyles();
+
+  return (
+    <Dialog open={open} onOpenChange={(_, d) => !d.open && onClose()}>
+      <DialogSurface className={styles.wide}>
+        <DialogBody>
+          <DialogTitle
+            action={
+              <Tooltip content="Close" relationship="label">
+                <Button appearance="subtle" icon={<Dismiss24Regular />} onClick={onClose} />
+              </Tooltip>
+            }
+          >
+            Account
+          </DialogTitle>
+          <DialogContent>
+            <div className={styles.fields}>
+              <span className={styles.sub}>
+                Signed in as {SALTY.username || "—"}
+                {SALTY.isAdmin ? " (admin)" : ""}
+              </span>
+
+              <Subtitle2 as="h3">Password</Subtitle2>
+              <ChangePassword notify={notify} onChanged={onClose} />
+
+              <Subtitle2 as="h3">Apps and devices</Subtitle2>
+              {open ? <Devices notify={notify} ask={ask} /> : null}
+            </div>
+          </DialogContent>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
+  );
+}
+
+/**
+ * Settings: how the app looks and behaves in this browser.
+ *
+ * Everything here is stored in the browser, so it is per device by nature. What belongs to the account
+ * itself -- the password, the apps signed in to it -- is in AccountDialog, off the account menu, where
+ * people look for it and where it is kept apart from preferences that don't follow them around.
+ */
 export function PreferencesDialog({
   open,
   onClose,
-  notify,
-  ask,
   wakeLockPref,
   onWakeLockPref,
   listStyle,
@@ -314,11 +379,17 @@ export function PreferencesDialog({
                 </MessageBar>
               )}
 
-              <Subtitle2 as="h3">Password</Subtitle2>
-              <ChangePassword notify={notify} onChanged={onClose} />
-
-              <Subtitle2 as="h3">Apps and devices</Subtitle2>
-              {open ? <Devices notify={notify} ask={ask} /> : null}
+              {/* Listed here because nothing else shows them: they are on the controls only as
+                  aria-keyshortcuts, which a screen reader announces and nothing draws. */}
+              <Subtitle2 as="h3">Keyboard shortcuts</Subtitle2>
+              <div className={styles.kv}>
+                {SHORTCUTS.map(([keys, what]) => (
+                  <Fragment key={keys}>
+                    <kbd className={styles.kbd}>{keys}</kbd>
+                    <span>{what}</span>
+                  </Fragment>
+                ))}
+              </div>
 
               {/* Microsoft's own guidance for app settings puts About at the bottom of the
                   settings page, collapsed: "app information that isn't accessed very often, such
@@ -777,7 +848,7 @@ export function ManageLibraryDialog({
               </Tooltip>
             }
           >
-            Edit classifiers
+            Manage classifiers
           </DialogTitle>
           <DialogContent>
             <TabList selectedValue={kind} onTabSelect={(_, d) => showKind(d.value)}>
@@ -941,6 +1012,30 @@ export function ManageLibraryDialog({
 
 /* ------------------------------------------------------------------ import -- */
 
+/** File extensions for the formats the import sends a photo in -- the ones the upload accepts. */
+const PHOTO_EXTENSIONS = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif" };
+
+/**
+ * The page's photo as a file the editor can stage, or null when the import brought none.
+ *
+ * The server sends the photo beside the recipe rather than saving it, so it goes through the same
+ * pick-preview-save path as a photo chosen by hand and gets its thumbnail the same way. Dropping it
+ * here meant a web-editor import never had a photo, though every page the server read had offered one.
+ */
+function importedPhoto(result) {
+  const type = result?.imageContentType;
+  const extension = PHOTO_EXTENSIONS[type];
+  if (!result?.imageBase64 || !extension) return null;
+  try {
+    const text = atob(result.imageBase64);
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i);
+    return new File([bytes], `photo.${extension}`, { type });
+  } catch {
+    return null; // a photo is a nicety: a garbled one still imports the recipe
+  }
+}
+
 export function ImportDialog({ open, onClose, onImported, notify }) {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -953,17 +1048,20 @@ export function ImportDialog({ open, onClose, onImported, notify }) {
       const now = wireNow();
       // The import is a draft that exists only in this tab until Save: the id is minted here so it
       // sorts by when you created it, not by when the save happened to land.
-      onImported({
-        ...r,
-        id: uuidv7(),
-        createdDate: now,
-        lastModifiedDate: now,
-        categoryIds: [],
-        tagIds: [],
-        notes: r.notes ?? [],
-        variations: r.variations ?? [],
-        preparationTimes: r.preparationTimes ?? [],
-      });
+      onImported(
+        {
+          ...r,
+          id: uuidv7(),
+          createdDate: now,
+          lastModifiedDate: now,
+          categoryIds: [],
+          tagIds: [],
+          notes: r.notes ?? [],
+          variations: r.variations ?? [],
+          preparationTimes: r.preparationTimes ?? [],
+        },
+        { imageFile: importedPhoto(result) },
+      );
       setUrl("");
     } catch (e) {
       notify(e.message || "Could not import that page", "error");

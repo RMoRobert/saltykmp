@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   Button,
+  Combobox,
   Link,
   Menu,
   MenuDivider,
@@ -10,6 +11,7 @@ import {
   MenuList,
   MenuPopover,
   MenuTrigger,
+  Option,
   RatingDisplay,
   Subtitle2,
   Title1,
@@ -39,7 +41,18 @@ import {
 } from "@fluentui/react-icons";
 
 import { imageUrl } from "../api";
-import { SCALES, difficultyLabel, displayParts, formatDay, sourceLink, stepNumbers, wireNow } from "../model";
+import {
+  SCALE_PRESETS,
+  difficultyLabel,
+  displayParts,
+  formatDay,
+  parseScale,
+  scaleLabel,
+  sourceLink,
+  stepNumbers,
+  stepScale,
+  wireNow,
+} from "../model";
 
 const useStyles = makeStyles({
   bar: {
@@ -79,7 +92,14 @@ const useStyles = makeStyles({
     marginBottom: tokens.spacingVerticalS,
   },
   scaler: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalXXS },
-  scaleValue: { minWidth: "2.5rem", textAlign: "center", fontWeight: tokens.fontWeightSemibold },
+  /* Sized for "1½×" or "1.33×" plus the list's chevron. Fluent gives a Combobox a 250px minimum,
+     which here would push the heading beside it onto a line of its own on a phone. The value is
+     centred and semibold as the plain number it replaced was: the scale is read more than set. */
+  scaleBox: {
+    minWidth: 0,
+    width: "6.5rem",
+    "& input": { textAlign: "center", fontWeight: tokens.fontWeightSemibold, minWidth: 0 },
+  },
   list: { listStyle: "none", margin: 0, padding: 0, lineHeight: tokens.lineHeightBase400 },
   item: { paddingBlock: "2px", display: "flex", gap: tokens.spacingHorizontalS },
   bullet: { color: tokens.colorNeutralForeground3 },
@@ -95,13 +115,6 @@ const useStyles = makeStyles({
      takes colour on top of that weight. */
   scaled: { color: tokens.colorBrandForeground1 },
   stepNo: { color: tokens.colorNeutralForeground3, minWidth: "1.6rem" },
-  pairs: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(11rem, 1fr))",
-    gap: tokens.spacingVerticalS,
-    margin: 0,
-  },
-  pairTerm: { color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 },
   block: { marginBottom: tokens.spacingVerticalM },
   empty: {
     height: "100%",
@@ -138,6 +151,102 @@ const useStyles = makeStyles({
  * recipe, or cancelling a new one, left this on screen with the list unmounted, the rail unmounted,
  * and nothing at all to press.
  */
+/**
+ * How much of the recipe to show: − and + step between the common sizes, and the box between them
+ * takes any size typed as a cook would write it -- "1.5", "1/2", "1 1/3", "½", "2x" -- or picked from
+ * its list. See parseScale for what it reads.
+ *
+ * What is typed stays as typed until Enter or leaving the box. Then it becomes the scale, or, if it
+ * isn't one, the box goes back to the scale it had: a half-typed "1/" must not blank every quantity
+ * on the page while the second number is on its way. Escape abandons the typing the same way.
+ */
+function ScaleControl({ styles, factor, onChange }) {
+  const [typed, setTyped] = useState(null);
+  const [open, setOpen] = useState(false);
+  const shown = `${scaleLabel(factor)}×`;
+  const preset = SCALE_PRESETS.find((p) => Math.abs(p.value - factor) < 1e-9);
+  const down = stepScale(factor, -1);
+  const up = stepScale(factor, 1);
+
+  const commit = () => {
+    if (typed === null) return;
+    const value = parseScale(typed);
+    if (value !== null) onChange(value);
+    setTyped(null);
+  };
+
+  return (
+    <div className={styles.scaler}>
+      <Tooltip content="Scale down" relationship="label">
+        <Button
+          appearance="subtle"
+          size="small"
+          icon={<Subtract20Regular />}
+          disabled={down === null}
+          onClick={() => onChange(down)}
+        />
+      </Tooltip>
+      <Combobox
+        freeform
+        size="small"
+        aria-label="Scale"
+        className={styles.scaleBox}
+        value={typed ?? shown}
+        selectedOptions={preset ? [String(preset.value)] : []}
+        onChange={(e) => setTyped(e.target.value)}
+        onOptionSelect={(e, d) => {
+          // No option is Fluent clearing its selection because the typing no longer matches it --
+          // which is typing going on, not a choice, and must not throw the typed text away.
+          if (d.optionValue === undefined) return;
+          // Fluent handles Enter before onKeyDown below and selects whichever option is highlighted,
+          // matching the text or not, so "1/2" came out as whatever the list had lit up. Typed text
+          // is what Enter means; onKeyDown applies it next.
+          if (e.type === "keydown" && typed !== null) return;
+          const value = Number(d.optionValue);
+          if (value > 0) onChange(value);
+          setTyped(null);
+        }}
+        onOpenChange={(_, d) => setOpen(d.open)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            if (typed === null) return; // choosing a highlighted option: Fluent's to handle
+            commit();
+            // Still focused, so select the result: the next thing typed replaces it rather than
+            // being appended to "½×". After the render that puts the new value in the box.
+            const input = e.currentTarget;
+            setTimeout(() => input.select());
+          } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            setTyped(null); // moving through the list is choosing from it, not typing
+          } else if (e.key === "Escape" && (typed !== null || open)) {
+            // Escape here abandons the typing or closes the list, and that is all it does: chef
+            // mode's Escape listens on the window, and without this one press would do both.
+            e.stopPropagation();
+            setTyped(null);
+          }
+        }}
+        // Selecting the whole value on focus, so typing replaces "1×" rather than appending to it.
+        input={{ onFocus: (e) => e.target.select() }}
+      >
+        {SCALE_PRESETS.map((p) => (
+          <Option key={p.label} value={String(p.value)} text={`${p.label}×`}>
+            {`${p.label}×`}
+          </Option>
+        ))}
+      </Combobox>
+      <Tooltip content="Scale up" relationship="label">
+        <Button
+          appearance="subtle"
+          size="small"
+          icon={<Add20Regular />}
+          disabled={up === null}
+          onClick={() => onChange(up)}
+        />
+      </Tooltip>
+    </div>
+  );
+}
+
 function Placeholder({ styles, onBack }) {
   return (
     <>
@@ -173,7 +282,7 @@ export default function RecipeDetail({
   onExitChefMode,
 }) {
   const styles = useStyles();
-  const [scaleIdx, setScaleIdx] = useState(1);
+  const [factor, setFactor] = useState(1);
 
   // Fluent's type ramp is in rem, so enlarging the document leaves fixed-size headings looking
   // smaller than the body they head. Moving up the ramp keeps the hierarchy the right way round.
@@ -196,7 +305,6 @@ export default function RecipeDetail({
   const itemCls = mergeClasses(styles.item, chefMode && styles.chefItem);
   const subheadCls = mergeClasses(styles.heading, chefMode && styles.chefSubhead);
 
-  const factor = SCALES[scaleIdx];
   const courseName = courses.find((c) => c.id === recipe.courseId)?.name;
   const link = sourceLink(recipe);
   const img = imageUrl(recipe);
@@ -228,7 +336,7 @@ export default function RecipeDetail({
             <Button appearance="subtle" icon={<PlayCircle20Regular />} onClick={onEnterChefMode}>
               Chef mode
             </Button>
-            <Button appearance="outline" icon={<Edit20Regular />} onClick={onEdit}>
+            <Button appearance="outline" icon={<Edit20Regular />} onClick={onEdit} aria-keyshortcuts="E">
               Edit
             </Button>
             <Menu>
@@ -309,6 +417,9 @@ export default function RecipeDetail({
 
           {meta.length ? <p className={styles.meta}>{meta.join(" · ")}</p> : null}
 
+          {/* The times' one place on the page. They were also a Times section further down, the same
+              values again, which on a phone stacked into six lines of repetition. Up here they are
+              read before starting, which is when they matter. */}
           {times.length ? (
             <p className={styles.meta}>
               {times.map((t) => `${t.type} ${t.timeString}`.trim()).join(" · ")}
@@ -325,27 +436,7 @@ export default function RecipeDetail({
             <section className={sectionCls}>
               <div className={styles.sectionHead}>
                 <Heading as="h2">Ingredients</Heading>
-                <div className={styles.scaler}>
-                  <Tooltip content="Scale down" relationship="label">
-                    <Button
-                      appearance="subtle"
-                      size="small"
-                      icon={<Subtract20Regular />}
-                      disabled={scaleIdx === 0}
-                      onClick={() => setScaleIdx((i) => Math.max(0, i - 1))}
-                    />
-                  </Tooltip>
-                  <output className={styles.scaleValue}>{factor}×</output>
-                  <Tooltip content="Scale up" relationship="label">
-                    <Button
-                      appearance="subtle"
-                      size="small"
-                      icon={<Add20Regular />}
-                      disabled={scaleIdx === SCALES.length - 1}
-                      onClick={() => setScaleIdx((i) => Math.min(SCALES.length - 1, i + 1))}
-                    />
-                  </Tooltip>
-                </div>
+                <ScaleControl styles={styles} factor={factor} onChange={setFactor} />
               </div>
               <ul className={listCls}>
                 {ingredients.map((row) => {
@@ -407,20 +498,6 @@ export default function RecipeDetail({
                   ),
                 )}
               </ul>
-            </section>
-          ) : null}
-
-          {times.length ? (
-            <section className={sectionCls}>
-              <Heading as="h2">Times</Heading>
-              <dl className={styles.pairs}>
-                {times.map((t) => (
-                  <div key={t.id}>
-                    <dt className={styles.pairTerm}>{t.type}</dt>
-                    <dd style={{ margin: 0 }}>{t.timeString}</dd>
-                  </div>
-                ))}
-              </dl>
             </section>
           ) : null}
 

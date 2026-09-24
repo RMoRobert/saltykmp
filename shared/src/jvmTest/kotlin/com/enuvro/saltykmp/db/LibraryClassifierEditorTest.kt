@@ -66,6 +66,7 @@ class LibraryClassifierEditorTest {
         assertEquals(emptyList(), db.queriesQueries.selectCategoryIdsForRecipe(filed).executeAsList())
         assertEquals(stamp, lastModified(db, filed), "membership travels on the recipe, so the clock must move")
         assertEquals(before, lastModified(db, untouched), "a recipe the delete didn't touch must not be re-uploaded")
+        assertEquals(setOf("cat-1"), local.tombstonedClassifierIds(LibraryClassifier.CATEGORY), "so the next sync deletes it on the server")
     }
 
     @Test
@@ -97,6 +98,8 @@ class LibraryClassifierEditorTest {
         assertEquals(emptyList(), local.tags().map { it.id })
         assertEquals(emptyList(), db.queriesQueries.selectTagIdsForRecipe(both).executeAsList())
         assertEquals(stamp, lastModified(db, both))
+        assertEquals(setOf("tag-1", "tag-2"), local.tombstonedClassifierIds(LibraryClassifier.TAG))
+        assertEquals(emptySet(), local.tombstonedClassifierIds(LibraryClassifier.CATEGORY), "each kind has its own table")
     }
 
     @Test

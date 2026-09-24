@@ -59,6 +59,9 @@ class LibraryClassifierEditor(private val db: AppDatabase) {
                 }
             }
         }
+        // A deletion made here on purpose, so the next sync deletes it on the server rather than
+        // downloading the server's copy back as a row this device never had.
+        q.recordClassifierTombstones(kind, ids)
         touched.forEach { q.touchRecipeLastModified(lastModifiedDate = now, id = it) }
         return touched.size
     }

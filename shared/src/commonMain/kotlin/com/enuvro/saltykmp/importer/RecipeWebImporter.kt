@@ -45,6 +45,7 @@ class RecipeWebImporter(engine: HttpClientEngine) {
     suspend fun import(url: String): WebImportResult {
         val target = normalize(url) ?: return WebImportResult.Failed("Enter a web address starting with http:// or https://.")
 
+        var pageUrl = target
         val html = runCatching {
             val response = client.get(target) {
                 // Some sites serve a stub to unknown agents; identify honestly but recognizably.
@@ -52,6 +53,8 @@ class RecipeWebImporter(engine: HttpClientEngine) {
                 header("Accept", "text/html,application/xhtml+xml")
             }
             if (!response.status.isSuccess()) return WebImportResult.Failed(httpMessage(response.status))
+            // Where the page actually came from, which is not where we asked when it redirected.
+            pageUrl = response.call.request.url.toString()
             // A BOUNDED read. `bodyAsText()` pulled the whole response into memory first and the parser's
             // cap then rejected it afterwards, which is the wrong order: a hostile or merely enormous
             // page was already resident by the time anything objected. One byte past the cap is enough
@@ -62,12 +65,10 @@ class RecipeWebImporter(engine: HttpClientEngine) {
                 .decodeToString()
         }.getOrElse { return WebImportResult.Failed("Couldn't load that page: ${it.message ?: "network error"}") }
 
-        val parsed = SchemaOrgRecipeParser.parse(html).firstOrNull() ?: return WebImportResult.NoRecipeFound
-
-        // Plenty of sites — AllRecipes among them — publish a Recipe with no `url` in it. The address is
-        // the one thing about an imported recipe we always know, and recording where it came from is
-        // what this field is for.
-        val recipe = if (parsed.sourceDetails.isBlank()) parsed.copy(sourceDetails = target) else parsed
+        // The address goes along because plenty of sites — AllRecipes among them — publish a Recipe with
+        // no `url` in it, and the parser records where the page came from in its place (contract WEB-020);
+        // relative addresses on the page resolve against it too (WEB-011).
+        val recipe = SchemaOrgRecipeParser.parse(html, pageUrl).firstOrNull() ?: return WebImportResult.NoRecipeFound
 
         // The photo is a nicety: a failure here still imports the recipe.
         val imageBytes = recipe.imageUrl?.let { downloadImage(it) }

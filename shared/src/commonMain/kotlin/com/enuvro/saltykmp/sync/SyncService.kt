@@ -5,6 +5,7 @@ import com.enuvro.saltykmp.api.ServerCategory
 import com.enuvro.saltykmp.api.ServerCourse
 import com.enuvro.saltykmp.api.ServerShoppingList
 import com.enuvro.saltykmp.api.ServerTag
+import com.enuvro.saltykmp.db.LibraryClassifier
 import com.enuvro.saltykmp.db.LibraryDuplicateMerger
 import com.enuvro.saltykmp.util.newId
 import kotlinx.coroutines.CancellationException
@@ -169,8 +170,9 @@ class SyncService(
      * being moved, or opened before a file sync finished bringing it down. This direction loses the
      * shared copy rather than one device's.
      *
-     * Nothing legitimate is blocked: a recipe deleted on purpose travels as a tombstone on its own
-     * path, and emptying a collection outright is what "Delete Server, Push from Local" is for.
+     * Only shopping lists still infer server deletions, so only they consult it now. Recipes and
+     * courses/categories/tags deleted on purpose travel as tombstones on their own path, which this must
+     * not block, and emptying a collection outright is what "Delete Server, Push from Local" is for.
      */
     private fun allowsServerDeletions(localItemCount: Int, pendingServerDeletions: Int, entity: String): String? =
         if (SyncReconciler.allowsDeletions(localItemCount, pendingServerDeletions)) {
@@ -272,6 +274,10 @@ class SyncService(
         val courses = local.courses()
         val categories = local.categories()
         val tags = local.tags()
+        // Deletions recorded so far are carried out by the mirroring below (those rows are absent here,
+        // so their server copies go) and cleared at the end. Only these: one recorded while this runs is
+        // for a row that was just pushed, and must still reach the server.
+        val classifierTombstones = LibraryClassifier.entries.associateWith { local.tombstonedClassifierIds(it) }
         courses.forEach { api.uploadCourse(it, force = true) }
         categories.forEach { api.uploadCategory(it, force = true) }
         tags.forEach { api.uploadTag(it, force = true) }
@@ -324,6 +330,7 @@ class SyncService(
         // re-uploading every never-agreed row — and from resurrecting a recipe deleted elsewhere
         // between this push and that sync (SHARED-V0005).
         local.clearRecipeTombstones(local.tombstonedRecipeIds())
+        classifierTombstones.forEach { (kind, ids) -> local.clearClassifierTombstones(kind, ids) }
         local.markAllRecipesAgreed()
         local.markAllClassifiersAgreed()
 
@@ -336,19 +343,35 @@ class SyncService(
     }
 
     private suspend fun syncRecipes(isFirstSync: Boolean, lastSync: Instant?, lastSyncWire: String?): Counts {
+        report(SyncPhase.PLANNING)
+        // Complete manifest drives reconciliation; delta carries only changed bodies. Fetched BEFORE the
+        // tombstones are pushed, so each can be checked against the server's copy first.
+        val fullManifest = api.fetchManifest()
+
         // Locally-deleted recipes: push the deletions to the server and exclude them from the manifest
         // so the reconciler can never re-download them (delete-by-absence alone would resurrect a recipe
         // whose server copy changed since our last sync).
-        val tombstones = local.tombstonedRecipeIds().toSet()
+        //
+        // An edit still beats a delete (SYNC-013): a recipe edited on another device since this one last
+        // synced keeps that edit. Its tombstone is dropped instead of pushed, and the recipe is reconciled
+        // like any other server-only row — downloaded, edit included. The Swift app does the same.
+        var tombstones = local.tombstonedRecipeIds().toSet()
         if (tombstones.isNotEmpty()) {
-            report(SyncPhase.APPLYING_DELETIONS)
-            api.deleteRecipesOnServer(deviceId, tombstones.toList())
-            local.clearRecipeTombstones(tombstones)
+            val manifestById = fullManifest.associateBy { it.id }
+            val editedSinceDeleted = tombstones.filterTo(mutableSetOf()) { id ->
+                val entry = manifestById[id] ?: return@filterTo false
+                SyncReconciler.changedSinceLastSync(LocalStore.parseOrPast(entry.lastModifiedDate), isFirstSync, lastSync)
+            }
+            if (editedSinceDeleted.isNotEmpty()) {
+                local.clearRecipeTombstones(editedSinceDeleted)
+                tombstones = tombstones - editedSinceDeleted
+            }
+            if (tombstones.isNotEmpty()) {
+                report(SyncPhase.APPLYING_DELETIONS)
+                api.deleteRecipesOnServer(deviceId, tombstones.toList())
+                local.clearRecipeTombstones(tombstones)
+            }
         }
-
-        report(SyncPhase.PLANNING)
-        // Complete manifest drives reconciliation; delta carries only changed bodies.
-        val fullManifest = api.fetchManifest()
         val manifest = fullManifest.filter { it.id !in tombstones }
         val cutoff = if (isFirstSync) null else lastSyncWire
         val delta = api.fetchRecipeDelta(cutoff)
@@ -379,7 +402,7 @@ class SyncService(
          * slightly older library, ends the same way.
          *
          * Nothing is lost by taking the row instead: a recipe deleted here ON PURPOSE travels as a
-         * TOMBSTONE, uploaded and cleared at the top of this method, which is evidence rather than a
+         * TOMBSTONE, pushed and cleared before planning, which is evidence rather than a
          * guess. What this gives up is the case where the tombstone itself is gone -- a reinstall, a
          * restore from backup -- and there the recipe comes back rather than being destroyed, which is
          * the direction Salty prefers everywhere else ("an edit beats a delete"). Downloading rather
@@ -783,11 +806,13 @@ class SyncService(
         // Agreement-tracked (SHARED-V0006), exactly like recipes: a row that exists here and not on
         // the server is classified by its recorded stamp, never by comparing clocks to the watermark.
         val localEntries = local.courseEntries()
-        val plan = SyncReconciler.plan(
+        // Server-only rows are downloaded unless a tombstone records deleting them here (see
+        // SyncReconciler.planClassifiers) — never deleted on the server on clock evidence alone.
+        val (plan, settled) = SyncReconciler.planClassifiers(
             local = localEntries,
             server = server.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
             isFirstSync = isFirstSync, lastSyncDate = lastSync,
-            tracksAgreement = true,
+            tombstones = local.tombstonedClassifierIds(LibraryClassifier.COURSE),
         )
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadCourse(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertCourse(it) } }
@@ -804,10 +829,11 @@ class SyncService(
         // changed after our fetch (e.g. a web rename racing this sync) is downloaded, not deleted.
         var deletedOnServer = 0
         var conflictDownloads = 0
-        // And the mirror: an empty local collection must not ask the server to drop its own (SYNC-016).
-        val serverRefusal = allowsServerDeletions(localEntries.size, plan.toDeleteOnServer.size, "course")
-        if (serverRefusal != null) warnings += serverRefusal
-        (if (serverRefusal != null) emptyList() else plan.toDeleteOnServer).forEach { id ->
+        // Only tombstoned rows reach here, each a deletion recorded rather than inferred, so there is
+        // no empty-library guard (SYNC-016): deleting every tag is legitimate, and a guard would
+        // refuse it on every sync forever.
+        val settledTombstones = settled.toMutableSet()
+        plan.toDeleteOnServer.forEach { id ->
             when (val out = api.deleteCourse(id, expectedLastModified = serverById[id]?.lastModifiedDate)) {
                 SaltyApiClient.LibraryDeleteOutcome.Deleted -> deletedOnServer++
                 is SaltyApiClient.LibraryDeleteOutcome.Conflict -> {
@@ -815,7 +841,9 @@ class SyncService(
                     conflictDownloads++
                 }
             }
+            settledTombstones += id
         }
+        local.clearClassifierTombstones(LibraryClassifier.COURSE, settledTombstones)
         // Record what this pass agreed on (SHARED-V0006); see the recipe pass for why these three
         // groups are one statement, and why anything just deleted — including deletions the guard
         // refused — must stay unstamped.
@@ -843,11 +871,13 @@ class SyncService(
         // Agreement-tracked (SHARED-V0006), exactly like recipes: a row that exists here and not on
         // the server is classified by its recorded stamp, never by comparing clocks to the watermark.
         val localEntries = local.categoryEntries()
-        val plan = SyncReconciler.plan(
+        // Server-only rows are downloaded unless a tombstone records deleting them here (see
+        // SyncReconciler.planClassifiers) — never deleted on the server on clock evidence alone.
+        val (plan, settled) = SyncReconciler.planClassifiers(
             local = localEntries,
             server = server.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
             isFirstSync = isFirstSync, lastSyncDate = lastSync,
-            tracksAgreement = true,
+            tombstones = local.tombstonedClassifierIds(LibraryClassifier.CATEGORY),
         )
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadCategory(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertCategory(it) } }
@@ -863,10 +893,11 @@ class SyncService(
         // Conditional server deletes — see syncCourses.
         var deletedOnServer = 0
         var conflictDownloads = 0
-        // And the mirror: an empty local collection must not ask the server to drop its own (SYNC-016).
-        val serverRefusal = allowsServerDeletions(localEntries.size, plan.toDeleteOnServer.size, "category")
-        if (serverRefusal != null) warnings += serverRefusal
-        (if (serverRefusal != null) emptyList() else plan.toDeleteOnServer).forEach { id ->
+        // Only tombstoned rows reach here, each a deletion recorded rather than inferred, so there is
+        // no empty-library guard (SYNC-016): deleting every tag is legitimate, and a guard would
+        // refuse it on every sync forever.
+        val settledTombstones = settled.toMutableSet()
+        plan.toDeleteOnServer.forEach { id ->
             when (val out = api.deleteCategory(id, expectedLastModified = serverById[id]?.lastModifiedDate)) {
                 SaltyApiClient.LibraryDeleteOutcome.Deleted -> deletedOnServer++
                 is SaltyApiClient.LibraryDeleteOutcome.Conflict -> {
@@ -874,7 +905,9 @@ class SyncService(
                     conflictDownloads++
                 }
             }
+            settledTombstones += id
         }
+        local.clearClassifierTombstones(LibraryClassifier.CATEGORY, settledTombstones)
         // Record what this pass agreed on (SHARED-V0006); see the recipe pass for why these three
         // groups are one statement, and why anything just deleted — including deletions the guard
         // refused — must stay unstamped.
@@ -902,11 +935,13 @@ class SyncService(
         // Agreement-tracked (SHARED-V0006), exactly like recipes: a row that exists here and not on
         // the server is classified by its recorded stamp, never by comparing clocks to the watermark.
         val localEntries = local.tagEntries()
-        val plan = SyncReconciler.plan(
+        // Server-only rows are downloaded unless a tombstone records deleting them here (see
+        // SyncReconciler.planClassifiers) — never deleted on the server on clock evidence alone.
+        val (plan, settled) = SyncReconciler.planClassifiers(
             local = localEntries,
             server = server.map { SyncReconciler.Entry(it.id, LocalStore.parseOrPast(it.lastModifiedDate)) },
             isFirstSync = isFirstSync, lastSyncDate = lastSync,
-            tracksAgreement = true,
+            tombstones = local.tombstonedClassifierIds(LibraryClassifier.TAG),
         )
         plan.toUpload.forEach { id -> localById[id]?.let { api.uploadTag(it) } }
         plan.toDownload.forEach { id -> serverById[id]?.let { local.upsertTag(it) } }
@@ -922,10 +957,11 @@ class SyncService(
         // Conditional server deletes — see syncCourses.
         var deletedOnServer = 0
         var conflictDownloads = 0
-        // And the mirror: an empty local collection must not ask the server to drop its own (SYNC-016).
-        val serverRefusal = allowsServerDeletions(localEntries.size, plan.toDeleteOnServer.size, "tag")
-        if (serverRefusal != null) warnings += serverRefusal
-        (if (serverRefusal != null) emptyList() else plan.toDeleteOnServer).forEach { id ->
+        // Only tombstoned rows reach here, each a deletion recorded rather than inferred, so there is
+        // no empty-library guard (SYNC-016): deleting every tag is legitimate, and a guard would
+        // refuse it on every sync forever.
+        val settledTombstones = settled.toMutableSet()
+        plan.toDeleteOnServer.forEach { id ->
             when (val out = api.deleteTag(id, expectedLastModified = serverById[id]?.lastModifiedDate)) {
                 SaltyApiClient.LibraryDeleteOutcome.Deleted -> deletedOnServer++
                 is SaltyApiClient.LibraryDeleteOutcome.Conflict -> {
@@ -933,7 +969,9 @@ class SyncService(
                     conflictDownloads++
                 }
             }
+            settledTombstones += id
         }
+        local.clearClassifierTombstones(LibraryClassifier.TAG, settledTombstones)
         // Record what this pass agreed on (SHARED-V0006); see the recipe pass for why these three
         // groups are one statement, and why anything just deleted — including deletions the guard
         // refused — must stay unstamped.

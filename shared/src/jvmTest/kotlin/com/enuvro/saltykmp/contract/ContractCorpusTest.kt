@@ -30,7 +30,8 @@ import kotlin.time.Instant
 
 /**
  * Runs the shared conformance corpus (`salty-contract/corpus`) against this client's implementation.
- * The Swift and .NET cores run the same cases through their own runners.
+ * The Swift core runs the same cases through its own runner (and SaltyUno runs the Swift core's web
+ * import through its FFI).
  *
  * This suite deliberately holds no expected values of its own — they all live in the corpus, so adding
  * a case there adds it to three clients at once. What lives here is only the mapping from a corpus
@@ -51,6 +52,7 @@ class ContractCorpusTest {
     @Test fun ids() = runSuite("ids")
     @Test fun migrations() = runSuite("migrations")
     @Test fun reconciler() = runSuite("reconciler")
+    @Test fun webimport() = runSuite("webimport")
 
     private fun runSuite(suite: String) {
         val cases = allCases.filter { it.suite == suite }
@@ -175,6 +177,10 @@ class ContractCorpusTest {
             "reconcile" -> assertReconcile(c)
 
             "deletion_guard" -> assertDeletionGuard(c)
+
+            // ---- web import ----------------------------------------------------------------------
+
+            "scan_web_recipes" -> assertWebImport(c)
 
             else -> fail(
                 "Unmapped corpus op '${c.op}' in ${c.id}.\n" +

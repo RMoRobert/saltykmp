@@ -45,7 +45,26 @@ export const newRow = (text = "", extra = {}) => ({ id: uuidv7(), text, ...extra
 
 /* -------------------------------------------------------------------- scaling -- */
 
-export const SCALES = [0.5, 1, 1.5, 2, 3, 4];
+/**
+ * The common sizes: the scale's list offers them, and − / + step between them from wherever the scale
+ * is. Anything else can be typed (see parseScale). Thirds and quarters are here because halving isn't
+ * the only way a recipe gets cut down -- a 9-serving dish for 3 is ⅓.
+ */
+export const SCALE_PRESETS = [
+  { value: 1 / 4, label: "¼" },
+  { value: 1 / 3, label: "⅓" },
+  { value: 1 / 2, label: "½" },
+  { value: 2 / 3, label: "⅔" },
+  { value: 3 / 4, label: "¾" },
+  { value: 1, label: "1" },
+  { value: 1.5, label: "1½" },
+  { value: 2, label: "2" },
+  { value: 3, label: "3" },
+  { value: 4, label: "4" },
+];
+
+/** Past this a typo is likelier than a banquet, and every quantity would read as a wall of digits. */
+export const MAX_SCALE = 100;
 
 const FRACTIONS = [
   [1, 8, "1/8"], [1, 4, "1/4"], [1, 3, "1/3"], [3, 8, "3/8"], [1, 2, "1/2"],
@@ -215,6 +234,50 @@ export function displayParts(row, factor) {
   const scaled = scaleQuantityString(parts.quantity, factor);
   if (scaled === null) return { quantity: "", remainder: text };
   return { quantity: scaled, remainder: parts.remainder };
+}
+
+/** The single-character fractions a keyboard, a phone or a pasted recipe can produce. */
+const VULGAR_FRACTIONS = {
+  "¼": "1/4", "½": "1/2", "¾": "3/4", "⅓": "1/3", "⅔": "2/3",
+  "⅛": "1/8", "⅜": "3/8", "⅝": "5/8", "⅞": "7/8", "⅕": "1/5", "⅙": "1/6",
+};
+const WHOLE_SCALE_RE = new RegExp(String.raw`^${NUMBER}$`);
+
+/**
+ * A scale as a person types it, or null when it isn't one: "1.5", "1,5", "1/2", "1 1/2", "½", "1½",
+ * ".5", with or without a trailing "x" or "×". Read with the same number rules as the quantities it
+ * scales (amountOf), so "1 1/2" means the same thing in the box as it does in an ingredient line.
+ *
+ * Only more than nothing and at most MAX_SCALE: a zero would blank every quantity on the page.
+ */
+export function parseScale(text) {
+  let t = String(text ?? "").trim().replace(/\s*[x×]$/i, "");
+  // "1½" is "1 1/2": the fraction gets its own token, then its slash spelling.
+  t = t.replace(/(\d)\s*([¼½¾⅓⅔⅛⅜⅝⅞⅕⅙])/g, "$1 $2").replace(/[¼½¾⅓⅔⅛⅜⅝⅞⅕⅙]/g, (c) => VULGAR_FRACTIONS[c]);
+  // A decimal comma, as half of Europe writes it. Never a thousands separator: nothing that size
+  // is a scale.
+  t = t.replace(/(\d),(\d)/g, "$1.$2");
+  if (!WHOLE_SCALE_RE.test(t)) return null;
+  const v = amountOf(t);
+  return v !== null && v > 0 && v <= MAX_SCALE ? v : null;
+}
+
+/** A scale as the control shows it: a common size by its label ("1½"), anything else as "1.33". */
+export function scaleLabel(factor) {
+  const preset = SCALE_PRESETS.find((p) => Math.abs(p.value - factor) < 1e-9);
+  return preset ? preset.label : String(Math.round(factor * 100) / 100);
+}
+
+/**
+ * The next common size above (direction > 0) or below the scale, or null when there is none that way.
+ * From a typed 1.33, + is 1½ and − is 1: stepping lands back on the sizes people choose.
+ */
+export function stepScale(factor, direction) {
+  const found =
+    direction > 0
+      ? SCALE_PRESETS.find((p) => p.value > factor + 1e-9)
+      : SCALE_PRESETS.findLast((p) => p.value < factor - 1e-9);
+  return found ? found.value : null;
 }
 
 /* ------------------------------------------------------------------ ordering -- */

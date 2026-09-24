@@ -287,6 +287,52 @@ WHERE id = ?;
 deleteAllTombstones:
 DELETE FROM deletedRecipe;
 
+-- Course / category / tag deletion tombstones (see ClassifierTombstones.kt)
+insertDeletedCourse:
+INSERT OR REPLACE INTO deletedCourse(id, deletedDate)
+VALUES (?, ?);
+
+selectDeletedCourseIds:
+SELECT id
+FROM deletedCourse;
+
+deleteCourseTombstone:
+DELETE FROM deletedCourse
+WHERE id = ?;
+
+deleteAllCourseTombstones:
+DELETE FROM deletedCourse;
+
+insertDeletedCategory:
+INSERT OR REPLACE INTO deletedCategory(id, deletedDate)
+VALUES (?, ?);
+
+selectDeletedCategoryIds:
+SELECT id
+FROM deletedCategory;
+
+deleteCategoryTombstone:
+DELETE FROM deletedCategory
+WHERE id = ?;
+
+deleteAllCategoryTombstones:
+DELETE FROM deletedCategory;
+
+insertDeletedTag:
+INSERT OR REPLACE INTO deletedTag(id, deletedDate)
+VALUES (?, ?);
+
+selectDeletedTagIds:
+SELECT id
+FROM deletedTag;
+
+deleteTagTombstone:
+DELETE FROM deletedTag
+WHERE id = ?;
+
+deleteAllTagTombstones:
+DELETE FROM deletedTag;
+
 -- Filtered recipe lists (for the navigation drawer: by course / category / tag)
 selectRecipesByCourse:
 SELECT *

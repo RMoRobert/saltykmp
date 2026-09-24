@@ -197,7 +197,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -1762,7 +1765,17 @@ private fun RecipeListPane(
                                     .combinedClickable(
                                         onClick = { shell.onScreen(Screen.Detail(recipe.id)) },
                                         onLongClick = { rowMenuOffset = DpOffset.Zero; rowMenu = true },
-                                    ),
+                                    )
+                                    // One description for screen readers in place of the row's pieces
+                                    // (see recipeRowDescription), with its two actions restated because
+                                    // this clears whatever the row's children would have said.
+                                    .clearAndSetSemantics {
+                                        contentDescription = recipeRowDescription(
+                                            recipe.name, recipe.rating, recipe.isFavorite, subtitle,
+                                        )
+                                        onClick { shell.onScreen(Screen.Detail(recipe.id)); true }
+                                        onLongClick { rowMenuOffset = DpOffset.Zero; rowMenu = true; true }
+                                    },
                             )
                             // Long-press acts on the row without opening it — the same set the Swift
                             // app's context menu offers. It used to open straight into the last-prepared
@@ -2070,7 +2083,7 @@ private fun SaltyDrawerContents(shell: AppShell, onNavigated: () -> Unit = {}) {
         // which of the three you're editing is a tab inside the editor, not a menu hung off this row.
         DrawerDestination(
             icon = Icons.Outlined.Edit,
-            label = "Edit Classifiers",
+            label = "Manage Classifiers",
             selected = shell.screen == Screen.ManageClassifiers,
             onClick = { shell.onScreen(Screen.ManageClassifiers); onNavigated() },
         )
@@ -3856,7 +3869,7 @@ private fun ClassifierEditScreen(module: AppModule, onBack: () -> Unit) {
                                     keyboardOptions = SaltyKeyboardOptions,
                                 )
                             } else {
-                                Text("Edit Classifiers")
+                                Text("Manage Classifiers")
                             }
                         },
                         navigationIcon = {

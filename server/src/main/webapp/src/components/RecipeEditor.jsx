@@ -537,9 +537,12 @@ function EditableList({ styles, title, rows, onRows, allowMain, multiline, asTex
  * `unsaved` says the recipe has never been written -- a blank new one, or the draft a web import
  * handed back. Nothing on the server holds either, so leaving one that has content in it loses
  * that content, and the guard has to know that even though nothing has been *typed* into it.
+ *
+ * `initialImageFile` is a photo to start with staged, not yet saved: the one a web import brought.
  */
 export default function RecipeEditor({
   recipe,
+  initialImageFile,
   unsaved,
   courses,
   categories,
@@ -552,7 +555,8 @@ export default function RecipeEditor({
 }) {
   const styles = useStyles();
   const [draft, setDraft] = useState(recipe);
-  const [imageFile, setImageFile] = useState(null);
+  // Read once: an import's photo arrives staged, as if picked here, and is the editor's from then on.
+  const [imageFile, setImageFile] = useState(initialImageFile ?? null);
   const [imageRemoved, setImageRemoved] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -590,6 +594,26 @@ export default function RecipeEditor({
     setSaving(false);
   };
 
+  // ⌘S / Ctrl+S saves, as in any editor, and never falls through to the browser's "Save page as",
+  // which is never what it means here. Not while a dialog is over the editor: Edit as text holds
+  // text it has not applied yet, and saving underneath it would store the list without it. The
+  // listener reads the current save through a ref rather than being rebound on every keystroke;
+  // null while a save is in flight, so holding the keys down saves once.
+  const saveRef = useRef(null);
+  useEffect(() => {
+    saveRef.current = saving ? null : save;
+  });
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "s") return;
+      e.preventDefault();
+      if (e.repeat || document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+      saveRef.current?.();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <>
       <div className={styles.bar}>
@@ -598,7 +622,7 @@ export default function RecipeEditor({
         <Button appearance="subtle" onClick={onCancel} disabled={saving}>
           Cancel
         </Button>
-        <Button appearance="primary" onClick={save} disabled={saving}>
+        <Button appearance="primary" onClick={save} disabled={saving} aria-keyshortcuts="Meta+S Control+S">
           {saving ? "Saving…" : "Save"}
         </Button>
       </div>

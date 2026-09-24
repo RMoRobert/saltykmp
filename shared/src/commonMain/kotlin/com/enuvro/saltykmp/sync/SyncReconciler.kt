@@ -134,4 +134,62 @@ object SyncReconciler {
 
         return Plan(toUpload, toDownload, toDeleteLocally, toDeleteOnServer)
     }
+
+    /**
+     * True when a server copy changed after this device's last sync: the "edit beats a delete" test
+     * (SYNC-013) a tombstone must pass before it is pushed. Never true on a first sync, or without a
+     * watermark: there is then no edit to prove, and the recorded deletion stands.
+     */
+    fun changedSinceLastSync(serverModified: Instant, isFirstSync: Boolean, lastSyncDate: Instant?): Boolean =
+        !isFirstSync && lastSyncDate != null && serverModified > lastSyncDate
+
+    /** [plan] for a classifier table, plus the tombstones it settles without a request. */
+    data class ClassifierPlan(val plan: Plan, val settledTombstones: Set<String>)
+
+    /**
+     * [plan] for courses, categories and tags, with the server-only half decided by TOMBSTONES instead
+     * of the watermark. A server-only row is deleted on the server only when [tombstones] records that it
+     * was deleted here and its server copy hasn't changed since this device's last sync — an edit beats a
+     * delete, the rule recipe tombstones follow in the Swift app. Every other server-only row is
+     * downloaded, however old: an absence alone proves nothing, since this device may never have had the
+     * row (a restored backup, another app's library, a row another client uploaded with its original date).
+     *
+     * [ClassifierPlan.settledTombstones] are those that need no request: rows that are back here, rows the
+     * server no longer has, and tombstoned rows downloaded because they were edited. The ones in
+     * [Plan.toDeleteOnServer] settle when their delete goes through.
+     *
+     * Local-only rows are decided exactly as [plan] decides them (agreement stamps, SHARED-V0006).
+     *
+     * Mirror: the Swift `ServerSyncEngine` classifier passes (`serverCopyChangedSinceLastSync`), whose
+     * test is [changedSinceLastSync].
+     */
+    fun planClassifiers(
+        local: List<Entry>,
+        server: List<Entry>,
+        isFirstSync: Boolean,
+        lastSyncDate: Instant?,
+        tombstones: Set<String>,
+    ): ClassifierPlan {
+        val base = plan(local, server, isFirstSync, lastSyncDate, tracksAgreement = true)
+        val localIds = local.mapTo(mutableSetOf()) { it.id }
+        val serverIds = server.mapTo(mutableSetOf()) { it.id }
+
+        // Keep the two-sided downloads (server newer); the server-only ones are re-decided below.
+        val toDownload = base.toDownload.filterTo(mutableListOf()) { it in localIds }
+        val toDeleteOnServer = mutableListOf<String>()
+        val settled = tombstones.filterTo(mutableSetOf()) { it in localIds || it !in serverIds }
+
+        for (s in server.distinctBy { it.id }) {
+            if (s.id in localIds) continue
+            val tombstoned = s.id in tombstones
+            if (tombstoned && !changedSinceLastSync(s.lastModified, isFirstSync, lastSyncDate)) {
+                toDeleteOnServer += s.id
+            } else {
+                toDownload += s.id
+                if (tombstoned) settled += s.id
+            }
+        }
+
+        return ClassifierPlan(base.copy(toDownload = toDownload, toDeleteOnServer = toDeleteOnServer), settled)
+    }
 }

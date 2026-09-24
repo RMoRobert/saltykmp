@@ -100,6 +100,24 @@ class ReactUiSmokeTest {
              "recipeInstructions":[{"@type":"HowToStep","text":"Heat the pan."}]}
             </script></head><body>Pancakes</body></html>
         """.trimIndent()
+
+        /** The same, with a photo -- given relative, as real pages often do, so it resolves against the page. */
+        private val IMPORTABLE_PAGE_WITH_PHOTO = """
+            <!doctype html><html><head>
+            <script type="application/ld+json">
+            {"@context":"https://schema.org","@type":"Recipe",
+             "name":"Photo Pancakes",
+             "image":"/photo.png",
+             "recipeIngredient":["1 cup flour"],
+             "recipeInstructions":[{"@type":"HowToStep","text":"Heat the pan."}]}
+            </script></head><body>Pancakes</body></html>
+        """.trimIndent()
+
+        private val PHOTO_PNG: ByteArray by lazy {
+            val img = java.awt.image.BufferedImage(64, 48, java.awt.image.BufferedImage.TYPE_INT_RGB)
+            img.createGraphics().apply { color = java.awt.Color.ORANGE; fillRect(0, 0, 64, 48); dispose() }
+            java.io.ByteArrayOutputStream().also { javax.imageio.ImageIO.write(img, "png", it) }.toByteArray()
+        }
     }
 
     private var recipeSite: HttpServer? = null
@@ -205,12 +223,15 @@ class ReactUiSmokeTest {
         // The import runs against a loopback address, so this server is given a policy that permits
         // loopback specifically -- everything else still goes through the real one.
         recipeSite = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
-            createContext("/recipe") { exchange ->
-                val bytes = IMPORTABLE_PAGE.toByteArray()
-                exchange.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
+            fun serve(path: String, type: String, body: () -> ByteArray) = createContext(path) { exchange ->
+                val bytes = body()
+                exchange.responseHeaders.add("Content-Type", type)
                 exchange.sendResponseHeaders(200, bytes.size.toLong())
                 exchange.responseBody.use { it.write(bytes) }
             }
+            serve("/recipe", "text/html; charset=utf-8") { IMPORTABLE_PAGE.toByteArray() }
+            serve("/photo-recipe", "text/html; charset=utf-8") { IMPORTABLE_PAGE_WITH_PHOTO.toByteArray() }
+            serve("/photo.png", "image/png") { PHOTO_PNG }
             start()
         }
         sitePort = recipeSite!!.address.port
@@ -310,6 +331,67 @@ class ReactUiSmokeTest {
         // 3 tablespoons at 1.5x, and 1/2 cup becoming 3/4 rather than 0.75.
         assertTrue(page.getByText("4 1/2").first().isVisible, "3 → 4 1/2 at 1.5×")
         assertTrue(page.getByText("3/4").first().isVisible, "1/2 → 3/4 at 1.5×")
+        page.close()
+    }
+
+    /**
+     * The scale takes any size, typed as a cook writes it or picked from its list, and − / + step
+     * between the common sizes from wherever it is. Something that isn't a size changes nothing.
+     */
+    @Test
+    fun theScaleTakesAnySizeTypedOrPicked() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+        val scale = page.getByRole(AriaRole.COMBOBOX, Page.GetByRoleOptions().setName("Scale"))
+        fun tablespoons(text: String) =
+            page.getByText("$text tablespoons", Page.GetByTextOptions().setExact(true)).first().isVisible
+
+        fun type(text: String) {
+            scale.fill(text)
+            scale.press("Enter")
+        }
+
+        type("1/2")
+        assertEquals("½×", scale.inputValue())
+        assertTrue(tablespoons("1 1/2"), "3 at ½")
+
+        type("1 1/3")
+        assertEquals("1.33×", scale.inputValue(), "a size that is not a common one shows as a decimal")
+        assertTrue(tablespoons("4"), "3 at 1⅓ -- the exact third, not 1.33")
+
+        type("2x")
+        assertEquals("2×", scale.inputValue())
+        assertTrue(tablespoons("6"))
+
+        type("abc")
+        assertEquals("2×", scale.inputValue(), "not a size: the scale stays as it was")
+        type("0")
+        assertEquals("2×", scale.inputValue(), "nor is nothing")
+
+        type("1.25")
+        page.getByLabel("Scale up").click()
+        assertEquals("1½×", scale.inputValue(), "+ from a typed size goes to the next common one")
+        page.getByLabel("Scale down").click()
+        assertEquals("1×", scale.inputValue())
+
+        scale.click()
+        page.getByRole(AriaRole.OPTION, Page.GetByRoleOptions().setName("⅓×")).click()
+        assertEquals("⅓×", scale.inputValue())
+        assertTrue(tablespoons("1"), "3 at ⅓")
+
+        // In chef mode Escape leaves it -- but not when it was pressed to abandon typing a scale.
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Chef mode")
+        ).first().click()
+        page.waitForSelector("text=Exit chef mode")
+        scale.fill("1/")
+        scale.press("Escape")
+        assertEquals("⅓×", scale.inputValue(), "the half-typed size is dropped")
+        assertTrue(page.getByText("Exit chef mode").isVisible, "and chef mode stays")
+
+        assertEquals(emptyList<String>(), errors, "the scale should not log console errors")
         page.close()
     }
 
@@ -443,7 +525,7 @@ class ReactUiSmokeTest {
         page.getByRole(AriaRole.BUTTON).filter(
             com.microsoft.playwright.Locator.FilterOptions().setHasText("Settings")
         ).first().click()
-        page.waitForSelector("text=Apps and devices")
+        page.waitForSelector("text=Keyboard shortcuts")
 
         // Collapsed to begin with: the version is behind the header, not beside it.
         val dialog = page.getByRole(AriaRole.DIALOG)
@@ -452,6 +534,87 @@ class ReactUiSmokeTest {
         page.waitForSelector("text=Signed in as")
 
         assertEquals(emptyList<String>(), errors, "Settings should render without console errors")
+        page.close()
+    }
+
+    /**
+     * The password and the signed-in apps belong to the account, so they are under its name --
+     * Account… in the account menu -- and Settings keeps only what is stored in this browser.
+     */
+    @Test
+    fun theAccountMenuHoldsThePasswordAndDevices() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+
+        page.getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Settings")
+        ).first().click()
+        page.waitForSelector("text=Keyboard shortcuts")
+        val settings = page.getByRole(AriaRole.DIALOG)
+        assertEquals(0, settings.getByText("Apps and devices").count(), "devices are not a setting")
+        assertEquals(0, settings.getByText("Current password").count(), "nor is the password")
+        page.keyboard().press("Escape")
+        settings.waitFor(com.microsoft.playwright.Locator.WaitForOptions()
+            .setState(com.microsoft.playwright.options.WaitForSelectorState.DETACHED))
+
+        page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("tester")).first().click()
+        page.getByRole(AriaRole.MENUITEM, Page.GetByRoleOptions().setName("Account…")).click()
+        page.waitForSelector("text=Apps and devices")
+        val account = page.getByRole(AriaRole.DIALOG)
+        assertTrue(account.getByText("Current password").isVisible, "the password is here")
+        assertTrue(account.getByText("Signed in as tester").isVisible, "and whose account it is")
+        assertTrue(page.url().endsWith("#/account"), "the open dialog is in the URL: ${page.url()}")
+
+        assertEquals(emptyList<String>(), errors, "the account dialog should render without console errors")
+        page.close()
+    }
+
+    /** `/`, `n` and `e` from anywhere but a field, and ⌘S / Ctrl+S in the editor. */
+    @Test
+    fun keyboardShortcutsSearchEditSaveAndCreate() {
+        val b = requireBrowser()
+        val (page, errors) = appPage(b)
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+
+        // `/` goes to the search field, and letters typed there are text, not shortcuts.
+        page.keyboard().press("/")
+        assertEquals("Search recipes", page.evaluate("() => document.activeElement?.placeholder"))
+        page.keyboard().type("ne")
+        assertEquals("ne", page.getByPlaceholder("Search recipes").inputValue(), "the slash was not typed")
+        assertEquals(0, page.getByText("Edit recipe").count(), "an e typed into search edits nothing")
+        page.getByPlaceholder("Search recipes").fill("")
+        page.evaluate("() => document.activeElement?.blur()")
+
+        page.keyboard().press("e")
+        page.waitForSelector("text=Edit recipe")
+        page.getByLabel("Name").fill("Australian Mini Meat Pies (keyboard)")
+        page.keyboard().press("Control+s") // from inside the field: the editor's shortcut, not the page's
+        page.waitForSelector("text=Saved")
+        awaitPies("the ⌘S save") { it?.name == "Australian Mini Meat Pies (keyboard)" }
+
+        page.keyboard().press("n")
+        page.waitForSelector("text=New recipe")
+        assertEquals("", page.getByLabel("Name").inputValue(), "n opened a blank draft")
+
+        assertEquals(emptyList<String>(), errors, "shortcuts should not log console errors")
+        page.close()
+    }
+
+    /** The times are on the line under the title, once -- not repeated in a Times section below. */
+    @Test
+    fun theTimesAreShownOnce() {
+        val b = requireBrowser()
+        val (page, _) = appPage(b)
+        page.getByText("Australian Mini Meat Pies").first().click()
+        page.waitForSelector("text=Ingredients")
+
+        assertTrue(page.getByText("Prep 30 min · Bake 25 min · Ready In 60 min").isVisible)
+        assertEquals(
+            0,
+            page.getByRole(AriaRole.HEADING, Page.GetByRoleOptions().setName("Times").setExact(true)).count(),
+            "no second copy of them",
+        )
         page.close()
     }
 
@@ -625,9 +788,9 @@ class ReactUiSmokeTest {
         page.waitForSelector("[role=option]")
 
         // List -> the library, which is a drawer at this width.
-        assertEquals(0, page.getByText("Edit classifiers").count(), "the rail is not a column here")
+        assertEquals(0, page.getByText("Manage classifiers").count(), "the rail is not a column here")
         page.getByLabel("Show library").click()
-        page.waitForSelector("text=Edit classifiers")
+        page.waitForSelector("text=Manage classifiers")
 
         assertEquals(emptyList<String>(), errors, "the compact layout should not log console errors")
         page.close()
@@ -1105,6 +1268,48 @@ class ReactUiSmokeTest {
         page.close()
     }
 
+    /**
+     * The page's photo comes with the import: staged in the editor as if picked there, stored by Save.
+     * The web editor used to drop it, so every web import saved without one.
+     */
+    @Test
+    fun anImportedPhotoIsStagedAndSavedWithTheRecipe() {
+        val b = requireBrowser()
+        val (page, consoleErrors) = appPage(b)
+
+        page.getByLabel("List options").click()
+        page.getByText("Import from web…").click()
+        page.waitForSelector("text=Recipe page address")
+        page.getByLabel("Recipe page address").fill("http://127.0.0.1:$sitePort/photo-recipe")
+        page.getByRole(AriaRole.DIALOG).getByRole(AriaRole.BUTTON).filter(
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Import")
+        ).click()
+        page.waitForFunction(
+            "() => [...document.querySelectorAll('input')].some(i => i.value === 'Photo Pancakes')"
+        )
+
+        // Staged, not stored: the preview is the local file, and the button offers to replace it.
+        page.waitForSelector("img[src^='blob:']")
+        assertTrue(page.getByText("Replace…").isVisible, "a staged photo offers Replace, not Choose")
+
+        save(page)
+        val saved = runBlocking { RecipeRepository.listForSync(userId(), null, null, 100).recipes }
+            .single { it.name == "Photo Pancakes" }
+        val filename = saved.imageFilename
+        assertTrue(filename != null && imageStore.exists(filename), "Save stored the imported photo")
+
+        // Saved once is saved: editing the recipe again must not stage the import's photo a second time.
+        page.getByRole(
+            AriaRole.BUTTON,
+            com.microsoft.playwright.Page.GetByRoleOptions().setName("Edit").setExact(true),
+        ).first().click()
+        page.waitForSelector("text=Edit recipe")
+        assertEquals(0, page.locator("img[src^='blob:']").count(), "the saved photo shows, not the staged file")
+
+        assertTrue(consoleErrors.isEmpty(), "console errors: $consoleErrors")
+        page.close()
+    }
+
     /** Enter adds a shopping-list item, and the list saves itself without a save button. */
     @Test
     fun pressingEnterAddsAShoppingListItemAndSaves() {
@@ -1184,9 +1389,9 @@ class ReactUiSmokeTest {
         val (page, _) = appPage(b)
 
         page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit classifiers")
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Manage classifiers")
         ).first().click()
-        page.waitForSelector("text=Edit classifiers")
+        page.waitForSelector("text=Manage classifiers")
 
         val dialog = page.getByRole(AriaRole.DIALOG)
         dialog.getByPlaceholder("New category").fill("Weeknight")
@@ -1226,9 +1431,9 @@ class ReactUiSmokeTest {
         val (page, errors) = appPage(b)
 
         page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit classifiers")
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Manage classifiers")
         ).first().click()
-        page.waitForSelector("text=Edit classifiers")
+        page.waitForSelector("text=Manage classifiers")
         val manager = page.getByRole(AriaRole.DIALOG).first()
         manager.getByRole(AriaRole.TAB, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Courses")).click()
         manager.getByRole(AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Select").setExact(true)).click()
@@ -1280,9 +1485,9 @@ class ReactUiSmokeTest {
         val (page, errors) = appPage(b)
 
         page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit classifiers")
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Manage classifiers")
         ).first().click()
-        page.waitForSelector("text=Edit classifiers")
+        page.waitForSelector("text=Manage classifiers")
         val manager = page.getByRole(AriaRole.DIALOG).first()
         manager.getByRole(AriaRole.TAB, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Courses")).click()
         manager.getByRole(AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName("Select").setExact(true)).click()
@@ -1480,9 +1685,9 @@ class ReactUiSmokeTest {
         val (page, errors) = appPage(b)
 
         page.getByRole(AriaRole.BUTTON).filter(
-            com.microsoft.playwright.Locator.FilterOptions().setHasText("Edit classifiers")
+            com.microsoft.playwright.Locator.FilterOptions().setHasText("Manage classifiers")
         ).first().click()
-        page.waitForSelector("text=Edit classifiers")
+        page.waitForSelector("text=Manage classifiers")
         assertTrue(page.url().endsWith("#/library"), "the open dialog is in the URL: ${page.url()}")
 
         page.goBack()
