@@ -1,16 +1,17 @@
-import org.gradle.kotlin.dsl.dependencies
-import org.gradle.kotlin.dsl.implementation
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
-    alias(libs.plugins.androidLibrary)
+    alias(libs.plugins.androidKotlinMultiplatformLibrary)
     alias(libs.plugins.sqldelight)
     alias(libs.plugins.kotlinxSerialization)
 }
 
 kotlin {
-    androidTarget {
+    android {
+        namespace = "com.enuvro.saltykmp.shared"
+        compileSdk = libs.versions.android.compileSdk.get().toInt()
+        minSdk = libs.versions.android.minSdk.get().toInt()
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_11)
         }
@@ -62,17 +63,5 @@ sqldelight {
         create("AppDatabase") {
             packageName.set("com.enuvro.saltykmp.db")
         }
-    }
-}
-
-android {
-    namespace = "com.enuvro.saltykmp.shared"
-    compileSdk = libs.versions.android.compileSdk.get().toInt()
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
-    }
-    defaultConfig {
-        minSdk = libs.versions.android.minSdk.get().toInt()
     }
 }

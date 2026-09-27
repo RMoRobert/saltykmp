@@ -18,9 +18,6 @@ import io.ktor.server.routing.get
  * accept the session cookie as well as a Bearer token (see WEB_API_AUTH). Keeping one API means the
  * merge rules, validation and error handling have exactly one implementation rather than a parallel
  * set of form-POST endpoints that would drift from it.
- *
- * The server-rendered Pico pages still exist behind `/classic`, reachable from this app's settings
- * menu, and are expected to be removed once nothing needs them.
  */
 fun Route.appRoutes() {
     // `/editor` was this page's address while it was an experiment. Permanent, because a bookmark

@@ -205,7 +205,7 @@ Three things worth knowing:
   and one that doesn't.
 - **The fat jar itself is architecture-independent** -- it's JVM bytecode, so `buildFatJar` needs no
   platform flag. Only the image build does, because it bakes in a platform-specific JRE
-  (`eclipse-temurin:21-jre`).
+  (`eclipse-temurin:25-jre`).
 
 Verify before shipping — this should print `amd64`, not `arm64`:
 
@@ -321,16 +321,16 @@ Back that file up somewhere durable — losing it means losing the ability to up
 ## 2. Build the bundle
 
 ```bash
-./gradlew :composeApp:bundleRelease
+./gradlew :androidApp:bundleRelease
 ```
 
-Output: `composeApp/build/outputs/bundle/release/composeApp-release.aab`
+Output: `androidApp/build/outputs/bundle/release/androidApp-release.aab`
 
 Without `keystore.properties` the build still succeeds but the bundle is **unsigned** and Play will
 reject it. To confirm a bundle is signed:
 
 ```bash
-unzip -l composeApp/build/outputs/bundle/release/composeApp-release.aab | grep -c 'META-INF/.*\.RSA'
+unzip -l androidApp/build/outputs/bundle/release/androidApp-release.aab | grep -c 'META-INF/.*\.RSA'
 ```
 
 ## 3. Upload

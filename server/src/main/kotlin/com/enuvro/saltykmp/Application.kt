@@ -319,8 +319,7 @@ fun Application.installSalty(
 
     install(ContentNegotiation) { json(appJson) }
     install(CallLogging)
-    // Server-rendered web UI: Mustache templates from resources/templates/ (logic-less; handlers in
-    // web/WebRoutes.kt build the view models).
+    // Mustache templates from resources/templates/: the login page and the app's HTML shell.
     install(Mustache) {
         mustacheFactory = DefaultMustacheFactory("templates")
     }
@@ -406,7 +405,7 @@ fun Application.installSalty(
 
     routing {
         get("/health") { call.respondText("OK") }
-        // Static assets for the web UI (e.g. /static/salty.css) from resources/static/.
+        // Static assets for the web UI (icons, the app bundle under /static/app) from resources/static/.
         staticResources("/static", "static")
         // The pages link the PNG icons from <head>; this is for the clients that never read the
         // HTML and only ever probe the site root — feed readers, bookmark tools, older browsers.
@@ -416,7 +415,7 @@ fun Application.installSalty(
         recipeImportRoutes(importAddressPolicy)
         libraryRoutes()
         shoppingListRoutes()
-        webRoutes(imageStore, loginThrottle, accountLockout)
+        webRoutes(loginThrottle, accountLockout)
         accountRoutes(imageStore, accountLockout)
         appRoutes()
     }

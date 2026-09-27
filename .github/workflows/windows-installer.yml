@@ -26,7 +26,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # composeApp applies the Android application plugin, so configuring it needs the Android SDK.
+      # composeApp applies the Android (KMP library) plugin, so configuring it needs the Android SDK.
       # windows-latest ships one and sets ANDROID_HOME, so no local.properties is required.
       - name: Package MSI
         shell: bash

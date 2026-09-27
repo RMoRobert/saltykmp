@@ -41,8 +41,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxDefaults
+import androidx.compose.material3.SwipeToDismissBoxState
 import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -371,7 +372,6 @@ fun ShoppingListDetailScreen(
     onBack: (() -> Unit)?,
     /** Leave this list — used when it disappears out from under us (deleted here or by a sync). */
     onClose: () -> Unit,
-    onUndoable: (message: String, undo: () -> Unit) -> Unit,
 ) {
     // `null` = the query hasn't emitted yet, which is NOT the same as "no such list": treating the initial
     // empty emission as a missing list would bounce straight back out of a list opened right after creating it.
@@ -606,12 +606,7 @@ fun ShoppingListDetailScreen(
                                     }
                                 },
                                 onSubmit = { addRow(isHeading = item.isHeading == true, afterId = item.id) },
-                                onDelete = {
-                                    val before = items.toList()
-                                    replaceItems(items.filterNot { it.id == item.id })
-                                    val label = item.text.ifBlank { "item" }
-                                    onUndoable("Deleted \"$label\"") { replaceItems(before) }
-                                },
+                                onDelete = { replaceItems(items.filterNot { it.id == item.id }) },
                             )
                             HorizontalDivider()
                         }
@@ -670,30 +665,35 @@ private fun ShoppingListItemRow(
     onSubmit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    // Deleting a shopping item is cheap to redo (and the alternative was a button on every row), so a
-    // completed swipe commits rather than asking — with an Undo snackbar as the way back.
+    // A completed swipe deletes, with no confirmation and no undo: a shopping item is one line, and
+    // retyping it is cheaper than any safety net (an Undo snackbar was tried; it hid behind the keyboard
+    // and restored the whole list, edits made since included).
     //
-    // Two things here are load-bearing, both learned the hard way:
-    //  - `confirmValueChange` returns false, so the box never SETTLES into a dismissed state. Letting it
-    //    settle means an undone row comes back still holding a dismissed swipe state (LazyColumn keeps
-    //    per-key state), which immediately re-deletes it — undo appeared to do nothing.
-    //  - the delete fires at most once per row, because the callback can be invoked more than once for a
-    //    single swipe. Without the guard, the second call captures an already-deleted list as its undo
-    //    baseline, so Undo restores nothing.
+    // Two details are load-bearing:
+    //  - the swipe state is a plain `remember`, NOT `rememberSwipeToDismissBoxState`, which is
+    //    `rememberSaveable`. LazyColumn keeps saveable state per key, so a row that comes back with the
+    //    same id -- a sync re-seeding the list while it is open -- would return still holding its
+    //    dismissed value, and SwipeToDismissBox would fire `onDismiss` and delete it again at once.
+    //    A plain `remember` dies with the row, so a returning row is a fresh composition that starts
+    //    Settled.
+    //  - the delete fires at most once per row. SwipeToDismissBox calls `onDismiss` from a LaunchedEffect
+    //    keyed on the lambda, so a recomposition that hands it a new lambda while the row is still
+    //    dismissed calls it again; the guard keeps that from writing the list twice.
     val currentOnDelete by rememberUpdatedState(onDelete)
     var deleteRequested by remember(item.id) { mutableStateOf(false) }
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            if (value != SwipeToDismissBoxValue.Settled && !deleteRequested) {
-                deleteRequested = true
-                currentOnDelete()
-            }
-            false
-        },
-    )
+    val positionalThreshold = SwipeToDismissBoxDefaults.positionalThreshold
+    val dismissState = remember(item.id) {
+        SwipeToDismissBoxState(SwipeToDismissBoxValue.Settled, positionalThreshold)
+    }
 
     SwipeToDismissBox(
         state = dismissState,
+        onDismiss = {
+            if (!deleteRequested) {
+                deleteRequested = true
+                currentOnDelete()
+            }
+        },
         backgroundContent = {
             val alignment = if (dismissState.dismissDirection == SwipeToDismissBoxValue.StartToEnd) {
                 Alignment.CenterStart

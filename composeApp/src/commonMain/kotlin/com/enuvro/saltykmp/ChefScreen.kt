@@ -72,7 +72,9 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.backhandler.BackHandler
+import androidx.navigationevent.NavigationEventInfo
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.compose.rememberNavigationEventState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -155,7 +157,10 @@ internal fun ChefScreen(module: AppModule, id: String, onExit: () -> Unit) {
     KeepScreenAwake()
     // The way out, for the platforms that have a system back. The header's Exit button is the one that
     // is always visible, and Escape does the same on a keyboard.
-    BackHandler(enabled = true) { onExit() }
+    NavigationBackHandler(
+        state = rememberNavigationEventState(NavigationEventInfo.None),
+        onBackCompleted = onExit,
+    )
 
     val focus = remember { FocusRequester() }
     LaunchedEffect(id) { focus.requestFocus() }

@@ -71,7 +71,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Menu
-import androidx.compose.material.icons.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Merge
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
@@ -132,9 +132,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -164,7 +162,9 @@ import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.backhandler.BackHandler
+import androidx.navigationevent.NavigationEventInfo
+import androidx.navigationevent.compose.NavigationBackHandler
+import androidx.navigationevent.compose.rememberNavigationEventState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -755,8 +755,7 @@ private class AppShell(
     val onImportFromFile: () -> Unit,
     /** Opens a recipe in its own window; null where there are no other windows to open (mobile). */
     val openRecipeWindow: ((recipeId: String) -> Unit)?,
-    val showUndo: (message: String, undo: () -> Unit) -> Unit,
-    /** Report an outcome with no action attached (an export finished, a save failed). Blank = say nothing. */
+    /** Report an outcome (an export finished, a save failed). Blank = say nothing. */
     val notify: (message: String) -> Unit,
 ) {
     /** The detail screen's Open in New Window for [recipeId], or null to leave the item out. */
@@ -791,19 +790,6 @@ private fun AppContent(
 ) {
     val snackbarScope = rememberCoroutineScope()
 
-    /** Show [message] with an Undo action that runs [undo] if tapped. */
-    fun showUndo(message: String, undo: () -> Unit) {
-        snackbarScope.launch {
-            snackbarHost.currentSnackbarData?.dismiss()
-            val result = snackbarHost.showSnackbar(
-                message = message,
-                actionLabel = "Undo",
-                duration = SnackbarDuration.Long,
-            )
-            if (result == SnackbarResult.ActionPerformed) undo()
-        }
-    }
-
     /** Say [message], unless it's blank — a cancelled save dialog has nothing worth reporting. */
     fun notify(message: String) {
         if (message.isBlank()) return
@@ -825,7 +811,6 @@ private fun AppContent(
         onImportFromWeb = onImportFromWeb,
         onImportFromFile = onImportFromFile,
         openRecipeWindow = openRecipeWindow,
-        showUndo = ::showUndo,
         notify = ::notify,
     )
 
@@ -839,7 +824,11 @@ private fun AppContent(
             )
         }
         // System / gesture back returns to the list from any sub-screen.
-        BackHandler(enabled = screen != Screen.List) { onBack() }
+        NavigationBackHandler(
+            state = rememberNavigationEventState(NavigationEventInfo.None),
+            isBackEnabled = screen != Screen.List,
+            onBackCompleted = onBack,
+        )
         // The active screen fills the space below the banner (each screen is its own fillMaxSize Scaffold).
         Box(Modifier.weight(1f)) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -869,7 +858,6 @@ private fun CompactLayout(shell: AppShell) {
             onEdit = { shell.onScreen(Screen.Edit(s.id)) },
             onChefMode = { shell.onScreen(Screen.Chef(s.id)) },
             onFilter = { shell.openFilter(it) },
-            onDeleted = shell.showUndo,
             onNotify = shell.notify,
             onOpenInNewWindow = shell.openInNewWindow(s.id),
             infoRequest = shell.infoRequest,
@@ -890,7 +878,6 @@ private fun CompactLayout(shell: AppShell) {
             // Back from a list returns to the lists, not all the way out to the recipes.
             onBack = shell.onBack,
             onClose = { shell.onScreen(Screen.ShoppingLists) },
-            onUndoable = shell.showUndo,
         )
         Screen.Settings -> SettingsScreen(shell.module, onBack = shell.onBack)
         // Chef Mode never reaches a layout: [App] composes it in place of the whole shell, so by the
@@ -955,7 +942,6 @@ private fun WideContent(shell: AppShell, width: WidthClass) {
                     onEdit = { shell.onScreen(Screen.Edit(s.id)) },
                     onChefMode = { shell.onScreen(Screen.Chef(s.id)) },
                     onFilter = { shell.openFilter(it) },
-                    onDeleted = shell.showUndo,
                     onNotify = shell.notify,
                     onOpenInNewWindow = shell.openInNewWindow(s.id),
                     infoRequest = shell.infoRequest,
@@ -983,7 +969,6 @@ private fun WideContent(shell: AppShell, width: WidthClass) {
                             shell.module, s.id,
                             onBack = null,
                             onClose = { shell.onScreen(Screen.ShoppingLists) },
-                            onUndoable = shell.showUndo,
                         )
                     } else {
                         PanePlaceholder(
@@ -1006,7 +991,6 @@ private fun WideContent(shell: AppShell, width: WidthClass) {
                     shell.module, s.id,
                     onBack = shell.onBack,
                     onClose = { shell.onScreen(Screen.ShoppingLists) },
-                    onUndoable = shell.showUndo,
                 )
             }
         }
@@ -1032,7 +1016,6 @@ private fun RecipeDetailPane(shell: AppShell, screen: Screen) {
             onEdit = { shell.onScreen(Screen.Edit(screen.id)) },
             onChefMode = { shell.onScreen(Screen.Chef(screen.id)) },
             onFilter = { shell.openFilter(it) },
-            onDeleted = shell.showUndo,
             onNotify = shell.notify,
             onOpenInNewWindow = shell.openInNewWindow(screen.id),
             infoRequest = shell.infoRequest,
@@ -1054,8 +1037,7 @@ private fun RecipeDetailPane(shell: AppShell, screen: Screen) {
  * One recipe in a window of its own — the desktop's Open in New Window, after the Swift app's
  * `RecipeDetailWindowView`. The window keeps its recipe for life: editing and Chef Mode happen inside it
  * and come back to it; a category or tag chip sends the MAIN window's list to that slice
- * ([onShowInLibrary]); and deleting the recipe leaves the window in place with an Undo, rather than
- * closing out from under the only way back.
+ * ([onShowInLibrary]); and deleting the recipe leaves the window in place, saying so, until it is closed.
  */
 @Composable
 internal fun RecipeWindowContent(
@@ -1068,19 +1050,11 @@ internal fun RecipeWindowContent(
     val uiDensity by module.uiDensity.collectAsState()
     var screen by remember(recipeId) { mutableStateOf<Screen>(Screen.Detail(recipeId)) }
     // Watched here as well as in the detail screen: whether the recipe exists decides what this window
-    // shows, whichever window (or sync) deleted it — and an Undo in either brings it straight back.
+    // shows, whichever window (or sync) deleted it.
     val row by remember(recipeId) { module.repository.recipeFlow(recipeId) }
         .collectAsState(initial = remember(recipeId) { module.repository.recipe(recipeId) })
     val snackbarHost = remember { SnackbarHostState() }
     val snackbarScope = rememberCoroutineScope()
-
-    fun showUndo(message: String, undo: () -> Unit) {
-        snackbarScope.launch {
-            snackbarHost.currentSnackbarData?.dismiss()
-            val result = snackbarHost.showSnackbar(message = message, actionLabel = "Undo", duration = SnackbarDuration.Long)
-            if (result == SnackbarResult.ActionPerformed) undo()
-        }
-    }
 
     fun notify(message: String) {
         if (message.isBlank()) return
@@ -1113,7 +1087,6 @@ internal fun RecipeWindowContent(
                             onEdit = { screen = Screen.Edit(recipeId) },
                             onChefMode = { screen = Screen.Chef(recipeId) },
                             onFilter = onShowInLibrary,
-                            onDeleted = ::showUndo,
                             onNotify = ::notify,
                             infoRequest = infoRequest,
                             wide = widthClassFor(maxWidth) != WidthClass.Compact,
@@ -1150,7 +1123,7 @@ private fun SaltyNavigationRail(shell: AppShell, onMenu: () -> Unit) {
         NavigationRailItem(
             selected = shell.onRecipes && shell.filter is RecipeFilter.All,
             onClick = { shell.openFilter(RecipeFilter.All) },
-            icon = { Icon(Icons.Outlined.MenuBook, contentDescription = null) },
+            icon = { Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = null) },
             label = { Text("Recipes") },
         )
         NavigationRailItem(
@@ -1311,28 +1284,26 @@ private fun sortRecipes(list: List<Recipe>, sort: RecipeSort, ascending: Boolean
 }
 
 /**
- * Delete a recipe and offer it back through [showUndo].
- *
- * Shared by the list row's menu and the detail screen's toolbar so the undo stays correct in both: the
- * image state (filename, thumbnail blob, image timestamp) lives on the DB row rather than in the wire
- * shape, so restoring the recipe alone would bring it back without its photo — and the tombstone has to
- * go too, or the next sync would faithfully re-delete the recipe the user just got back.
+ * Ask before deleting [recipeName]: there is no undo, and the delete reaches every device syncing this
+ * library. Shared by the list row's menu and the detail screen's toolbar so both say the same thing (and
+ * the same thing as the web app).
  */
-private fun deleteRecipeWithUndo(
-    module: AppModule,
-    id: String,
-    showUndo: (message: String, undo: () -> Unit) -> Unit,
-) {
-    val deleted = module.localStore.recipeForUpload(id) ?: return
-    val row = module.repository.recipe(id)
-    module.localStore.deleteRecipe(id)
-    module.onLocalChange()
-    showUndo("Deleted \"${deleted.name}\"") {
-        module.localStore.upsertRecipe(deleted)
-        module.localStore.setRecipeImage(id, row?.imageFilename, row?.imageThumbnailData, row?.lastModifiedImageDate)
-        module.localStore.clearRecipeTombstones(listOf(id))
-        module.onLocalChange()
-    }
+@Composable
+private fun DeleteRecipeDialog(recipeName: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete recipe?") },
+        text = {
+            Text(
+                "\u201C${recipeName.ifBlank { "Untitled" }}\u201D will be removed from your library " +
+                    "(and any devices syncing to this library).",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /**
@@ -1475,6 +1446,7 @@ private fun RecipeListPane(
     var exporting by remember { mutableStateOf<Pair<String, String>?>(null) }
     // The row whose Get Info dialog is open, for the same reason: the row it came from may scroll away.
     var infoFor by remember { mutableStateOf<Recipe?>(null) }
+    var deleteFor by remember { mutableStateOf<Recipe?>(null) }
     val exportScope = rememberCoroutineScope()
 
     // The desktop menu bar's Find command (⌘F) arrives as a bumped counter. Skipping 0 keeps the field
@@ -1816,10 +1788,9 @@ private fun RecipeListPane(
                                 )
                                 HorizontalDivider()
                                 DropdownMenuItem(
-                                    // No confirmation: reaching this took a long press and a deliberate
-                                    // tap on an item marked destructive, and the Undo snackbar is the
-                                    // way back — the same trade the shopping lists' swipe-to-delete makes.
-                                    text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                    // Asks first (deleteFor, below): there is no undo, and the delete
+                                    // reaches every device syncing this library.
+                                    text = { Text("Delete\u2026", color = MaterialTheme.colorScheme.error) },
                                     leadingIcon = {
                                         Icon(
                                             Icons.Outlined.Delete,
@@ -1827,14 +1798,7 @@ private fun RecipeListPane(
                                             tint = MaterialTheme.colorScheme.error,
                                         )
                                     },
-                                    onClick = {
-                                        rowMenu = false
-                                        // In a split view, deleting the recipe the detail pane shows
-                                        // would leave the pane saying "Not found". Send it back to its
-                                        // placeholder first.
-                                        if (recipe.id == selectedId) shell.onScreen(Screen.List)
-                                        deleteRecipeWithUndo(module, recipe.id, shell.showUndo)
-                                    },
+                                    onClick = { rowMenu = false; deleteFor = recipe },
                                 )
                             }
                             LastPreparedMenu(
@@ -1865,6 +1829,21 @@ private fun RecipeListPane(
                 // for as long as they take. Reading and rendering the recipe is fast; the wait is theirs.
                 exportScope.launch { shell.notify(RecipeExporter.export(module, id, format)) }
             },
+        )
+    }
+
+    deleteFor?.let { row ->
+        DeleteRecipeDialog(
+            recipeName = row.name,
+            onConfirm = {
+                deleteFor = null
+                // In a split view, deleting the recipe the detail pane shows would leave the pane saying
+                // "Not found". Send it back to its placeholder first.
+                if (row.id == selectedId) shell.onScreen(Screen.List)
+                module.localStore.deleteRecipe(row.id)
+                module.onLocalChange()
+            },
+            onDismiss = { deleteFor = null },
         )
     }
 
@@ -2006,7 +1985,7 @@ private fun SaltyDrawerContents(shell: AppShell, onNavigated: () -> Unit = {}) {
         // carries a leading icon, so all the labels share one indent instead of stepping in and out.
         // The section headers stay text-only, which is both M3's drawer anatomy and what Swift does.
         DrawerDestination(
-            icon = Icons.Outlined.MenuBook,
+            icon = Icons.AutoMirrored.Outlined.MenuBook,
             label = "All Recipes",
             selected = selected is RecipeFilter.All,
             onClick = { go(RecipeFilter.All) },
@@ -2014,8 +1993,8 @@ private fun SaltyDrawerContents(shell: AppShell, onNavigated: () -> Unit = {}) {
         // Hollow. A destination row is a place to go, not a readout, so filling it would spend the one
         // signal this app reserves for state: a solid heart means "this recipe is a favorite" on a list
         // row and a detail badge, and it should mean nothing else. (MenuBook above is the exception, and
-        // not by choice — Icons.Outlined.MenuBook is byte-identical to the filled one, so its left page
-        // is solid whatever you import. It's kept for the open-book shape, which is what iOS shows.)
+        // not by choice — Icons.AutoMirrored.Outlined.MenuBook is byte-identical to the filled one, so its
+        // left page is solid whatever you import. It's kept for the open-book shape, which is what iOS shows.)
         // Note these are the *Border* icons — Icons.Outlined.Favorite is still a solid heart.
         DrawerDestination(
             icon = Icons.Outlined.FavoriteBorder,
@@ -2475,7 +2454,6 @@ private fun RecipeDetailScreen(
     /** Hand this recipe to Chef Mode — the whole app goes away and only the cooking is left. */
     onChefMode: () -> Unit,
     onFilter: (RecipeFilter) -> Unit,
-    onDeleted: (message: String, undo: () -> Unit) -> Unit,
     /** Report an export's outcome; blank means there is nothing to say (a cancelled save dialog). */
     onNotify: (String) -> Unit,
     /** Open this recipe in a window of its own; null leaves the item out (mobile, or already in one). */
@@ -2788,20 +2766,15 @@ private fun RecipeDetailScreen(
     }
 
     if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Delete recipe?") },
-            text = { Text("\"${recipe?.name.orEmpty()}\" will be removed.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showDeleteConfirm = false
-                    onClose()
-                    // Deleting propagates to the server and every other device, so it comes back with an
-                    // Undo — see deleteRecipeWithUndo for what restoring has to put back.
-                    deleteRecipeWithUndo(module, id, onDeleted)
-                }) { Text("Delete") }
+        DeleteRecipeDialog(
+            recipeName = recipe?.name.orEmpty(),
+            onConfirm = {
+                showDeleteConfirm = false
+                onClose()
+                module.localStore.deleteRecipe(id)
+                module.onLocalChange()
             },
-            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } },
+            onDismiss = { showDeleteConfirm = false },
         )
     }
 }
@@ -3023,7 +2996,10 @@ private fun RecipeEditScreen(
 
     // Registered deeper than the app-level handler, so it wins: system/gesture back can't silently
     // discard an edit in progress.
-    BackHandler(enabled = true) { cancel() }
+    NavigationBackHandler(
+        state = rememberNavigationEventState(NavigationEventInfo.None),
+        onBackCompleted = cancel,
+    )
 
     if (confirmDiscard) {
         AlertDialog(

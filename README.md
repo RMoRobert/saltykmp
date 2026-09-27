@@ -35,6 +35,10 @@ Salty Server is *not* a standalone app; it must be used with the desktop or mobi
     Similarly, if you want to edit the Desktop (JVM) specific part, the [jvmMain](./composeApp/src/jvmMain/kotlin)
     folder is the appropriate location.
 
+* [/androidApp](./androidApp/src/main) is the Android application's entry point: `MainActivity`, the manifest,
+  launcher resources, and the app's identity, version, signing and build types. Everything else Android-specific
+  stays in `composeApp/src/androidMain`, which since AGP 9 is built as an Android library.
+
 * [/iosApp](./iosApp/iosApp) contains iOS applications. Even if you’re sharing your UI with Compose Multiplatform,
   you need this entry point for your iOS app. This is also where you should add SwiftUI code for your project.
 
@@ -50,11 +54,11 @@ To build and run the development version of the Android app, use the run configu
 in your IDE’s toolbar or build it directly from the terminal:
 - on macOS/Linux
   ```shell
-  ./gradlew :composeApp:assembleDebug
+  ./gradlew :androidApp:assembleDebug
   ```
 - on Windows
   ```shell
-  .\gradlew.bat :composeApp:assembleDebug
+  .\gradlew.bat :androidApp:assembleDebug
   ```
 
 ### Build and Run Desktop (JVM) Application

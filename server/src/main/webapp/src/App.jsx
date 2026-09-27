@@ -680,7 +680,7 @@ export default function App() {
         title: ids.length === 1 ? "Delete recipe" : `Delete ${ids.length} recipes`,
         body:
           ids.length === 1
-            ? "Thiws recipe will be removed from your library (and any device syncing to this library)."
+            ? "This recipe will be removed from your library (and any device syncing to this library)."
             : `The selected ${ids.length} recipes will be removed from your library (and any device syncing to this library).`,
         confirmLabel: "Delete",
         onConfirm: async () => {

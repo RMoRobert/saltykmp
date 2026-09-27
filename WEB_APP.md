@@ -24,8 +24,8 @@ For front-end work the faster loop is Vite's, with the API proxied to a running 
 cd server/src/main/webapp && npm run dev
 ```
 
-That serves <http://localhost:5173/static/app/> with hot reload and forwards `/api`, `/login` and
-`/classic` to `localhost:8080`. Sign in on port 8080 first — the session cookie is what the proxied
+That serves <http://localhost:5173/static/app/> with hot reload and forwards `/api` and `/login` to
+`localhost:8080`. Sign in on port 8080 first — the session cookie is what the proxied
 API calls use.
 
 ## What is here
@@ -70,7 +70,6 @@ name, so it never has to be regenerated, and the server sends no far-future `Cac
 | `/app#/recipe/<id>/edit` | The same recipe, in the editor. |
 | `/app#/…` | The open dialog: `#/library`, `#/import`, `#/preferences`, `#/account`, `#/users`. Reload-safe and Back-closes — and closing it any other way pops the entry Back would have, so the button never has to be pressed twice to leave. |
 | `/editor` | 301 to `/app`. It was this page's address while it was an experiment. |
-| `/classic/…` | The old Pico-styled, mostly view-only pages. **Legacy** — see below. |
 
 `useHashRoute` in `hooks.js` parses the hash and is the only thing that writes it; the effect in
 `App.jsx` that reads it is the only thing that loads a recipe. That split is the point: a click on a
@@ -118,7 +117,7 @@ Two things about the shape are deliberate.
 
 Along the bottom: **Manage classifiers** and **Settings**, then a divider and the **account menu**:
 an avatar and your name, opening *Signed in as …* (the whole name, which the button can clip),
-**Account…**, Manage users… for admins, Classic view and Log out. Manage classifiers sits there rather
+**Account…**, Manage users… for admins, and Log out. Manage classifiers sits there rather
 than as an "Edit…" hung off each of the three groups above, for the reason the Compose app gives in its
 own drawer: editing classifiers is rare and app-level, so it is one row, and the recipe list's toolbar
 is for actions on the list. (It was *Edit classifiers* until 2026-09-22; the name is still under
@@ -149,16 +148,6 @@ open. Each calls the same function its button does, so `n` over unsaved edits as
 the + does. ⌘S never reaches the browser's "Save page as" while the editor is open, and does nothing
 while a dialog sits over the editor (Edit as text holds text it has not applied yet). The controls
 carry `aria-keyshortcuts`; Settings lists them, since nothing else draws them.
-
-## The classic view
-
-Everything server-rendered lives under `/classic` and nothing else does. That is the entire point of
-the prefix: retiring it is deleting `route("/classic")` in `web/WebRoutes.kt` plus its templates, not
-auditing which flat URL belonged to whom. Its nav says "Classic" and links back to the app.
-
-**Before it can go**, the app needs parity on the freeform shopping-list editor and its conflict
-banner (`templates/shoppingListDetail.mustache`), which are the only things `/classic` does that the
-app has not been checked against.
 
 ## Where a new "create" action goes
 
@@ -363,7 +352,7 @@ library the row count is not what hurts. Virtualising the *rendering* is the che
 idea if a library ever reaches thousands.
 
 **The served markup carried its own source comments.** Vite has always minified `salty.js`, but
-the Mustache shells and the classic view's `salty.css` went into the jar exactly as written, so
+the Mustache shells went into the jar exactly as written, so
 every visitor downloaded the maintenance notes that were written for whoever edits them next --
 including the paragraph in `app.mustache` explaining where the bundle comes from. `MinifyWebResources`
 in `server/build.gradle.kts` strips HTML, Mustache and CSS comments plus the indentation on the way
@@ -800,7 +789,6 @@ overwrite what the upload just set.
 - **Chef mode does not follow along.** No current-step highlighting and no step-at-a-time paging —
   it is the same scrolling document, just larger, alone and awake. The Swift app's highlighting is
   the obvious next step.
-- **The classic view is not yet removable.** See the parity note above.
 - **No `.saltyRecipe` file import.** The menu it belongs in exists; the format handling does not.
 - **Web import reads JSON-LD only.** A site that renders its recipe in the browser, or publishes
   microdata rather than JSON-LD, imports as "no recipe data found" — same as the native clients.
@@ -812,7 +800,9 @@ overwrite what the upload just set.
   the apps that fetch on the device do better than the server can. Disguising the server's client to
   get past that isn't planned; a bookmarklet that hands the open page's JSON-LD to the editor is the
   route that would cover these sites here.
-- **No Markdown preview.** The text area shows source, as the classic page did.
+- **No Markdown preview.** The text area shows source.
+- **Nothing but sign-in works without JavaScript.** The server-rendered pages that used to cover
+  that were removed; a read-only no-script recipe view would be the thing to add back if it's wanted.
 - **No code splitting.** See the bundle note above.
 
 ## Tests

@@ -1111,6 +1111,10 @@ class ReactUiSmokeTest {
             AriaRole.BUTTON, com.microsoft.playwright.Locator.GetByRoleOptions().setName(name).setExact(true),
         )
 
+    /** An element's box. Playwright 1.63 typed `boundingBox()` as nullable: null means it is not visible. */
+    private fun com.microsoft.playwright.Locator.box() =
+        checkNotNull(boundingBox()) { "$this has no bounding box: it is not visible" }
+
     /** The medal is a toggle: it reports its state, and turning it on marks that ingredient main. */
     @Test
     fun theMedalMarksAMainIngredient() {
@@ -1174,9 +1178,9 @@ class ReactUiSmokeTest {
         val directions = editorSection(page, "Directions")
 
         val step = directions.locator("textarea").first()
-        val shortHeight = step.boundingBox().height
+        val shortHeight = step.box().height
         step.fill("Brown the beef in batches. ".repeat(12).trim())
-        assertTrue(step.boundingBox().height > shortHeight * 1.5, "a long step's box grows to fit it")
+        assertTrue(step.box().height > shortHeight * 1.5, "a long step's box grows to fit it")
 
         directions.getByText("Edit as text").click()
         val box = page.getByRole(AriaRole.DIALOG).locator("textarea")
@@ -1547,21 +1551,21 @@ class ReactUiSmokeTest {
         val b = requireBrowser()
         val (page, _) = appPage(b)
 
-        val before = page.locator("[role=listbox]").boundingBox().width
+        val before = page.locator("[role=listbox]").box().width
         val gutter = page.getByLabel("Resize recipe list")
-        val box = gutter.boundingBox()
+        val box = gutter.box()
         page.mouse().move(box.x + 4, box.y + 200)
         page.mouse().down()
         page.mouse().move(box.x + 120, box.y + 200)
         page.mouse().up()
         page.waitForTimeout(400.0)
 
-        val after = page.locator("[role=listbox]").boundingBox().width
+        val after = page.locator("[role=listbox]").box().width
         assertTrue(after > before + 50, "the list column grew: $before -> $after")
 
         page.reload()
         page.waitForSelector("[role=option]")
-        val restored = page.locator("[role=listbox]").boundingBox().width
+        val restored = page.locator("[role=listbox]").box().width
         assertTrue(kotlin.math.abs(restored - after) < 12, "the width is remembered: $after vs $restored")
         page.close()
     }
@@ -1790,7 +1794,7 @@ class ReactUiSmokeTest {
         page.getByRole(AriaRole.BUTTON).filter(
             com.microsoft.playwright.Locator.FilterOptions().setHasText("Chef mode")
         ).first().click()
-        page.waitForSelector("text=Exit chef mode").click()
+        page.waitForSelector("text=Exit chef mode")!!.click()
         awaitHash(page, "#/recipe/$PIES_ID")
 
         page.goBack()
@@ -1969,7 +1973,7 @@ class ReactUiSmokeTest {
         val b = requireBrowser()
         val (page, errors) = appPage(b)
 
-        fun rowHeight() = page.locator("[role=option]").first().boundingBox().height
+        fun rowHeight() = page.locator("[role=option]").first().box().height
         fun subtitles() = page.getByText("A short line so the row has a subtitle.").count()
 
         val summary = rowHeight()

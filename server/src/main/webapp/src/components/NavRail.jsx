@@ -39,7 +39,6 @@ import {
   PersonAccounts24Regular,
   Settings24Regular,
   Tag24Regular,
-  TableSimple24Regular,
 } from "@fluentui/react-icons";
 
 import { SALTY } from "../api";
@@ -251,14 +250,6 @@ export default function NavRail({
                 ) : null}
               </MenuGroup>
               <MenuDivider />
-              <MenuItem
-                icon={<TableSimple24Regular />}
-                onClick={() => {
-                  window.location.href = "/classic";
-                }}
-              >
-                Classic view
-              </MenuItem>
               <MenuItem
                 icon={<ArrowExit24Regular />}
                 onClick={() => {

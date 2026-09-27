@@ -6,7 +6,7 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsChannel
-import io.ktor.utils.io.readRemaining
+import io.ktor.utils.io.readBuffer
 import kotlinx.io.readByteArray
 import io.ktor.client.statement.readRawBytes
 import io.ktor.http.HttpStatusCode
@@ -60,7 +60,7 @@ class RecipeWebImporter(engine: HttpClientEngine) {
             // page was already resident by the time anything objected. One byte past the cap is enough
             // for the parser to refuse it.
             response.bodyAsChannel()
-                .readRemaining((SchemaOrgRecipeParser.Limits.MAX_INPUT_BYTES + 1).toLong())
+                .readBuffer((SchemaOrgRecipeParser.Limits.MAX_INPUT_BYTES + 1).toLong())
                 .readByteArray()
                 .decodeToString()
         }.getOrElse { return WebImportResult.Failed("Couldn't load that page: ${it.message ?: "network error"}") }

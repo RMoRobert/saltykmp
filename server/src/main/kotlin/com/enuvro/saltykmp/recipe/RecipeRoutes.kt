@@ -40,7 +40,7 @@ import io.ktor.server.routing.head
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
-import io.ktor.utils.io.readRemaining
+import io.ktor.utils.io.readBuffer
 import kotlinx.io.readByteArray
 
 private const val DEFAULT_PAGE_SIZE = 100
@@ -285,7 +285,7 @@ fun Route.recipeRoutes(imageStore: ImageStore) {
                             // and reading no further is what keeps a chunked or understated upload
                             // from pulling gigabytes into memory before the check below runs.
                             val bytes = part.provider()
-                                .readRemaining(MAX_IMAGE_UPLOAD_BYTES + 1)
+                                .readBuffer(MAX_IMAGE_UPLOAD_BYTES + 1)
                                 .readByteArray()
                             // Guard the case where Content-Length was absent or understated.
                             if (bytes.size > MAX_IMAGE_UPLOAD_BYTES) {

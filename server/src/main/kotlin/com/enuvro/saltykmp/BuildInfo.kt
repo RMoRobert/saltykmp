@@ -3,9 +3,9 @@ package com.enuvro.saltykmp
 import java.util.Properties
 
 /**
- * Build metadata baked in at compile time via `version.properties` (populated by the `processResources`
- * task from the Gradle project version + build time). Falls back to safe placeholders if the resource
- * is missing or hasn't been filtered (e.g. running unprocessed resources from an IDE).
+ * Build metadata baked in at build time via `version.properties` (written by the server build's
+ * `generateVersionProperties` task from the Gradle project version + build time). Falls back to safe
+ * placeholders if the resource is missing or still holds an unexpanded template (an older build's output).
  */
 object BuildInfo {
     val version: String

@@ -25,7 +25,8 @@ application {
     )
 }
 
-// Predictable runtime bytecode — matches the temurin:21-jre Docker base. Kotlin + Java targets aligned.
+// Predictable runtime bytecode. JVM 21, deliberately below the temurin:25-jre Docker base: the same jar
+// runs on either, so the base image can move (or roll back) without a rebuild. Kotlin + Java targets aligned.
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_21)
@@ -34,6 +35,15 @@ kotlin {
 java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
+    // Compile against the versions that actually run. Without this a library can resolve to one version on the
+    // compile classpath and another at runtime (exposed-core asks for an older kotlinx-datetime than the rest
+    // of the graph wins with), and IntelliJ -- which launches the server from its own classpath, not Gradle's --
+    // keeps the compile-only entry and drops the runtime one, so the server dies at startup with a
+    // NoClassDefFoundError that `./gradlew :server:run` never shows. The fat jar is built from the runtime
+    // classpath either way, so this changes nothing that ships.
+    consistentResolution {
+        useRuntimeClasspathVersions()
+    }
 }
 
 // Stable fat-jar name for the Dockerfile: build/libs/salty-server.jar
@@ -105,7 +115,7 @@ fun Exec.npm(vararg args: String) {
     }
 }
 
-val npmInstall by tasks.registering(Exec::class) {
+val npmInstall = tasks.register<Exec>("npmInstall") {
     description = "Installs the web UI's npm dependencies."
     npm("install", "--no-audit", "--no-fund")
     inputs.file(webappDir.file("package.json"))
@@ -114,7 +124,7 @@ val npmInstall by tasks.registering(Exec::class) {
     outputs.dir(webappDir.dir("node_modules"))
 }
 
-val buildWebapp by tasks.registering(Exec::class) {
+val buildWebapp = tasks.register<Exec>("buildWebapp") {
     description = "Builds the React web UI into build/webapp."
     dependsOn(npmInstall)
     npm("run", "build")
@@ -211,7 +221,7 @@ abstract class MinifyWebResources : DefaultTask() {
 
 val minifyWeb = providers.gradleProperty("minifyWeb").map(String::toBoolean).getOrElse(true)
 
-val minifyWebResources by tasks.registering(MinifyWebResources::class) {
+val minifyWebResources = tasks.register<MinifyWebResources>("minifyWebResources") {
     description = "Strips comments and indentation from the Mustache shells and the classic stylesheet."
     sourceRoot.set(layout.projectDirectory.dir("src/main/resources"))
     outputDir.set(layout.buildDirectory.dir("minified-resources"))
@@ -230,17 +240,24 @@ if (minifyWeb) {
 // Bake the Gradle project version + build time into version.properties so the /about page (and any
 // runtime reporting) reflects the real build. Keeps the version single-sourced from `appVersion`
 // in the root gradle.properties.
-tasks.named<org.gradle.language.jvm.tasks.ProcessResources>("processResources") {
-    val appVersion = project.version.toString()
-    val buildTime = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'")
-        .withZone(ZoneOffset.UTC)
-        .format(Instant.now())
-    inputs.property("appVersion", appVersion)
-    inputs.property("buildTime", buildTime)
-    filesMatching("version.properties") {
-        expand(mapOf("appVersion" to appVersion, "buildTime" to buildTime))
-    }
+//
+// Generated into a resource directory of its own rather than templated inside processResources: a
+// `filesMatching("version.properties") { expand(...) }` did the same job, but IntelliJ cannot model that
+// kind of copy action and warned on every sync ("Cannot resolve resource filtering of MatchingCopyAction").
+// A generated directory is an ordinary resource root to it.
+val generateVersionProperties = tasks.register<WriteProperties>("generateVersionProperties") {
+    destinationFile = layout.buildDirectory.file("generated/version/version.properties")
+    property("version", project.version.toString())
+    property(
+        "buildTime",
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'").withZone(ZoneOffset.UTC).format(Instant.now()),
+    )
+}
+sourceSets.named("main") {
+    resources.srcDir(files(layout.buildDirectory.dir("generated/version")).builtBy(generateVersionProperties))
+}
 
+tasks.named<org.gradle.language.jvm.tasks.ProcessResources>("processResources") {
     // /static/app/salty.js, which is what templates/app.mustache loads.
     dependsOn(buildWebapp)
     from(webappDist) {

@@ -373,7 +373,7 @@ class TransferEfficiencyTest {
     fun staticAssetsRevalidateRatherThanBeingCachedForever() = testApplication {
         application { installSalty(imageStore) }
         val client = createClient { }
-        val first = client.get("/static/salty.css")
+        val first = client.get("/static/app/salty.js")
         assertEquals(HttpStatusCode.OK, first.status)
         val cacheControl = first.headers[HttpHeaders.CacheControl].orEmpty()
         assertTrue(cacheControl.contains("no-cache"), "the bundle must not be pinned: $cacheControl")

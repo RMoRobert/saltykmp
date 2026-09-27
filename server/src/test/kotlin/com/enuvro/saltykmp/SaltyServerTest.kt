@@ -469,175 +469,69 @@ class SaltyServerTest {
         assertEquals("/login", anon.headers[HttpHeaders.Location])
     }
 
-    @Test
-    fun classicRootRedirectsWhenNotLoggedIn() = testApplication {
-        application { installSalty(imageStore) }
-        val resp = createClient { followRedirects = false }.get("/classic")
-        assertEquals(HttpStatusCode.Found, resp.status)
-        assertEquals("/login", resp.headers[HttpHeaders.Location])
-    }
-
-    @Test
-    fun webLoginThenListsRecipes() = testApplication {
-        application { installSalty(imageStore) }
-        runBlocking {
-            val uid = UserRepository.findByUsername("tester")!!.id
-            RecipeRepository.upsert(uid, recipe("w1", "Web Waffles", "2026-06-01T00:00:00.000Z"))
-        }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(
-            url = "/login",
-            formParameters = parameters { append("username", "tester"); append("password", "pw") },
-        )
-        assertTrue(web.get("/classic").bodyAsText().contains("Web Waffles"))
-    }
-
-    @Test
-    fun webShowsShoppingListsAndTheirContents() = testApplication {
-        application { installSalty(imageStore) }
-        runBlocking {
-            val uid = UserRepository.findByUsername("tester")!!.id
-            ShoppingListRepository.save(uid, ServerShoppingList(
-                id = "wl1", name = "Web Groceries", isFreeform = false,
-                contentsForList = listOf(
-                    ShoppingListListContents(id = "h1", isHeading = true, text = "Produce"),
-                    ShoppingListListContents(id = "i1", isCompleted = true, text = "Web Apples"),
-                    ShoppingListListContents(id = "i2", text = "Web Spinach"),
-                ),
-                lastModifiedDate = "2026-07-20T00:00:00.000Z",
-            ))
-            ShoppingListRepository.save(uid, ServerShoppingList(
-                id = "wl2", name = "Web Notes", isFreeform = true,
-                contentsForFreeform = "# Corner Store\n* Milk",
-                lastModifiedDate = "2026-07-20T00:00:00.000Z",
-            ))
-        }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(
-            url = "/login",
-            formParameters = parameters { append("username", "tester"); append("password", "pw") },
-        )
-
-        val index = web.get("/classic/shoppingLists").bodyAsText()
-        assertTrue(index.contains("Web Groceries"))
-        assertTrue(index.contains("Web Notes"))
-        // Size-based, matching the Swift app's row subtitle: headings don't count as items, and blank
-        // lines don't count as lines. wl1 has a heading + 2 items; wl2 has 2 non-blank lines.
-        assertTrue(index.contains("2 items"), "checklist reports its item count")
-        assertTrue(index.contains("2 lines"), "freeform list reports its line count")
-
-        val checklist = web.get("/classic/shoppingLists/wl1").bodyAsText()
-        assertTrue(checklist.contains("Produce"))
-        assertTrue(checklist.contains("Web Apples"))
-        assertTrue(checklist.contains("☑"), "completed items render as checked")
-        assertTrue(checklist.contains("☐"), "open items render as unchecked")
-
-        val freeform = web.get("/classic/shoppingLists/wl2").bodyAsText()
-        assertTrue(freeform.contains("Corner Store"))
-
-        // The sidebar entry must appear on OTHER pages too — that's what makes the section reachable
-        // at all. Asserting it only on its own page would pass even if it were never added to chrome().
-        val recipesPage = web.get("/classic").bodyAsText()
-        assertTrue(recipesPage.contains("Shopping Lists"), "sidebar entry missing from the recipes page")
-        assertTrue(recipesPage.contains("href=\"/classic/shoppingLists\""), "sidebar link missing from the recipes page")
-    }
-
-    @Test
-    fun webShoppingListSummaryHandlesSingularAndEmpty() = testApplication {
-        application { installSalty(imageStore) }
-        runBlocking {
-            val uid = UserRepository.findByUsername("tester")!!.id
-            ShoppingListRepository.save(uid, ServerShoppingList(
-                id = "one", name = "One Item", isFreeform = false,
-                contentsForList = listOf(ShoppingListListContents(id = "i", text = "Milk")),
-                lastModifiedDate = "2026-07-20T00:00:00.000Z"))
-            ShoppingListRepository.save(uid, ServerShoppingList(
-                id = "headings", name = "Headings Only", isFreeform = false,
-                contentsForList = listOf(ShoppingListListContents(id = "h", isHeading = true, text = "Produce")),
-                lastModifiedDate = "2026-07-20T00:00:00.000Z"))
-            ShoppingListRepository.save(uid, ServerShoppingList(
-                id = "blank", name = "Blank Freeform", isFreeform = true,
-                contentsForFreeform = "\n\n   \n", lastModifiedDate = "2026-07-20T00:00:00.000Z"))
-        }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-
-        val index = web.get("/classic/shoppingLists").bodyAsText()
-        assertTrue(index.contains("1 item<"), "singular, not \"1 items\"")
-        assertTrue(index.contains("No items"), "a headings-only list has no items to count")
-        assertTrue(index.contains("Empty"), "whitespace-only freeform counts as empty")
-    }
-
-    /** The CSRF token lives in the session; forms echo it. Fish it out of a rendered page. */
     /**
-     * The CSRF token the app shell hands its own JSON calls. The classic pages put it in a hidden
-     * form field; the app puts it in a data attribute, and user management is an API now.
+     * The CSRF token the app shell hands its own JSON calls, from the page's data attribute.
      */
     private suspend fun appCsrf(client: HttpClient): String =
         Regex("""data-csrf="([0-9a-f]+)"""").find(client.get("/app").bodyAsText())?.groupValues?.get(1)
             ?: error("no CSRF token in the app shell")
 
-    private fun csrfFrom(html: String): String =
-        Regex("""name="csrf" value="([0-9a-f]+)"""").find(html)?.groupValues?.get(1)
-            ?: error("no CSRF token found in page")
-
+    /** A browser's shopping-list writes are session-cookie writes: no CSRF header, no write. */
     @Test
-    fun webChecklistEditingRoundTrip() = testApplication {
+    fun shoppingListWritesFromTheBrowserNeedCsrf() = testApplication {
         application { installSalty(imageStore) }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        val csrf = csrfFrom(web.get("/classic/shoppingLists").bodyAsText())
-
-        // Create a checklist from the index form.
-        val created = web.submitForm(
-            url = "/classic/shoppingLists",
-            formParameters = parameters { append("csrf", csrf); append("name", "Web List"); append("type", "checklist") },
-        )
-        assertEquals(HttpStatusCode.Found, created.status)
-        val listPath = created.headers[HttpHeaders.Location]!!
-        val listId = listPath.substringAfterLast("/")
-
-        // Add two items, one of them a heading.
-        web.submitForm(url = "$listPath/items/add", formParameters = parameters {
-            append("csrf", csrf); append("text", "Produce"); append("heading", "on")
-        })
-        web.submitForm(url = "$listPath/items/add", formParameters = parameters {
-            append("csrf", csrf); append("text", "Apples")
-        })
-        var list = runBlocking {
-            ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId)!!
+        val uid = testerId()
+        runBlocking {
+            ShoppingListRepository.save(uid, ServerShoppingList(
+                id = "sl", name = "Guarded", isFreeform = false,
+                contentsForList = listOf(ShoppingListListContents(id = "i1", text = "Milk")),
+                lastModifiedDate = "2026-08-01T00:00:00.000Z"))
         }
-        assertEquals(listOf("Produce", "Apples"), list.contentsForList?.map { it.text })
-        assertEquals(true, list.contentsForList?.first()?.isHeading)
-        val revisionAfterAdds = list.revision!!
-        assertTrue(revisionAfterAdds >= 3, "create + two adds must each bump the revision")
+        val web = jsonCookieClient()
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
 
-        // Toggle, edit, then delete the item — each one a semantic per-item POST.
-        val itemId = list.contentsForList!![1].id
-        web.submitForm(url = "$listPath/items/toggle", formParameters = parameters { append("csrf", csrf); append("itemId", itemId) })
-        web.submitForm(url = "$listPath/items/edit", formParameters = parameters {
-            append("csrf", csrf); append("itemId", itemId); append("text", "Green Apples")
-        })
-        list = runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId)!! }
-        assertEquals(true, list.contentsForList?.get(1)?.isCompleted)
-        assertEquals("Green Apples", list.contentsForList?.get(1)?.text)
+        val emptied = ServerShoppingList(
+            id = "sl", name = "Guarded", isFreeform = false, contentsForList = emptyList(),
+            lastModifiedDate = "2026-08-02T00:00:00.000Z", baseRevision = 1)
+        val put = web.put("/api/shoppingLists/sl") { contentType(ContentType.Application.Json); setBody(emptied) }
+        assertEquals(HttpStatusCode.Forbidden, put.status)
+        assertEquals(HttpStatusCode.Forbidden, web.delete("/api/shoppingLists/sl").status)
+        assertEquals(1, runBlocking { ShoppingListRepository.getById(uid, "sl")?.contentsForList?.size },
+            "refused writes change nothing")
 
-        web.submitForm(url = "$listPath/items/delete", formParameters = parameters { append("csrf", csrf); append("itemId", itemId) })
-        list = runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId)!! }
-        assertEquals(listOf("Produce"), list.contentsForList?.map { it.text })
-
-        // Rename, then delete the whole list.
-        web.submitForm(url = "$listPath/rename", formParameters = parameters { append("csrf", csrf); append("name", "Renamed") })
-        assertEquals("Renamed", runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId)?.name })
-        web.submitForm(url = "$listPath/delete", formParameters = parameters { append("csrf", csrf) })
-        assertEquals(null, runBlocking { ShoppingListRepository.getById(UserRepository.findByUsername("tester")!!.id, listId) })
+        val allowed = web.put("/api/shoppingLists/sl") {
+            contentType(ContentType.Application.Json); header(CSRF_HEADER, appCsrf(web)); setBody(emptied)
+        }
+        assertEquals(HttpStatusCode.OK, allowed.status, allowed.bodyAsText())
+        assertEquals(0, runBlocking { ShoppingListRepository.getById(uid, "sl")?.contentsForList?.size })
     }
 
-    /** ↑/↓ swap with the neighbor; moving past either end is a true no-op (revision untouched). */
+    /** A signed-in browser never sees or deletes another account's list; an unknown id is a 404, not a 500. */
     @Test
-    fun webChecklistItemReordering() = testApplication {
+    fun shoppingListsAreScopedToTheSignedInUser() = testApplication {
         application { installSalty(imageStore) }
-        val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
+        val otherId = runBlocking {
+            UserRepository.create("other", "pw2")
+            UserRepository.findByUsername("other")!!.id.also {
+                ShoppingListRepository.save(it, ServerShoppingList(
+                    id = "secret", name = "Other Persons List", lastModifiedDate = "2026-07-20T00:00:00.000Z"))
+            }
+        }
+        val web = jsonCookieClient()
+        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
+
+        assertTrue(web.get("/api/shoppingLists").body<List<ServerShoppingList>>().none { it.id == "secret" })
+        assertEquals(HttpStatusCode.NotFound, web.get("/api/shoppingLists/secret").status)
+        assertEquals(HttpStatusCode.NotFound,
+            web.delete("/api/shoppingLists/secret") { header(CSRF_HEADER, appCsrf(web)) }.status)
+        assertEquals("Other Persons List", runBlocking { ShoppingListRepository.getById(otherId, "secret")?.name })
+    }
+
+    /** Reordering is a whole-list save: the new order is stored exactly, and a stale base conflicts. */
+    @Test
+    fun checklistReorderRoundTripsThroughTheApi() = testApplication {
+        application { installSalty(imageStore) }
+        val uid = testerId()
         runBlocking {
             ShoppingListRepository.save(uid, ServerShoppingList(
                 id = "ord", name = "Ordered", isFreeform = false,
@@ -648,202 +542,28 @@ class SaltyServerTest {
                 ),
                 lastModifiedDate = "2026-08-01T00:00:00.000Z"))
         }
-        val web = createClient { install(HttpCookies) }
+        val web = jsonCookieClient()
         web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        val csrf = csrfFrom(web.get("/classic/shoppingLists/ord").bodyAsText())
-        suspend fun texts() = ShoppingListRepository.getById(uid, "ord")!!.contentsForList!!.map { it.text }
-        suspend fun revision() = ShoppingListRepository.getById(uid, "ord")!!.revision
+        val csrf = appCsrf(web)
+        val loaded = web.get("/api/shoppingLists/ord").body<ServerShoppingList>()
+        val items = loaded.contentsForList!!
+        val reordered = loaded.copy(
+            contentsForList = listOf(items[2], items[0], items[1]),
+            lastModifiedDate = "2026-08-02T00:00:00.000Z", baseRevision = loaded.revision, revision = null)
 
-        web.submitForm(url = "/classic/shoppingLists/ord/items/move", formParameters = parameters {
-            append("csrf", csrf); append("itemId", "c"); append("dir", "up")
-        })
-        assertEquals(listOf("Alpha", "Gamma", "Beta"), runBlocking { texts() })
+        val saved = web.put("/api/shoppingLists/ord") {
+            contentType(ContentType.Application.Json); header(CSRF_HEADER, csrf); setBody(reordered)
+        }.body<ServerShoppingList>()
+        assertEquals(listOf("Gamma", "Alpha", "Beta"), saved.contentsForList!!.map { it.text })
+        assertEquals(loaded.revision!! + 1, saved.revision)
+        assertEquals(listOf("Gamma", "Alpha", "Beta"),
+            runBlocking { ShoppingListRepository.getById(uid, "ord")!!.contentsForList!!.map { it.text } })
 
-        web.submitForm(url = "/classic/shoppingLists/ord/items/move", formParameters = parameters {
-            append("csrf", csrf); append("itemId", "a"); append("dir", "down")
-        })
-        assertEquals(listOf("Gamma", "Alpha", "Beta"), runBlocking { texts() })
-
-        // Top item up / bottom item down: order AND revision must be untouched — a no-op that still
-        // bumped the revision would make every client re-download the list for nothing.
-        val before = runBlocking { revision() }
-        web.submitForm(url = "/classic/shoppingLists/ord/items/move", formParameters = parameters {
-            append("csrf", csrf); append("itemId", "g"); append("dir", "up")   // unknown id: also a no-op
-        })
-        web.submitForm(url = "/classic/shoppingLists/ord/items/move", formParameters = parameters {
-            append("csrf", csrf); append("itemId", "b"); append("dir", "down")
-        })
-        assertEquals(listOf("Gamma", "Alpha", "Beta"), runBlocking { texts() })
-        assertEquals(before, runBlocking { revision() }, "no-op moves must not bump the revision")
-    }
-
-    /** A move against a row whose contentsForList is NULL (freeform lists by construction) must stay a
-     *  no-op: NULL must never be materialized as [] — that distinction protects older clients (see
-     *  ShoppingListRepository.write) — and the revision must not budge. */
-    @Test
-    fun webItemMoveOnNullContentsListIsANoOp() = testApplication {
-        application { installSalty(imageStore) }
-        val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
-        runBlocking {
-            ShoppingListRepository.save(uid, ServerShoppingList(
-                id = "ff", name = "Notes", isFreeform = true,
-                contentsForFreeform = "milk\neggs",
-                lastModifiedDate = "2026-08-01T00:00:00.000Z"))
+        // The same edit sent again from the old base is someone else's view of the list now: 409.
+        val stale = web.put("/api/shoppingLists/ord") {
+            contentType(ContentType.Application.Json); header(CSRF_HEADER, csrf); setBody(reordered)
         }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        val csrf = csrfFrom(web.get("/classic/shoppingLists/ff").bodyAsText())
-        val before = runBlocking { ShoppingListRepository.getById(uid, "ff")!! }
-
-        web.submitForm(url = "/classic/shoppingLists/ff/items/move", formParameters = parameters {
-            append("csrf", csrf); append("itemId", "x"); append("dir", "up")
-        })
-
-        val after = runBlocking { ShoppingListRepository.getById(uid, "ff")!! }
-        assertEquals(null, after.contentsForList, "NULL contents must never become []")
-        assertEquals(before.revision, after.revision, "no-op move must not bump the revision")
-    }
-
-    /** A freeform save whose baseRevision went stale must show the conflict banner, not clobber. */
-    @Test
-    fun webFreeformSaveConflictShowsBannerAndPreservesDraft() = testApplication {
-        application { installSalty(imageStore) }
-        val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
-        runBlocking {
-            ShoppingListRepository.save(uid, ServerShoppingList(
-                id = "ff", name = "Notes", isFreeform = true,
-                contentsForFreeform = "original", lastModifiedDate = "2026-08-01T00:00:00.000Z"))
-        }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        val page = web.get("/classic/shoppingLists/ff").bodyAsText()
-        val csrf = csrfFrom(page)
-        assertTrue(page.contains("""name="baseRevision" value="1""""), "editor carries the revision it rendered")
-
-        // A sync lands meanwhile (revision 1 → 2).
-        runBlocking {
-            ShoppingListRepository.save(uid, ServerShoppingList(
-                id = "ff", name = "Notes", isFreeform = true,
-                contentsForFreeform = "from a device", lastModifiedDate = "2026-08-02T00:00:00.000Z",
-                baseRevision = 1))
-        }
-
-        // The stale tab saves: banner + both texts, and the row is untouched.
-        val conflicted = web.submitForm(url = "/classic/shoppingLists/ff/freeform", formParameters = parameters {
-            append("csrf", csrf); append("text", "my draft"); append("baseRevision", "1")
-        }).bodyAsText()
-        assertTrue(conflicted.contains("changed while you were editing"), "conflict banner shown")
-        assertTrue(conflicted.contains("from a device"), "current saved version shown")
-        assertTrue(conflicted.contains("my draft"), "draft preserved in the editor")
-        assertTrue(conflicted.contains("""name="baseRevision" value="2""""), "retry targets the new revision")
-        assertEquals("from a device", runBlocking { ShoppingListRepository.getById(uid, "ff")?.contentsForFreeform })
-
-        // Retrying with the fresh baseRevision succeeds.
-        val saved = web.submitForm(url = "/classic/shoppingLists/ff/freeform", formParameters = parameters {
-            append("csrf", csrf); append("text", "my draft"); append("baseRevision", "2")
-        })
-        assertEquals(HttpStatusCode.Found, saved.status)
-        assertEquals("my draft", runBlocking { ShoppingListRepository.getById(uid, "ff")?.contentsForFreeform })
-    }
-
-    /** Web mutations are state-changing form POSTs: no valid CSRF token, no write. */
-    @Test
-    fun webShoppingListEditsRequireCsrf() = testApplication {
-        application { installSalty(imageStore) }
-        val uid = runBlocking { UserRepository.findByUsername("tester")!!.id }
-        runBlocking {
-            ShoppingListRepository.save(uid, ServerShoppingList(
-                id = "sl", name = "Guarded", isFreeform = false,
-                contentsForList = listOf(ShoppingListListContents(id = "i1", text = "Milk")),
-                lastModifiedDate = "2026-08-01T00:00:00.000Z"))
-        }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-
-        val resp = web.submitForm(url = "/classic/shoppingLists/sl/items/delete", formParameters = parameters {
-            append("csrf", "forged"); append("itemId", "i1")
-        })
-        assertEquals(HttpStatusCode.Forbidden, resp.status)
-        assertEquals(1, runBlocking { ShoppingListRepository.getById(uid, "sl")?.contentsForList?.size })
-    }
-
-    /** One user must never see another's lists, and an unknown id must not 500. */
-    @Test
-    fun webShoppingListsAreUserScoped() = testApplication {
-        application { installSalty(imageStore) }
-        runBlocking {
-            UserRepository.create("other", "pw2")
-            val otherId = UserRepository.findByUsername("other")!!.id
-            ShoppingListRepository.save(otherId, ServerShoppingList(
-                id = "secret", name = "Other Persons List",
-                lastModifiedDate = "2026-07-20T00:00:00.000Z",
-            ))
-        }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(
-            url = "/login",
-            formParameters = parameters { append("username", "tester"); append("password", "pw") },
-        )
-
-        assertTrue(!web.get("/classic/shoppingLists").bodyAsText().contains("Other Persons List"))
-        // Unknown / not-yours id redirects back to the index rather than erroring.
-        assertEquals(HttpStatusCode.OK, web.get("/classic/shoppingLists/secret").status)
-        assertTrue(!web.get("/classic/shoppingLists/secret").bodyAsText().contains("Other Persons List"))
-    }
-
-    @Test
-    fun webRecipesPaginate() = testApplication {
-        application { installSalty(imageStore) }
-        runBlocking {
-            val uid = UserRepository.findByUsername("tester")!!.id
-            // 30 zero-padded names so lexical sort == numeric: page 1 = 01..25, page 2 = 26..30.
-            (1..30).forEach { i ->
-                RecipeRepository.upsert(uid, recipe("r$i", "Recipe %02d".format(i), "2026-06-01T00:00:00.000Z"))
-            }
-        }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-
-        val page1 = web.get("/classic").bodyAsText()
-        assertTrue(page1.contains("Page 1 of 2"), "page 1 shows pagination")
-        assertTrue(page1.contains("Recipe 01") && page1.contains("Recipe 25"), "page 1 holds the first 25")
-        assertTrue(!page1.contains("Recipe 26"), "page 1 stops at 25")
-
-        val page2 = web.get("/classic?page=2").bodyAsText()
-        assertTrue(page2.contains("Recipe 26") && page2.contains("Recipe 30"), "page 2 holds the remainder")
-        assertTrue(!page2.contains("Recipe 01"), "page 2 excludes page-1 recipes")
-    }
-
-    @Test
-    fun webBrowseByCourseAndCategory() = testApplication {
-        application { installSalty(imageStore) }
-        runBlocking {
-            val uid = UserRepository.findByUsername("tester")!!.id
-            LibraryRepository.upsertCourse(uid, ServerCourse("c-dessert", "Desserts", "2026-06-01T00:00:00.000Z"))
-            LibraryRepository.upsertCategory(uid, ServerCategory("cat-quick", "Quick", "2026-06-01T00:00:00.000Z"))
-            RecipeRepository.upsert(uid, recipe("r1", "Brownies", "2026-06-01T00:00:00.000Z")
-                .copy(courseId = "c-dessert", categoryIds = listOf("cat-quick")))
-            RecipeRepository.upsert(uid, recipe("r2", "Pot Roast", "2026-06-01T00:00:00.000Z"))
-        }
-        val web = createClient { install(HttpCookies) }
-        web.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-
-        // Browse indexes list the classifiers with a recipe count.
-        val courses = web.get("/classic/courses").bodyAsText()
-        assertTrue(courses.contains("Desserts"), "course index lists the course")
-
-        // Drill-down filters to just that course/category.
-        val inCourse = web.get("/classic/courses/c-dessert").bodyAsText()
-        assertTrue(inCourse.contains("Brownies"), "course view includes its recipe")
-        assertTrue(!inCourse.contains("Pot Roast"), "course view excludes other recipes")
-
-        val inCategory = web.get("/classic/categories/cat-quick").bodyAsText()
-        assertTrue(inCategory.contains("Brownies") && !inCategory.contains("Pot Roast"), "category view filters correctly")
-
-        // Unknown ids redirect back to the browse index rather than erroring.
-        val missing = createClient { install(HttpCookies); followRedirects = false }
-        missing.submitForm(url = "/login", formParameters = parameters { append("username", "tester"); append("password", "pw") })
-        assertEquals("/classic/tags", missing.get("/classic/tags/nope").headers[HttpHeaders.Location])
+        assertEquals(HttpStatusCode.Conflict, stale.status)
     }
 
     @Test

@@ -1,19 +1,32 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import java.util.Properties
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
-    alias(libs.plugins.androidApplication)
+    alias(libs.plugins.androidKotlinMultiplatformLibrary)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.composeHotReload)
 }
 
 kotlin {
-    androidTarget {
+    // An Android *library* since AGP 9, which no longer lets com.android.application share a module with
+    // kotlin-multiplatform; the app itself (identity, signing, build types, MainActivity) is :androidApp.
+    android {
+        // Must differ from the app's own "com.enuvro.saltykmp" -- AGP 9 requires unique namespaces.
+        namespace = "com.enuvro.saltykmp.composeapp"
+        compileSdk = libs.versions.android.compileSdk.get().toInt()
+        minSdk = libs.versions.android.minSdk.get().toInt()
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_11)
+        }
+        // Compose resources (composeResources/) reach Android as Android resources, and the KMP library
+        // plugin leaves those off unless asked.
+        androidResources {
+            enable = true
+        }
+        withDeviceTest {
+            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         }
     }
     
@@ -46,8 +59,8 @@ kotlin {
             // compatible with Compose 1.11 at runtime.
             implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3")
             implementation(libs.compose.ui)
-            // Multiplatform BackHandler (system/gesture back) lives in its own artifact.
-            implementation("org.jetbrains.compose.ui:ui-backhandler:1.11.1")
+            // System/gesture back (NavigationBackHandler). Compose's own BackHandler is deprecated in its favour.
+            implementation(libs.navigationevent.compose)
             implementation(libs.compose.components.resources)
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
@@ -65,7 +78,7 @@ kotlin {
         }
         // On-device tests: the AndroidKeyStore has no JVM equivalent, so the crypto in
         // SecretStore.android.kt can only be exercised on an emulator or handset.
-        androidInstrumentedTest.dependencies {
+        getByName("androidDeviceTest").dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.androidx.testExt.junit)
             implementation(libs.androidx.test.runner)
@@ -84,77 +97,8 @@ kotlin {
     }
 }
 
-/**
- * Release signing, loaded from `keystore.properties` at the repo root — gitignored, because it holds the
- * keystore password. See keystore.properties.example for the shape.
- *
- * When the file is absent the release build is simply UNSIGNED: `bundleRelease` still runs (useful for a
- * size/packaging check, and for anyone building the repo without the key), but the artifact cannot be
- * uploaded to Play.
- */
-val keystoreProperties = Properties().apply {
-    val file = rootProject.file("keystore.properties")
-    if (file.exists()) file.inputStream().use { load(it) }
-}
-
 // Single-sourced from appVersion in the root gradle.properties (see the comment there).
 val appVersion = providers.gradleProperty("appVersion").get()
-
-android {
-    namespace = "com.enuvro.saltykmp"
-    compileSdk = libs.versions.android.compileSdk.get().toInt()
-
-    defaultConfig {
-        applicationId = "com.enuvro.saltykmp"
-        minSdk = libs.versions.android.minSdk.get().toInt()
-        targetSdk = libs.versions.android.targetSdk.get().toInt()
-        // Derived from appVersion (M.m.p → M*10_000_000 + m*100_000 + p, so minor < 100 and
-        // patch < 100_000): upgrade ordering tracks the version with no hand-bumped counter.
-        versionCode = appVersion.split(".").map { it.toInt() }
-            .let { (major, minor, patch) -> major * 10_000_000 + minor * 100_000 + patch }
-        versionName = appVersion
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-    }
-    signingConfigs {
-        // Only declared when keystore.properties exists, so a checkout without the key still configures.
-        if (keystoreProperties.getProperty("storeFile") != null) {
-            create("release") {
-                storeFile = file(keystoreProperties.getProperty("storeFile"))
-                storePassword = keystoreProperties.getProperty("storePassword")
-                keyAlias = keystoreProperties.getProperty("keyAlias")
-                keyPassword = keystoreProperties.getProperty("keyPassword")
-            }
-        }
-    }
-    buildTypes {
-        getByName("debug") {
-            // Allow cleartext (HTTP) in debug only, so a local/dev Salty Server can be reached over
-            // http:// for testing. Substituted into android:usesCleartextTraffic in the manifest.
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
-        }
-        getByName("release") {
-            // Null when keystore.properties is absent → an unsigned artifact, which Play will reject.
-            signingConfig = signingConfigs.findByName("release")
-            // R8 is off: nothing here has been shrunk-tested, and SQLDelight/Ktor/kotlinx-serialization
-            // all need keep rules that don't exist yet. Turning it on is its own piece of work.
-            isMinifyEnabled = false
-            manifestPlaceholders["usesCleartextTraffic"] = "false" // release stays HTTPS-only
-        }
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
-    }
-}
-
-dependencies {
-    debugImplementation(libs.compose.uiTooling)
-}
 
 compose.desktop {
     application {
