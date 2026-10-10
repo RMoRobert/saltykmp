@@ -55,9 +55,11 @@ kotlin = "2.4.20" # KGP 2.4.20 certifies Gradle 7.6.3-9.7.0 and AGP 8.5.2-9.3.1 
 # 2.4.20 also makes `when` compile to invokedynamic by default on a JVM 21 target, i.e. the server.
 kotlinx-coroutines = "1.11.0" # keep in sync with coroutinesVersion below
 ktor = "3.6.0"
-logback = "1.6.3" # 1.5.25/1.5.33/1.5.34/1.5.37 fixed class-instantiation + object-injection advisories
+logback = "1.6.5" # 1.5.25/1.5.33/1.5.34/1.5.37 fixed class-instantiation + object-injection advisories
 # (1.5.37 dropped Janino conditionals outright). 1.6.0 only removed long-deprecated API and moved to SLF4J
 # 2.0.18; server/src/main/resources/logback.xml is a plain ConsoleAppender + pattern encoder, so none of it applies.
+# 1.6.4 fixed races in OutputStreamAppender (ConsoleAppender's base); 1.6.5's CVE-2026-19880 fix is in
+# MDCBasedDiscriminator (SiftingAppender), which this config does not use.
 material3 = "1.11.0-alpha07" # JetBrains Compose material3; keep on the same minor line as composeMultiplatform
 # (the last stable JetBrains material3 was 1.9.0; every line since has shipped as alphas alongside Compose).
 coroutinesVersion = "1.11.0" # keep in sync with kotlinx-coroutines above
@@ -76,7 +78,7 @@ hikari = "7.1.0" # 7.x is still Java 11 bytecode, so the server's JVM 21 target 
 # behaviour change between 6.2.1 and here is 6.3.2 retiring the getUsername()/getPassword() override on
 # HikariDataSource -- DatabaseFactory configures a HikariConfig instead, so it never relied on that.
 postgres = "42.7.13" # JDBC driver. 42.7.5+ is what fixes the metadata check for the RULE privilege, dropped in server 18.
-h2 = "2.5.250" # same on-disk format as 2.4.240 in both directions (checked 2026-09-24 against a scratch
+h2 = "2.5.252" # same on-disk format as 2.4.240 in both directions (checked 2026-09-24 against a scratch
 # file), so an existing salty-db/ dev database opens without the export/import that 2.1 -> 2.2 needed.
 bcrypt = "0.10.2"
 filekit = "0.15.0" # NOT 0.16.x: built against Compose 1.12, lifecycle 2.11 and compileSdk 37, so it moves with
@@ -96,6 +98,9 @@ filekit = "0.15.0" # NOT 0.16.x: built against Compose 1.12, lifecycle 2.11 and 
 navigationevent = "1.0.1" # NavigationBackHandler, which replaced Compose's deprecated BackHandler. Keep it on the
 # line that matches composeMultiplatform: 1.0.x for Compose 1.11 (whose ui-backhandler rides on the 1.0 core), and
 # for 1.12+ the version its release notes list under "Navigation Event" (1.1.0 for 1.12).
+netty = "4.2.18.Final" # Raises the Netty that Ktor's Netty engine brings (3.6.0 ships 4.2.17) for 4.2.18's
+# security fixes (HTTP/1.1, HTTP/2 and compression codecs). Drop this once Ktor's own netty version reaches it --
+# `dependencyInsight --dependency io.netty:netty-codec-http` on :server shows which one wins.
 jna = "5.19.1" # desktop only: Windows Credential Manager bindings (SecretStore.jvm.kt)
 
 [libraries]
@@ -152,6 +157,7 @@ ktor-client-darwin = { module = "io.ktor:ktor-client-darwin", version.ref = "kto
 ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
 ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+netty-bom = { module = "io.netty:netty-bom", version.ref = "netty" }
 ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
 sqldelight-coroutines = { module = "app.cash.sqldelight:coroutines-extensions", version.ref = "sqlDelight" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }

@@ -137,7 +137,7 @@ val buildWebapp = tasks.register<Exec>("buildWebapp") {
 
 /*
  * Web assets are packaged minified. Vite already minifies the React bundle, but the Mustache
- * shells and the classic view's stylesheet went into the jar exactly as written -- comments,
+ * shells (and any stylesheet under static/) went into the jar exactly as written -- comments,
  * indentation and all -- so every visitor downloaded the maintenance notes meant for whoever edits
  * them next. This strips them at packaging time only; the sources under src/main/resources stay
  * readable. Turn it off with -PminifyWeb=false (or minifyWeb in gradle.properties) when a served
@@ -222,7 +222,7 @@ abstract class MinifyWebResources : DefaultTask() {
 val minifyWeb = providers.gradleProperty("minifyWeb").map(String::toBoolean).getOrElse(true)
 
 val minifyWebResources = tasks.register<MinifyWebResources>("minifyWebResources") {
-    description = "Strips comments and indentation from the Mustache shells and the classic stylesheet."
+    description = "Strips comments and indentation from the Mustache shells and any static stylesheets."
     sourceRoot.set(layout.projectDirectory.dir("src/main/resources"))
     outputDir.set(layout.buildDirectory.dir("minified-resources"))
 }
@@ -284,6 +284,7 @@ dependencies {
     implementation(libs.ktor.serverCompression)
     implementation(libs.ktor.serverConditionalHeaders)
     implementation(libs.ktor.serverCachingHeaders)
+    implementation(platform(libs.netty.bom))
 
     // Persistence
     implementation(libs.exposed.core)
