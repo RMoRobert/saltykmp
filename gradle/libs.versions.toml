@@ -36,22 +36,31 @@ composeHotReload = "1.2.0"
 composeMultiplatform = "1.11.1" # 1.11 is what native iOS text input needs (see NativeTextInput.kt), and 1.11
 # in turn needed Kotlin 2.4: 1.11.x ICEd the Kotlin/Native 2.3.21 backend (AutoboxingTransformer, MetalRedrawer.ios.kt).
 #
-# NOT 1.12.x -- tried 1.12.1 on 2026-09-24. The toolchain chain that used to block it is gone (AGP 9.1.1, Gradle 9,
-# the :androidApp split; compileSdk 37 builds), and every test passed. But the iOS app CRASHES on hardware-keyboard
-# input (iPad and Bluetooth keyboards; the simulator types this way too): 1.12's BaseComposeScene.sendKeyEvent now
-# ends in FrameRecomposer.performTrampolineDispatch() -> FlushCoroutineDispatcher.flush(), and a re-entrant flush on
-# the same thread clears the batch the outer flush is iterating -> uncaught kotlin.ConcurrentModificationException,
-# SIGABRT. Reproduced twice, in fresh processes, typing into the recipe editor's Name field. 1.11's sendKeyEvent
-# calls recomposer.performScheduledEffects() instead and never reaches flush() on a key press.
-# Upstream: CMP-10674 (flush() is not re-entrancy-safe; open, also reported from production on 1.12.0); the code is
-# unchanged in 1.13.0-alpha01. Retry when that is fixed. compileSdk -> 37, material3 -> the matching 1.12 alpha,
-# androidx-lifecycle -> 2.11.0, navigationevent -> 1.1.x and filekit -> 0.16.x move with it; the only source change
-# 1.12 needed was ChefScreen's rememberModalBottomSheetState -> rememberBottomSheetState(initialValue = Hidden).
-# 1.12's klibs are built with Kotlin 2.3.20, so the 2.4.20 compiler reads them.
-kotlin = "2.4.20" # KGP 2.4.20 certifies Gradle 7.6.3-9.7.0 and AGP 8.5.2-9.3.1 (it enforces only the
-# minimums, so newer is uncertified rather than refused). Ktor 3.6.x klibs are built with 2.3.21, and a newer
-# compiler reads older klibs fine -- it is the other direction that breaks, which is what once pinned filekit
-# and Compose.
+# NOT 1.12.x. 1.12.1 was tried on 2026-09-24 and 1.12.2 (the newest 1.12) on 2026-10-17. The toolchain chain that
+# used to block it is gone (AGP 9.1.1, Gradle 9, the :androidApp split, and compileSdk 37 builds), and every test
+# passed. But the iOS app CRASHES on hardware-keyboard input (iPad and Bluetooth keyboards; the simulator types
+# this way too). 1.12's BaseComposeScene.sendKeyEvent now ends in FrameRecomposer.performTrampolineDispatch() ->
+# FlushCoroutineDispatcher.flush(). A re-entrant flush on the same thread clears the batch the outer flush is
+# iterating, which ends in an uncaught kotlin.ConcurrentModificationException and SIGABRT. Reproduced in fresh
+# processes typing into the recipe editor's Name field: twice on 1.12.1, and on 1.12.2 in one of two launches.
+# It is a race, so one clean run proves nothing. 1.11's sendKeyEvent calls recomposer.performScheduledEffects()
+# instead and never reaches flush() on a key press; 1.11.1 + Kotlin 2.4.21 survived four fresh launches of the
+# same typing.
+# Upstream: CMP-10674 (flush() is not re-entrancy-safe; also reported from production on 1.12.0). On 2026-10-17 it
+# was still "Submitted" with no target version. FlushCoroutineDispatcher.skiko.kt is byte-identical from v1.12.1
+# through v1.13.0-alpha02, and sendKeyEvent still ends in performTrampolineDispatch() in 1.13.0-alpha02. 1.12.2's
+# one iOS text-input fix (CMP-10848: updateView() only while focused) does not touch this path. Retry once flush()
+# changes or the issue is fixed.
+# These move with it: compileSdk -> 37, material3 -> 1.12.0-alpha03, androidx-lifecycle -> 2.11.0, navigationevent
+# -> 1.1.0 and filekit -> 0.16.0. The only source change 1.12 needed was ChefScreen's
+# rememberModalBottomSheetState(skipPartiallyExpanded = false) -> rememberBottomSheetState(initialValue =
+# SheetValue.Hidden). 1.13 will also want compileSdk 37.1 (`release(37) { minorApiLevel = 1 }`).
+# 1.12's klibs are built with Kotlin 2.3.20, so the 2.4.x compiler reads them.
+kotlin = "2.4.21" # KGP 2.4.20-2.4.21 certify Gradle 7.6.3-9.7.0 and AGP 8.5.2-9.3.1 (they enforce only the
+# minimums, so newer is uncertified rather than refused). 2.4.21 (2026-10-08) is a bug-fix patch covering Wasm, JS,
+# reflection, scripting and a flaky K/N Linux link, so nothing this project uses changed. Ktor 3.6.x klibs are
+# built with 2.3.21, and a newer compiler reads older klibs fine -- it is the other direction that breaks, which
+# is what once pinned filekit and Compose.
 # 2.4.20 also makes `when` compile to invokedynamic by default on a JVM 21 target, i.e. the server.
 kotlinx-coroutines = "1.11.0" # keep in sync with coroutinesVersion below
 ktor = "3.6.0"
@@ -73,11 +82,13 @@ dateTimeVersion = "0.8.0-0.6.x-compat" # the compat build (0.8.0's API plus the 
 # Exposed stop depending on the compat artifact (check `dependencyInsight --dependency kotlinx-datetime`).
 koin = "4.2.2"
 sqlDelight = "2.4.0"
-exposed = "1.5.0"
+exposed = "1.5.1"
 hikari = "7.1.0" # 7.x is still Java 11 bytecode, so the server's JVM 21 target is unaffected. The one
 # behaviour change between 6.2.1 and here is 6.3.2 retiring the getUsername()/getPassword() override on
 # HikariDataSource -- DatabaseFactory configures a HikariConfig instead, so it never relied on that.
-postgres = "42.7.13" # JDBC driver. 42.7.5+ is what fixes the metadata check for the RULE privilege, dropped in server 18.
+postgres = "42.7.14" # JDBC driver. 42.7.5+ is what fixes the metadata check for the RULE privilege, dropped in server 18.
+# 42.7.14 fixes CVE-2026-107315: 42.7.4-42.7.13 padded a value shorter than its declared length with bytes left
+# over from earlier statements on the connection, instead of zeros.
 h2 = "2.5.252" # same on-disk format as 2.4.240 in both directions (checked 2026-09-24 against a scratch
 # file), so an existing salty-db/ dev database opens without the export/import that 2.1 -> 2.2 needed.
 bcrypt = "0.10.2"
@@ -89,8 +100,9 @@ filekit = "0.15.0" # NOT 0.16.x: built against Compose 1.12, lifecycle 2.11 and 
 # filekit 0.13 dragged Skiko's *classes* above the *native runtime* Compose 1.10 shipped, so every Skiko
 # module was forced to 0.9.37.4 to keep the two in step. Since filekit 0.15 each release is built against
 # the current Compose (0.15.0 + Compose 1.11.1 both ask for Skiko 0.144.6; 0.16.0 + 1.12.1 both ask for 0.150.1,
-# checked on jvmRuntimeClasspath and iosSimulatorArm64CompileKlibraries 2026-09-24), so a force is not merely
-# unnecessary but actively wrong:
+# checked on jvmRuntimeClasspath and iosSimulatorArm64CompileKlibraries 2026-09-24; 0.144.6 re-checked on both
+# with Kotlin 2.4.21 on 2026-10-17). Compose 1.12.2 moved to Skiko 0.150.2 while filekit 0.16.0 still asks for
+# 0.150.1, so check both configurations again when they move. A force is not merely unnecessary but actively wrong:
 # holding Skiko at 0.9.37.4 gave a *compiling* app that died on its first frame with
 # `IrLinkageError: PictureRecorder.beginRecording` out of SurfaceMetalRedrawer. Check
 # `dependencyInsight --dependency org.jetbrains.skiko` on both jvmRuntimeClasspath and an iOS klib
@@ -101,6 +113,8 @@ navigationevent = "1.0.1" # NavigationBackHandler, which replaced Compose's depr
 netty = "4.2.18.Final" # Raises the Netty that Ktor's Netty engine brings (3.6.0 ships 4.2.17) for 4.2.18's
 # security fixes (HTTP/1.1, HTTP/2 and compression codecs). Drop this once Ktor's own netty version reaches it --
 # `dependencyInsight --dependency io.netty:netty-codec-http` on :server shows which one wins.
+# Deliberately not moved to 4.2.19 (2026-10-16), although that release also fixes HTTP codec advisories: apart
+# from this existing pin, Ktor's dependencies stay at the versions Ktor ships.
 jna = "5.19.1" # desktop only: Windows Credential Manager bindings (SecretStore.jvm.kt)
 
 [libraries]
