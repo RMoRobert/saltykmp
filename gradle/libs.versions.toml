@@ -1,8 +1,9 @@
 [versions]
-playwright = "1.63.0" # 1.57 swapped Chromium for Chrome for Testing; nothing removed since 1.52 is used
+playwright = "1.64.0" # 1.57 swapped Chromium for Chrome for Testing; nothing removed since 1.52 is used
 # here (no Page#accessibility, no _react/_vue/:light selectors, no devtools option). 1.63 annotated the
 # Java API with JSpecify, so Kotlin now sees a nullable type wherever a value can be absent -- in
-# ReactUiSmokeTest that was `boundingBox()` (null when not visible) and `waitForSelector()`.
+# ReactUiSmokeTest that was `boundingBox()` (null when not visible) and `waitForSelector()`. 1.64's one
+# breaking change (elements inside a hidden iframe count as hidden) does not apply: the tests use no iframes.
 agp = "9.1.1" # The ceiling is the IDEs, not the build. IntelliJ IDEA 2026.2.x's Android plugin knows AGP 9.1
 # (it accepts any 9.1.x and refuses 9.2+ at sync with "Latest supported version is AGP 9.1.0"), and Android
 # Studio Panda 4 knows 9.2. 9.1.1 is also the first AGP that supports compileSdk 37 and is the floor Compose
@@ -64,11 +65,12 @@ kotlin = "2.4.21" # KGP 2.4.20-2.4.21 certify Gradle 7.6.3-9.7.0 and AGP 8.5.2-9
 # 2.4.20 also makes `when` compile to invokedynamic by default on a JVM 21 target, i.e. the server.
 kotlinx-coroutines = "1.11.0" # keep in sync with coroutinesVersion below
 ktor = "3.6.0"
-logback = "1.6.5" # 1.5.25/1.5.33/1.5.34/1.5.37 fixed class-instantiation + object-injection advisories
+logback = "1.6.6" # 1.5.25/1.5.33/1.5.34/1.5.37 fixed class-instantiation + object-injection advisories
 # (1.5.37 dropped Janino conditionals outright). 1.6.0 only removed long-deprecated API and moved to SLF4J
 # 2.0.18; server/src/main/resources/logback.xml is a plain ConsoleAppender + pattern encoder, so none of it applies.
 # 1.6.4 fixed races in OutputStreamAppender (ConsoleAppender's base); 1.6.5's CVE-2026-19880 fix is in
-# MDCBasedDiscriminator (SiftingAppender), which this config does not use.
+# MDCBasedDiscriminator (SiftingAppender), which this config does not use. 1.6.6's security fix is in socket-receiver
+# deserialization, also unused here; its rolling, syslog, MDC-order and ${} changes do not touch this config either.
 material3 = "1.11.0-alpha07" # JetBrains Compose material3; keep on the same minor line as composeMultiplatform
 # (the last stable JetBrains material3 was 1.9.0; every line since has shipped as alphas alongside Compose).
 coroutinesVersion = "1.11.0" # keep in sync with kotlinx-coroutines above
@@ -81,8 +83,8 @@ dateTimeVersion = "0.8.0-0.6.x-compat" # the compat build (0.8.0's API plus the 
 # kotlinx/datetime/LocalDateTime out of Exposed's datetime columns (2026-09-24). Back to plain once Ktor and
 # Exposed stop depending on the compat artifact (check `dependencyInsight --dependency kotlinx-datetime`).
 koin = "4.2.2"
-sqlDelight = "2.4.0"
-exposed = "1.5.1"
+sqlDelight = "2.4.1"
+exposed = "1.6.0"
 hikari = "7.1.0" # 7.x is still Java 11 bytecode, so the server's JVM 21 target is unaffected. The one
 # behaviour change between 6.2.1 and here is 6.3.2 retiring the getUsername()/getPassword() override on
 # HikariDataSource -- DatabaseFactory configures a HikariConfig instead, so it never relied on that.
