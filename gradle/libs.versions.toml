@@ -64,7 +64,7 @@ kotlin = "2.4.21" # KGP 2.4.20-2.4.21 certify Gradle 7.6.3-9.7.0 and AGP 8.5.2-9
 # is what once pinned filekit and Compose.
 # 2.4.20 also makes `when` compile to invokedynamic by default on a JVM 21 target, i.e. the server.
 kotlinx-coroutines = "1.11.0" # keep in sync with coroutinesVersion below
-ktor = "3.6.0"
+ktor = "3.6.1"
 logback = "1.6.6" # 1.5.25/1.5.33/1.5.34/1.5.37 fixed class-instantiation + object-injection advisories
 # (1.5.37 dropped Janino conditionals outright). 1.6.0 only removed long-deprecated API and moved to SLF4J
 # 2.0.18; server/src/main/resources/logback.xml is a plain ConsoleAppender + pattern encoder, so none of it applies.
@@ -112,7 +112,7 @@ filekit = "0.15.0" # NOT 0.16.x: built against Compose 1.12, lifecycle 2.11 and 
 navigationevent = "1.0.1" # NavigationBackHandler, which replaced Compose's deprecated BackHandler. Keep it on the
 # line that matches composeMultiplatform: 1.0.x for Compose 1.11 (whose ui-backhandler rides on the 1.0 core), and
 # for 1.12+ the version its release notes list under "Navigation Event" (1.1.0 for 1.12).
-netty = "4.2.18.Final" # Raises the Netty that Ktor's Netty engine brings (3.6.0 ships 4.2.17) for 4.2.18's
+netty = "4.2.18.Final" # Raises the Netty that Ktor's Netty engine brings (3.6.1 ships 4.2.17) for 4.2.18's
 # security fixes (HTTP/1.1, HTTP/2 and compression codecs). Drop this once Ktor's own netty version reaches it --
 # `dependencyInsight --dependency io.netty:netty-codec-http` on :server shows which one wins.
 # Deliberately not moved to 4.2.19 (2026-10-16), although that release also fixes HTTP codec advisories: apart
